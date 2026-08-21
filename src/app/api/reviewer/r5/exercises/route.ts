@@ -40,7 +40,13 @@ export async function POST(request: Request) {
       parts.length === exercisesIndex + 3 &&
       parts[exercisesIndex + 2] === "finalize"
     )
-      return NextResponse.json(finalizeExercise(role, body), { status: 201 });
+      return NextResponse.json(
+        finalizeExercise(role, {
+          ...(body as Record<string, unknown>),
+          sessionId: parts[exercisesIndex + 1],
+        }),
+        { status: 201 },
+      );
     const understandingIndex = parts.indexOf("understanding-checks");
     if (understandingIndex >= 0 && parts.length === understandingIndex + 1)
       return NextResponse.json(createUnderstanding(role, body), { status: 201 });
@@ -49,7 +55,13 @@ export async function POST(request: Request) {
       parts.length === understandingIndex + 3 &&
       parts[understandingIndex + 2] === "finalize"
     )
-      return NextResponse.json(finalizeUnderstanding(role, body), { status: 201 });
+      return NextResponse.json(
+        finalizeUnderstanding(role, {
+          ...(body as Record<string, unknown>),
+          sessionId: parts[understandingIndex + 1],
+        }),
+        { status: 201 },
+      );
     const handoffsIndex = parts.indexOf("handoffs");
     if (handoffsIndex >= 0 && parts.length === handoffsIndex + 1)
       return NextResponse.json(createHandoff(role, body), { status: 201 });

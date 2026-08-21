@@ -642,6 +642,27 @@ export function finalizeExercise(roleName: string, body: unknown) {
   )
     throw new AppError("REAUTH_REQUIRED", "R5 finalize 需要本人 reviewer token 二次认证", 403);
   const session = r5Session(input.sessionId, role);
+  if (
+    session.exercise_status === "passed" &&
+    session.exercise_hash &&
+    session.exercise_artifact_path
+  ) {
+    const file = safePrivateRelative(session.exercise_artifact_path);
+    if (!fs.existsSync(file) || sha256(fs.readFileSync(file)) !== session.exercise_hash)
+      throw new AppError("R5_ARTIFACT_TAMPERED", "exercise artifact 缺失或 hash 不一致", 409);
+    return {
+      exerciseId: session.id,
+      revision: session.exercise_revision,
+      status: "passed",
+      artifact: {
+        logicalId: path
+          .relative(path.join(config.privateEvidenceRoot, "r5"), file)
+          .replaceAll("\\", "/"),
+        sha256: session.exercise_hash,
+      },
+      reused: true,
+    };
+  }
   expectedRevision(input.expectedRevision, session.exercise_revision);
   if (session.exercise_status !== "draft")
     throw new AppError("R5_EXERCISE_STATE", "exercise 不在可 finalize 状态", 409);
@@ -829,6 +850,27 @@ export function finalizeUnderstanding(roleName: string, body: unknown) {
     );
   const role = roleFromSession(roleName);
   const session = r5Session(input.sessionId, role);
+  if (
+    session.understanding_status === "passed" &&
+    session.understanding_hash &&
+    session.understanding_artifact_path
+  ) {
+    const file = safePrivateRelative(session.understanding_artifact_path);
+    if (!fs.existsSync(file) || sha256(fs.readFileSync(file)) !== session.understanding_hash)
+      throw new AppError("R5_ARTIFACT_TAMPERED", "understanding artifact 缺失或 hash 不一致", 409);
+    return {
+      sessionId: session.id,
+      revision: session.understanding_revision,
+      status: "passed",
+      artifact: {
+        logicalId: path
+          .relative(path.join(config.privateEvidenceRoot, "r5"), file)
+          .replaceAll("\\", "/"),
+        sha256: session.understanding_hash,
+      },
+      reused: true,
+    };
+  }
   expectedRevision(input.expectedRevision, session.understanding_revision);
   const draft = JSON.parse(session.understanding_json ?? "null") as any;
   if (session.understanding_status !== "ready" || !draft?.passed)

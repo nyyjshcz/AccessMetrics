@@ -171,7 +171,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [sessionId, expectedRevision, reauthReviewToken]
+              required: [expectedRevision, reauthReviewToken]
               additionalProperties: false
       responses:
         "201": { description: immutable passed exercise artifact }

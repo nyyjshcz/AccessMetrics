@@ -13,6 +13,8 @@ type ReportData = {
   [key: string]: unknown;
 };
 
+type ReportMode = "candidate" | "final";
+
 const REQUIRED_REPORT_DATA_FIELDS = [
   "schemaVersion",
   "exportId",
@@ -54,10 +56,46 @@ function assertReportData(data: ReportData) {
     throw new Error("report-data.manualValidation 必须是对象");
 }
 
+function assertCandidateReportData(data: ReportData) {
+  if (data.schemaVersion !== "report-data-candidate-v1")
+    throw new Error("candidate report-data schemaVersion 必须是 report-data-candidate-v1");
+  if (data.artifactKind !== "candidate")
+    throw new Error("candidate report-data artifactKind 必须是 candidate");
+  for (const forbidden of ["exportId", "manifestHash", "outcomeDigest", "r4EvidenceBundleHash"])
+    if (forbidden in data) throw new Error(`candidate report-data 禁止 final 字段: ${forbidden}`);
+  const required = [
+    "sourceExportId",
+    "sourceManifestHash",
+    "studyFreezeId",
+    "populationDigest",
+    "reviewFreezeHash",
+    "reportLocalizationDraftHash",
+    "modelDecisionHash",
+    "modelObservationsHash",
+    "createdFromCommit",
+    "provenance",
+    "sampleSummary",
+    "pageStatusSummary",
+    "frameCoverageSummary",
+    "scores",
+    "severitySummary",
+    "commonRules",
+    "principleSummary",
+    "sensitivity",
+    "manualValidation",
+    "charts",
+    "limitations",
+  ];
+  const missing = required.filter((field) => !(field in data));
+  if (missing.length) throw new Error(`candidate report-data 缺少字段: ${missing.join(", ")}`);
+  if (!data.scores || typeof data.scores !== "object")
+    throw new Error("candidate report-data.scores 必须是对象");
+}
+
 function args() {
   const result: Record<string, string> = {};
   for (let index = 2; index < process.argv.length; index++) {
-    if (!process.argv[index].startsWith("--")) continue;
+    if (process.argv[index] === "--" || !process.argv[index].startsWith("--")) continue;
     const key = process.argv[index].slice(2);
     result[key] = process.argv[index + 1] ?? "";
     index++;
@@ -65,7 +103,12 @@ function args() {
   return result;
 }
 
-function makeMarkdown(kind: "research" | "federation", data: ReportData, reportDataHash: string) {
+function makeMarkdown(
+  kind: "research" | "federation",
+  mode: ReportMode,
+  data: ReportData,
+  reportDataHash: string,
+) {
   const title =
     kind === "research"
       ? "AccessCheck Lishui 研究报告"
@@ -79,9 +122,16 @@ function makeMarkdown(kind: "research" | "federation", data: ReportData, reportD
         `| ${site} | ${score.exact ?? "N/A"} | ${score.display ?? "N/A"} | ${rank[site] ?? "N/A"} |`,
     )
     .join("\n");
-  const exportId = String(data.exportId ?? "") || "MISSING";
-  const manifestHash = String(data.manifestHash ?? "") || "MISSING";
-  return `# ${title}\n\n> 候选/最终报告，由冻结的结构化数据生成。\n\n## 重要边界\n\n本项目仅评价 axe-core 能够自动判断的网页无障碍检查项。分数不等同于完整人工审计、官方 WCAG 合规认证或“符合 WCAG 的百分比”。需要人工判断的项目会单独列出。\n\n## 数据绑定\n\n- report-data SHA-256：\`${reportDataHash}\`\n- final export-id：\`${exportId}\`\n- final manifest SHA-256：\`${manifestHash}\`\n- 生成状态：\`${String(data.status ?? "provided-data")}\`\n- 本报告不得脱离对应 manifest、研究冻结和人工门证据单独引用。\n\n## 站点分数\n\n| 站点 | 精确分数 | 展示分数 | 排名 |\n|---|---:|---:|---:|\n${rows || "| （冻结数据未提供站点） | N/A | N/A | N/A |"}\n\n## 方法与局限\n\n评分、四项原则、问题严重程度、人工抽查、失败页面和敏感性分析均以冻结导出和对应版本快照为准。没有真实冻结数据时，生成器拒绝把模板或 fixture 当作正式结论。\n\n## 结论\n\n本节必须在 R4 人工复核后由真实数据重新生成；执行 AI 不代填结论、单位、姓名、日期或接收状态。\n`;
+  const identity =
+    mode === "final"
+      ? `- final export-id：\`${String(data.exportId ?? "MISSING")}\`\n- final manifest SHA-256：\`${String(data.manifestHash ?? "MISSING")}\``
+      : `- source export-id：\`${String(data.sourceExportId ?? "MISSING")}\`\n- source manifest SHA-256：\`${String(data.sourceManifestHash ?? "MISSING")}\`\n- review-freeze SHA-256：\`${String(data.reviewFreezeHash ?? "MISSING")}\``;
+  const banner =
+    mode === "candidate"
+      ? "> REVIEW CANDIDATE — NOT FINAL\n\n"
+      : "> 最终报告，由通过 R4/R5 门的冻结结构化数据生成。\n\n";
+  return `# ${title}\n\n${banner}## 重要边界\n\n本项目仅评价 axe-core 能够自动判断的网页无障碍检查项。分数不等同于完整人工审计、官方 WCAG 合规认证或“符合 WCAG 的百分比”。需要人工判断的项目会单独列出。\n\n## 数据绑定\n\n- report-data SHA-256：\`${reportDataHash}\`\n${identity}\n- 生成状态：\`${mode}\`\n- 本报告不得脱离对应研究冻结、源清单和人工门证据单独引用。\n\n## 站点分数\n\n| 站点 | 精确分数 | 展示分数 | 排名 |\n|---|---:|---:|---:|\n${rows || "| （冻结数据未提供站点） | N/A | N/A | N/A |"}\n\n## 方法与局限\n\n评分、四项原则、问题严重程度、人工抽查、失败页面和敏感性分析均以冻结导出和对应版本快照为准。没有真实冻结数据时，生成器拒绝把模板或 fixture 当作正式结论。\n\n## 结论\n\n${mode === "candidate" ? "本候选版只供 R4 人工核对，不是最终成果，不得写入 final export。" : "本节仅在 R4/R5 门通过后由真实数据生成；执行 AI 不代填单位、姓名、日期或接收状态。"}\n`;
+  return `# ${title}\n\n${banner}## 重要边界\n\n本项目仅评价 axe-core 能够自动判断的网页无障碍检查项。分数不等同于完整人工审计、官方 WCAG 合规认证或“符合 WCAG 的百分比”。需要人工判断的项目会单独列出。\n\n## 数据绑定\n\n- report-data SHA-256：\`${reportDataHash}\`\n${identity}\n- 生成状态：\`${mode}\`\n- 本报告不得脱离对应研究冻结、源清单和人工门证据单独引用。\n\n## 站点分数\n\n| 站点 | 精确分数 | 展示分数 | 排名 |\n|---|---:|---:|---:|\n${rows || "| （冻结数据未提供站点） | N/A | N/A | N/A |"}\n\n## 方法与局限\n\n评分、四项原则、问题严重程度、人工抽查、失败页面和敏感性分析均以冻结导出和对应版本快照为准。没有真实冻结数据时，生成器拒绝把模板或 fixture 当作正式结论。\n\n## 结论\n\n${mode === "candidate" ? "本候选版只供 R4 人工核对，不是最终成果，不得写入 final export。" : "本节仅在 R4/R5 门通过后由真实数据生成；执行 AI 不代填单位、姓名、日期或接收状态。"}\n`;
 }
 
 async function main() {
@@ -104,7 +154,8 @@ async function main() {
   const data = JSON.parse(fs.readFileSync(options.input, "utf8")) as ReportData;
   if (!data || typeof data !== "object" || Array.isArray(data))
     throw new Error("report-data 必须是对象");
-  assertReportData(data);
+  if (mode === "final") assertReportData(data);
+  else assertCandidateReportData(data);
   if (mode === "final") {
     if (!options["evidence-root"] || !path.isAbsolute(options["evidence-root"]))
       throw new Error("final 模式需要绝对 --evidence-root");
@@ -116,7 +167,7 @@ async function main() {
   const output = path.join(options["output-root"], mode, options.kind);
   fs.mkdirSync(output, { recursive: true });
   const markdownPath = path.join(output, `${options.kind}-report.md`);
-  fs.writeFileSync(markdownPath, makeMarkdown(options.kind, data, reportDataHash));
+  fs.writeFileSync(markdownPath, makeMarkdown(options.kind, mode, data, reportDataHash));
   const manifest: {
     schemaVersion: string;
     kind: string;

@@ -42,6 +42,7 @@ for (const file of [
   "r5-artifact-bundle.schema.json",
   "report-data.schema.json",
   "report-data-candidate.schema.json",
+  "candidate-bundle.schema.json",
   "rule-localizations.schema.json",
 ]) {
   const value = JSON.parse(fs.readFileSync(path.join(process.cwd(), "contracts", file), "utf8"));
@@ -114,6 +115,54 @@ const requiredReportFields = [
 ];
 if (!requiredReportFields.every((field) => reportDataSchema.required?.includes(field)))
   throw new Error("report-data schema does not lock all report traceability fields");
+const candidateReportSchema = JSON.parse(
+  fs.readFileSync(
+    path.join(process.cwd(), "contracts", "report-data-candidate.schema.json"),
+    "utf8",
+  ),
+);
+const candidateRequiredFields = [
+  "schemaVersion",
+  "artifactKind",
+  "sourceExportId",
+  "sourceManifestHash",
+  "studyFreezeId",
+  "populationDigest",
+  "reviewFreezeHash",
+  "reportLocalizationDraftHash",
+  "modelDecisionHash",
+  "modelObservationsHash",
+  "createdFromCommit",
+  "scores",
+  "manualValidation",
+  "frameCoverageSummary",
+  "charts",
+  "limitations",
+];
+if (!candidateRequiredFields.every((field) => candidateReportSchema.required?.includes(field)))
+  throw new Error("candidate report-data schema does not lock candidate traceability/stat fields");
+for (const forbidden of ["exportId", "manifestHash", "outcomeDigest", "r4EvidenceBundleHash"])
+  if (candidateReportSchema.properties?.[forbidden])
+    throw new Error(`candidate report-data schema illegally exposes final field: ${forbidden}`);
+const candidateBundleSchema = JSON.parse(
+  fs.readFileSync(path.join(process.cwd(), "contracts", "candidate-bundle.schema.json"), "utf8"),
+);
+const candidateBundleRequired = [
+  "schemaVersion",
+  "candidateBundleId",
+  "sourceExportId",
+  "sourceManifestHash",
+  "studyFreezeId",
+  "populationDigest",
+  "reviewFreezeHash",
+  "reportLocalizationDraftHash",
+  "modelDecisionHash",
+  "modelObservationsHash",
+  "createdFromCommit",
+  "files",
+];
+if (!candidateBundleRequired.every((field) => candidateBundleSchema.required?.includes(field)))
+  throw new Error("candidate-bundle schema does not lock all required bindings");
 const examplesDir = path.join(process.cwd(), "contracts", "examples");
 for (const file of fs.readdirSync(examplesDir).filter((name) => name.endsWith(".json"))) {
   const example = JSON.parse(fs.readFileSync(path.join(examplesDir, file), "utf8"));

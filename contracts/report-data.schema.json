@@ -60,12 +60,40 @@
     },
     "sampleSummary": { "type": "object" },
     "pageStatusSummary": { "type": "object" },
-    "frameCoverageSummary": { "type": "object" },
-    "scores": { "type": "object" },
+    "frameCoverageSummary": { "$ref": "#/$defs/frameCoverageSummary" },
+    "scores": { "$ref": "#/$defs/scores" },
     "severitySummary": { "type": "object" },
     "commonRules": { "type": "array", "items": { "type": "object" } },
     "principleSummary": { "type": "object" },
     "sensitivity": { "type": "object" },
+    "manualValidation": { "$ref": "#/$defs/manualValidation" },
+    "charts": { "$ref": "#/$defs/charts" },
+    "limitations": { "$ref": "#/$defs/limitations" }
+  },
+  "$defs": {
+    "frameCoverageSummary": {
+      "type": "object",
+      "required": ["frameTotal", "tested", "skipped", "errors", "limitedPages"],
+      "additionalProperties": false,
+      "properties": {
+        "frameTotal": { "type": "integer", "minimum": 0 },
+        "tested": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 },
+        "limitedPages": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "scores": {
+      "type": "object",
+      "required": ["siteScores", "rank", "overall", "fourPrinciples"],
+      "additionalProperties": false,
+      "properties": {
+        "siteScores": { "type": "object" },
+        "rank": { "type": "object" },
+        "overall": { "type": ["object", "null"] },
+        "fourPrinciples": { "type": "object" }
+      }
+    },
     "manualValidation": {
       "type": "object",
       "required": [

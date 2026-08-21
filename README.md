@@ -29,7 +29,13 @@ pnpm deliverables:verify -- --final-export-path <绝对目录> --expected-manife
 
 ## 质量门
 
-`pnpm test:all` 覆盖依赖负面 fixture、lint、格式、类型、数据库、egress DestinationPolicy、契约、发布卫生、Vitest、Python 参考实现和生产构建；`pnpm test:e2e` 覆盖浏览器冒烟。`pnpm report:generate` 从冻结 `report-data.json` 生成候选 Markdown/DOCX（final 模式必须有 R4 marker），`pnpm deliverables:templates` 生成带条件式水印的成果接收 DOCX/PDF 模板，`pnpm backup:create -- --output <绝对目录>` 对私有证据使用 AES-256-GCM 加密，`pnpm project:status` 根据实际文件、gate receipt 和外部输入输出状态。
+`pnpm test:all` 覆盖依赖负面 fixture、lint、格式、类型、数据库、egress DestinationPolicy、契约、发布卫生、Vitest、Python 参考实现和生产构建；`pnpm test:e2e` 覆盖浏览器冒烟。`pnpm report:generate -- --mode candidate` 只接受 `report-data.candidate.json`，输出 `REVIEW CANDIDATE — NOT FINAL` 且不写 final export 身份；final 模式必须有 R4 marker。R4 候选包使用：
+
+```text
+pnpm deliverables:candidate -- --source-export <绝对目录> --review-freeze <绝对文件或目录> --candidate-files <绝对目录> --output-root <绝对目录> [--report-localization-draft <绝对文件>]
+```
+
+候选目录必须恰有 `report-data.candidate.json`、`model-decision-record.md`、`model-observations.md` 和两份候选报告；脚本会核对 source/review-freeze/localization/model/commit hash，排除 final 字段，按五个文件的字节和 SHA-256 生成可复用的 `candidateBundleId`，并原子写入只读 bundle。`pnpm deliverables:templates` 生成带条件式水印的成果接收 DOCX/PDF 模板，`pnpm backup:create -- --output <绝对目录>` 对私有证据使用 AES-256-GCM 加密，`pnpm project:status` 根据实际文件、gate receipt 和外部输入输出状态。
 
 正式研究样本、人工 verdict、R1–R5 receipt、生产服务器和域名不会由 AI 伪造。当前真实状态见 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) 和 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。
 

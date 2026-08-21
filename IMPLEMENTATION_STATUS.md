@@ -1,7 +1,7 @@
 # 实施状态
 
 - 当前状态：`WAITING_EXTERNAL_INPUT`
-- 当前自动化基线 commit：`76f08012744e86047b04e5e8ccb930fe81fa6a88`（`fix: make fixed R5 exercise checks executable`；未创建 release tag，未公网发布）。
+- 当前自动化基线 commit：`待本轮质量门通过后更新`（未创建 release tag，未公网发布）。
 - 自动化实现：已完成计划步骤 1–17，以及步骤 18/19 所有不依赖真人或外部单位的代码、契约、脚手架、fixture、报告生成器、可复现分析管线和 fail-closed 校验。
 - 真实阻塞：R1–R5 真人确认、真实研究站点/许可/标准来源、生产服务器/域名/密钥/镜像与渲染器 digest。详见 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。
 
@@ -32,6 +32,8 @@
 - 本轮安全与验收复核补齐了双角色 cookie 并存时的服务端 role 选择、错误角色 403/未登录 401 区分、生产 reviewer token 不得相同、Caddy 可信代理标记重写，以及只接受可信代理注入的 rate-limit 客户端地址。
 - R5 artifact 现在由服务端按 canonical 字节写入不可覆盖的 `*.r<revision>.json`，并通过 DB outbox 恢复/校验磁盘 hash；修订会使共同 bundle 和双方 finalize 失效，缺失/篡改/冲突均 fail-closed。gate receipt 改为完整 receipt 字节 hash，outbox 幂等写入并有双角色 fixture 验证。
 - 成果 candidate/verify/release 链现在要求固定的 report-data、两份最终报告、图表/表格 hash、R1–R5 数据库绑定 evidence 和分别重算的 `r4EvidenceBundleHash`/`fullGateBundleHash`；缺任何输入均失败，不再把可选参数或文件存在当作完成证明。
+- R4 候选链已按计划收紧：`report-data.candidate.json` 使用独立 schema、禁止 `exportId/manifestHash/outcomeDigest/r4EvidenceBundleHash` 等 final 字段，并通过 `$defs` 与最终 report-data 共用分数、frame、人工样本、图表和局限定义；candidate bundle 固定绑定 source/review-freeze/localization/model/commit 以及五个候选文件的 bytes/SHA-256，candidateBundleId 对语义内容完整 hash，候选目录原子写入、只读、可幂等复用。
+- 候选报告生成器现在显式输出 `REVIEW CANDIDATE — NOT FINAL`，只显示 source/review-freeze 身份；`pnpm deliverables:candidate` 会拒绝最终身份字段、最终 schema、缺失模型 hash、缺失候选水印或多余文件，并有 2 个 CLI 集成回归测试覆盖首次写入、幂等复用和 final 字段拒绝。
 - `gates:verify`、`project:status` 和 `project:resume` 现在会核对 receipt artifact 当前 hash、数据库 current approved 记录、outbox=`written`、outbox 字节/目标路径/hash、R5 六项排序 bundle、共同 bundle hash、两份公共 artifact 集、前置门顺序及 R5 两份相同 40 位 bound commit；不会以文件存在代替数据库事实。
 
 ## 最近自动化质量门（2026-08-22）
@@ -53,7 +55,7 @@ pnpm contract:check
 pnpm typecheck
 pnpm lint
 pnpm format:check
-pnpm test:integration     # 3 files, 12 tests
+pnpm test:integration     # 4 files, 14 tests
 pnpm test:scoring-parity  # 5 files, 22 tests
 pnpm test                 # 8 files, 34 tests
 pnpm test:analysis
@@ -63,6 +65,14 @@ pnpm test:all             # 上述依赖、静态检查、hygiene/handoff:check�
 node scripts/r5-fixed-exercise.mjs <六个固定 exercise id>  # 六项固定 catalog action 均返回 passed
 pnpm project:status       # 输出 WAITING_EXTERNAL_INPUT，自动实现 ready
 pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部输入齐全
+```
+
+本轮候选链局部质量门另外通过：
+
+```text
+pnpm exec vitest run tests/integration/candidate.test.ts  # 1 file, 2 tests
+pnpm deliverables:candidate  # 使用隔离临时 fixture：首次写入 + 幂等复用均通过
+pnpm report:generate -- --mode candidate  # 候选页眉及 source/review-freeze 绑定通过
 ```
 
 已知但非失败的提示：Next 16.3.0 提示 `middleware` 未来迁移到 `proxy`，Vite/Vitest 提示未来的 native config loader，以及运行时可配置目录导致的 tracing warning；均不影响当前构建结果。Playwright E2E 使用 standalone 输出的兼容启动方式，测试通过但 `next start` 会提示应使用 standalone server。生产 Playwright/Smokescreen/LibreOffice/Poppler 镜像 digest 尚未由外部环境提供，不能标为已上线。Docker 当前未安装，因此只完成静态配置和本地代理源码检查，未冒充 Compose/公网部署通过。

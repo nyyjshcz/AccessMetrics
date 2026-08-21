@@ -1,13 +1,56 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://accesscheck.local/contracts/candidate-bundle.schema.json",
   "type": "object",
-  "required": ["schemaVersion", "candidateBundleId", "sourceManifestHash", "files", "status"],
+  "required": [
+    "schemaVersion",
+    "candidateBundleId",
+    "sourceExportId",
+    "sourceManifestHash",
+    "studyFreezeId",
+    "populationDigest",
+    "reviewFreezeHash",
+    "reportLocalizationDraftHash",
+    "modelDecisionHash",
+    "modelObservationsHash",
+    "createdFromCommit",
+    "files"
+  ],
   "additionalProperties": false,
   "properties": {
     "schemaVersion": { "const": "candidate-bundle-v1" },
-    "candidateBundleId": { "type": "string" },
-    "sourceManifestHash": { "type": "string" },
-    "files": { "type": "array", "items": { "type": "object" } },
-    "status": { "const": "review_candidate" }
+    "candidateBundleId": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "sourceExportId": { "type": "string", "minLength": 1 },
+    "sourceManifestHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "studyFreezeId": { "type": "string", "minLength": 1 },
+    "populationDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "reviewFreezeHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "reportLocalizationDraftHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "modelDecisionHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "modelObservationsHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "createdFromCommit": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+    "files": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["path", "bytes", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "enum": [
+              "candidate/report-data.candidate.json",
+              "candidate/model-decision-record.md",
+              "candidate/model-observations.md",
+              "candidate/research-report.md",
+              "candidate/federation-report.md"
+            ]
+          },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    }
   }
 }

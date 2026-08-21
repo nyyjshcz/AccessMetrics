@@ -14,7 +14,18 @@
     "modelDecisionHash",
     "modelObservationsHash",
     "createdFromCommit",
-    "files"
+    "provenance",
+    "sampleSummary",
+    "pageStatusSummary",
+    "frameCoverageSummary",
+    "scores",
+    "severitySummary",
+    "commonRules",
+    "principleSummary",
+    "sensitivity",
+    "manualValidation",
+    "charts",
+    "limitations"
   ],
   "additionalProperties": false,
   "properties": {
@@ -29,18 +40,17 @@
     "modelDecisionHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "modelObservationsHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "createdFromCommit": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
-    "files": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["path", "bytes", "sha256"],
-        "additionalProperties": false,
-        "properties": {
-          "path": { "type": "string", "minLength": 1 },
-          "bytes": { "type": "integer", "minimum": 0 },
-          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
-        }
-      }
-    }
+    "provenance": { "type": "object" },
+    "sampleSummary": { "type": "object" },
+    "pageStatusSummary": { "type": "object" },
+    "frameCoverageSummary": { "$ref": "report-data.schema.json#/$defs/frameCoverageSummary" },
+    "scores": { "$ref": "report-data.schema.json#/$defs/scores" },
+    "severitySummary": { "type": "object" },
+    "commonRules": { "type": "array", "items": { "type": "object" } },
+    "principleSummary": { "type": "object" },
+    "sensitivity": { "type": "object" },
+    "manualValidation": { "$ref": "report-data.schema.json#/$defs/manualValidation" },
+    "charts": { "$ref": "report-data.schema.json#/$defs/charts" },
+    "limitations": { "$ref": "report-data.schema.json#/$defs/limitations" }
   }
 }

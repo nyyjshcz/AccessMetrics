@@ -1,7 +1,7 @@
 # 实施状态
 
 - 当前状态：`WAITING_EXTERNAL_INPUT`
-- 当前自动化基线 commit：`ef269951750caf08088e41aa6f7f3e3f02f1c2b4`（`security: enforce proxied scanning and bounded retries`；未创建 release tag，未公网发布）。
+- 当前自动化基线 commit：`0a2fa4e525d4c3a77182dfb65e9802188493f6e9`（`test: harden scan CLI and network boundary regressions`；未创建 release tag，未公网发布）。
 - 自动化实现：已完成计划步骤 1–17，以及步骤 18/19 所有不依赖真人或外部单位的代码、契约、脚手架、fixture、报告生成器、可复现分析管线和 fail-closed 校验。
 - 真实阻塞：R1–R5 真人确认、真实研究站点/许可/标准来源、生产服务器/域名/密钥/镜像与渲染器 digest。详见 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。
 
@@ -28,6 +28,7 @@
 - 本轮审计还补齐了 axe 四类结果的扫描时间/引擎/环境/选项快照、页面级节点计数与 weighted defect 展示、通过规则的轻量 raw 证据、节点 HTML 300 字符上限、基于页面/规则/目标的稳定 target hash，以及错误响应的稳定 `errorEnvelope`。
 - 本轮生产安全审计还补齐了显式 egress proxy：Crawler 的 robots 请求和 Chromium 请求共用代理策略，禁止代理绕过、QUIC、后台网络和 WebRTC 本地地址泄漏；扫描器把 401/403/其他 HTTP 错误保存为结构化失败；Worker 按固定 `SCAN_RETRY_COUNT=1` 重试并把配置快照写入 run；站点发现受最大深度和总时长限制，最终重定向必须保持同源。
 - 生产配置现在要求 Worker 使用隔离的 `scan-isolated` 内部网络和显式代理，代理策略拒绝私网、保留地址、文档示例网段、metadata、IPv4-mapped/ULA/link-local IPv6，并提供 `pnpm egress:check`；Caddy 未提供 `CADDY_SITE` 时 fail-closed，应用镜像在构建时安装固定 Playwright Chromium。
+- 本轮完成度复核又补齐了 `scan:page`/`scan:one-page` 的无副作用共享 CLI（每次命令只启动一次扫描）、下载型非 HTML 响应的 `NON_HTML` 结构化错误、robots deny/最大深度/总时长/三次确定性发现回归，以及混合图片 pass/violation、浏览器关闭后重启和 PDF 下载 fixture；egress proxy 的 IPv6 判定改为按地址段解析并拒绝所有 IPv4-mapped 形式。
 
 ## 最近自动化质量门（2026-08-22）
 

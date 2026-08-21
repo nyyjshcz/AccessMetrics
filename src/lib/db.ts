@@ -56,19 +56,40 @@ export function migrate() {
     migration015,
     migration016,
     migration017,
+    migration018,
+    migration019,
+    migration020,
+    migration021,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
     if (applied.has(version)) continue;
-    db.transaction(() => {
-      migrations[index](db);
-      db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(
-        version,
-        new Date().toISOString(),
-      );
-    })();
+    // Migration 021 rebuilds the legacy pages table to remove the original
+    // site-wide UNIQUE(site_id, canonical_url) constraint. SQLite cannot drop
+    // that auto-index in place, and the rebuild must temporarily disable FK
+    // enforcement while child tables continue to reference the same name.
+    const legacyPagesRebuild = version === 21 && hasLegacyPagesUniqueConstraint(db);
+    if (legacyPagesRebuild) db.pragma("foreign_keys = OFF");
+    try {
+      db.transaction(() => {
+        migrations[index](db);
+        db.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)").run(
+          version,
+          new Date().toISOString(),
+        );
+      })();
+    } finally {
+      if (legacyPagesRebuild) db.pragma("foreign_keys = ON");
+    }
     logger.info({ version }, "database migration applied");
   }
+}
+
+function hasLegacyPagesUniqueConstraint(db: Database.Database) {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='pages'")
+    .get() as { sql?: string } | undefined;
+  return Boolean(row?.sql && /UNIQUE\s*\(\s*site_id\s*,\s*canonical_url\s*\)/i.test(row.sql));
 }
 
 function migration001(db: Database.Database) {
@@ -91,7 +112,7 @@ function migration001(db: Database.Database) {
     );
     CREATE TABLE IF NOT EXISTS pages (
       id TEXT PRIMARY KEY, site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE RESTRICT, canonical_url TEXT NOT NULL,
-      first_seen_at TEXT NOT NULL, UNIQUE(site_id, canonical_url)
+      first_seen_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS job_pages (
       job_id TEXT NOT NULL REFERENCES scan_jobs(id) ON DELETE RESTRICT, page_id TEXT NOT NULL REFERENCES pages(id) ON DELETE RESTRICT,
@@ -505,6 +526,170 @@ function migration017(db: Database.Database) {
   add("pages", "axe_test_engine_json", "TEXT");
   add("pages", "axe_test_environment_json", "TEXT");
   add("pages", "axe_tool_options_json", "TEXT");
+}
+
+function migration018(db: Database.Database) {
+  const addColumn = (table: string, column: string, definition: string) => {
+    const present = (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).some(
+      (row) => row.name === column,
+    );
+    if (!present) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+
+  // These columns make the page identity belong to one job/run instead of
+  // reusing a site-wide URL row across separate scans.  Existing rows remain
+  // readable; new discovery writes the linkage atomically.
+  addColumn("scan_jobs", "max_pages", "INTEGER");
+  addColumn("scan_runs", "created_at", "TEXT");
+  addColumn("pages", "job_page_id", "TEXT");
+  addColumn("pages", "created_at", "TEXT");
+  addColumn("job_pages", "id", "TEXT");
+
+  addColumn("result_nodes", "frame_url", "TEXT");
+  addColumn("result_nodes", "frame_origin_relation", "TEXT");
+
+  for (const [column, definition] of [
+    ["total_score", "REAL"],
+    ["total_score_tenths", "INTEGER"],
+    ["total_numerator", "INTEGER"],
+    ["total_denominator", "INTEGER"],
+    ["perceivable_score", "REAL"],
+    ["perceivable_score_tenths", "INTEGER"],
+    ["perceivable_numerator", "INTEGER"],
+    ["perceivable_denominator", "INTEGER"],
+    ["operable_score", "REAL"],
+    ["operable_score_tenths", "INTEGER"],
+    ["operable_numerator", "INTEGER"],
+    ["operable_denominator", "INTEGER"],
+    ["understandable_score", "REAL"],
+    ["understandable_score_tenths", "INTEGER"],
+    ["understandable_numerator", "INTEGER"],
+    ["understandable_denominator", "INTEGER"],
+    ["robust_score", "REAL"],
+    ["robust_score_tenths", "INTEGER"],
+    ["robust_numerator", "INTEGER"],
+    ["robust_denominator", "INTEGER"],
+    ["created_at", "TEXT"],
+  ] as const) {
+    addColumn("page_scores", column, definition);
+    addColumn("site_scores", column, definition);
+  }
+  addColumn("page_scores", "score_details_json", "TEXT");
+  addColumn("site_scores", "score_details_json", "TEXT");
+
+  db.exec(`
+    UPDATE scan_jobs
+    SET max_pages=COALESCE(max_pages, CAST(json_extract(options_json,'$.maxPages') AS INTEGER));
+    UPDATE scan_runs SET created_at=COALESCE(created_at, started_at);
+    UPDATE pages SET created_at=COALESCE(created_at, first_seen_at);
+    UPDATE job_pages SET id=COALESCE(id, 'jp_' || lower(hex(randomblob(16))));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_run_normalized
+      ON pages(run_id, normalized_url) WHERE run_id IS NOT NULL AND normalized_url IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_job_page_unique
+      ON pages(job_page_id) WHERE job_page_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_job_pages_id_unique
+      ON job_pages(id) WHERE id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_job_pages_discovery_order
+      ON job_pages(job_id, discovery_order);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_job_pages_normalized_url
+      ON job_pages(job_id, normalized_url);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_result_nodes_target
+      ON result_nodes(rule_result_id, target_hash) WHERE target_hash IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_page_scores_page_model
+      ON page_scores(page_id, model_version);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_site_scores_run_model
+      ON site_scores(run_id, model_version);
+  `);
+}
+
+function migration019(db: Database.Database) {
+  const addColumn = (table: string, column: string, definition: string) => {
+    const present = (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).some(
+      (row) => row.name === column,
+    );
+    if (!present) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  // Older databases created before the score-details columns were introduced
+  // must be upgraded explicitly; migration018 may already be recorded.
+  addColumn("page_scores", "score_details_json", "TEXT");
+  addColumn("site_scores", "score_details_json", "TEXT");
+}
+
+function migration020(db: Database.Database) {
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_job_pages_normalized_url
+      ON job_pages(job_id, normalized_url);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_scan_runs_job_unique
+      ON scan_runs(job_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_reviews_current_unique
+      ON manual_reviews(sample_id, reviewer, review_context) WHERE is_current=1;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_adjudications_current_unique
+      ON manual_review_adjudications(sample_id) WHERE is_current=1;
+  `);
+}
+
+function migration021(db: Database.Database) {
+  if (!hasLegacyPagesUniqueConstraint(db)) return;
+  db.exec(`
+    CREATE TABLE pages_rebuilt (
+      id TEXT PRIMARY KEY,
+      site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE RESTRICT,
+      canonical_url TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL,
+      run_id TEXT,
+      requested_url TEXT,
+      final_url TEXT,
+      normalized_url TEXT,
+      crawl_depth INTEGER NOT NULL DEFAULT 0,
+      discovered_from_url TEXT,
+      http_status INTEGER,
+      content_type TEXT,
+      load_ms INTEGER,
+      scan_status TEXT NOT NULL DEFAULT 'success',
+      error_code TEXT,
+      error_message TEXT,
+      title TEXT,
+      frame_total INTEGER NOT NULL DEFAULT 0,
+      same_origin_frame_total INTEGER NOT NULL DEFAULT 0,
+      cross_origin_frame_total INTEGER NOT NULL DEFAULT 0,
+      frame_tested_total INTEGER NOT NULL DEFAULT 0,
+      frame_skipped_total INTEGER NOT NULL DEFAULT 0,
+      frame_error_count INTEGER NOT NULL DEFAULT 0,
+      frame_coverage_status TEXT NOT NULL DEFAULT 'no_child_frames',
+      frame_coverage_issues_json TEXT NOT NULL DEFAULT '[]',
+      axe_timestamp TEXT,
+      axe_test_engine_json TEXT,
+      axe_test_environment_json TEXT,
+      axe_tool_options_json TEXT,
+      job_page_id TEXT,
+      created_at TEXT
+    );
+    INSERT INTO pages_rebuilt(
+      id,site_id,canonical_url,first_seen_at,run_id,requested_url,final_url,
+      normalized_url,crawl_depth,discovered_from_url,http_status,content_type,
+      load_ms,scan_status,error_code,error_message,title,frame_total,
+      same_origin_frame_total,cross_origin_frame_total,frame_tested_total,
+      frame_skipped_total,frame_error_count,frame_coverage_status,
+      frame_coverage_issues_json,axe_timestamp,axe_test_engine_json,
+      axe_test_environment_json,axe_tool_options_json,job_page_id,created_at
+    )
+    SELECT
+      id,site_id,canonical_url,first_seen_at,run_id,requested_url,final_url,
+      normalized_url,crawl_depth,discovered_from_url,http_status,content_type,
+      load_ms,scan_status,error_code,error_message,title,frame_total,
+      same_origin_frame_total,cross_origin_frame_total,frame_tested_total,
+      frame_skipped_total,frame_error_count,frame_coverage_status,
+      frame_coverage_issues_json,axe_timestamp,axe_test_engine_json,
+      axe_test_environment_json,axe_tool_options_json,job_page_id,created_at
+    FROM pages;
+    DROP TABLE pages;
+    ALTER TABLE pages_rebuilt RENAME TO pages;
+    CREATE INDEX IF NOT EXISTS idx_pages_run_status ON pages(run_id,scan_status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_run_normalized
+      ON pages(run_id, normalized_url) WHERE run_id IS NOT NULL AND normalized_url IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_job_page_unique
+      ON pages(job_page_id) WHERE job_page_id IS NOT NULL;
+  `);
 }
 
 export type Db = Database.Database;

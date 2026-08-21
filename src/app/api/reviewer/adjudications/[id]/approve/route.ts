@@ -18,12 +18,24 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (!row) throw new AppError("NOT_FOUND", "待批准裁决不存在", 404);
     if (row.proposed_by === session.user.role)
       throw new AppError("INDEPENDENCE_REQUIRED", "裁决批准人不能与提出人相同", 403);
-    const updated = getDb()
-      .prepare(
-        "UPDATE manual_review_adjudications SET status='approved',approved_by=?,approved_at=?,is_current=1 WHERE id=? AND status='proposed' AND is_current=0",
-      )
-      .run(session.user.role, new Date().toISOString(), id);
-    if (!updated.changes) throw new AppError("ADJUDICATION_CONFLICT", "裁决已被其他人处理", 409);
+    const db = getDb();
+    const updated = db.transaction(() => {
+      const current = db
+        .prepare("SELECT sample_id FROM manual_review_adjudications WHERE id=?")
+        .get(id) as { sample_id: string } | undefined;
+      if (!current) return 0;
+      db.prepare(
+        "UPDATE manual_review_adjudications SET is_current=0 WHERE sample_id=? AND id<>? AND is_current=1",
+      ).run(current.sample_id, id);
+      const changed = db
+        .prepare(
+          "UPDATE manual_review_adjudications SET status='approved',approved_by=?,approved_at=?,is_current=1 WHERE id=? AND status='proposed' AND is_current=0",
+        )
+        .run(session.user.role, new Date().toISOString(), id);
+      if (!changed.changes) return 0;
+      return changed.changes;
+    })();
+    if (!updated) throw new AppError("ADJUDICATION_CONFLICT", "裁决已被其他人处理", 409);
     return NextResponse.json({ adjudicationId: id, status: "approved" });
   } catch (error) {
     return NextResponse.json(errorEnvelope(error), {

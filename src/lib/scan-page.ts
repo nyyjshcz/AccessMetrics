@@ -1,4 +1,4 @@
-import { chromium, type Browser } from "playwright";
+import { chromium, type Browser, type Frame } from "playwright";
 import AxeBuilder from "@axe-core/playwright";
 import axe from "axe-core";
 import type { ScanPageResult, AxeRuleResult } from "./domain";
@@ -81,7 +81,7 @@ export async function scanPage(
     } catch (error) {
       coverageIssues.push(`top_level:${String(error)}`);
     }
-    const convert = (items: any[], framePath = "top"): AxeRuleResult[] =>
+    const convert = (items: any[], framePath = "top", frame?: Frame): AxeRuleResult[] =>
       items.map((item) => ({
         id: item.id,
         impact: classifyImpact(item.impact),
@@ -91,6 +91,16 @@ export async function scanPage(
         helpUrl: item.helpUrl,
         nodes: (item.nodes ?? []).map((node: any) => ({
           framePath,
+          frameUrl: frame?.url() || undefined,
+          frameOriginRelation: frame
+            ? (() => {
+                try {
+                  return new URL(frame.url()).origin === origin ? "same_origin" : "cross_origin";
+                } catch {
+                  return "cross_origin";
+                }
+              })()
+            : "top",
           impact: classifyImpact(node.impact),
           html: sanitizeNodeHtml(node.html ?? ""),
           target: [
@@ -134,10 +144,10 @@ export async function scanPage(
           ),
           "frame axe execution timed out",
         );
-        frameResults.passes.push(...convert(frameRaw.passes ?? [], framePath));
-        frameResults.violations.push(...convert(frameRaw.violations ?? [], framePath));
-        frameResults.incomplete.push(...convert(frameRaw.incomplete ?? [], framePath));
-        frameResults.inapplicable.push(...convert(frameRaw.inapplicable ?? [], framePath));
+        frameResults.passes.push(...convert(frameRaw.passes ?? [], framePath, frame));
+        frameResults.violations.push(...convert(frameRaw.violations ?? [], framePath, frame));
+        frameResults.incomplete.push(...convert(frameRaw.incomplete ?? [], framePath, frame));
+        frameResults.inapplicable.push(...convert(frameRaw.inapplicable ?? [], framePath, frame));
         frameTestedTotal += 1;
       } catch (error) {
         frameErrorCount += 1;

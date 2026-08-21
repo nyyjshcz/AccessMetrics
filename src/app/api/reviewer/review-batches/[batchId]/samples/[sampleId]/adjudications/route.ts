@@ -38,11 +38,16 @@ export async function POST(
     const resolutionNote = String(body.resolutionNote ?? "");
     if (resolutionNote.length > 2000)
       throw new AppError("INVALID_NOTE", "resolutionNote 最多 2000 个字符", 422);
+    const previous = getDb()
+      .prepare(
+        "SELECT id,revision FROM manual_review_adjudications WHERE sample_id=? ORDER BY revision DESC LIMIT 1",
+      )
+      .get(sampleId) as { id: string; revision: number } | undefined;
     const resolutionHash = sha256(canonicalize({ sampleId, verdict, resolutionNote }));
     const adjudicationId = id("adjudication");
     getDb()
       .prepare(
-        "INSERT INTO manual_review_adjudications(id,sample_id,adjudicated_verdict,resolution_note,resolution_hash,revision,status,proposed_by,proposed_at,is_current) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO manual_review_adjudications(id,sample_id,adjudicated_verdict,resolution_note,resolution_hash,revision,supersedes_adjudication_id,status,proposed_by,proposed_at,is_current) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
       )
       .run(
         adjudicationId,
@@ -50,7 +55,8 @@ export async function POST(
         verdict,
         resolutionNote,
         resolutionHash,
-        1,
+        previous ? previous.revision + 1 : 1,
+        previous?.id ?? null,
         "proposed",
         session.user.role,
         new Date().toISOString(),

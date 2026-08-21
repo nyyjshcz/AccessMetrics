@@ -74,13 +74,27 @@ export function persistRunScores(runId: string) {
     const exact = exactBreakdown(opportunities);
     const value = (score: typeof exact.overall) =>
       score ? { num: Number(score.numerator), den: Number(score.denominator) } : { num: 0, den: 0 };
+    const displayFields = (score: typeof exact.overall) => {
+      const display = roundHalfUpTenths(score);
+      return {
+        score: display,
+        tenths: display === null ? null : Math.round(display * 10),
+        numerator: score ? Number(score.numerator) : null,
+        denominator: score ? Number(score.denominator) : null,
+      };
+    };
     const all = value(exact.overall),
       p = value(exact.perceivable),
       o = value(exact.operable),
       u = value(exact.understandable),
       r = value(exact.robust);
+    const allFields = displayFields(exact.overall),
+      pFields = displayFields(exact.perceivable),
+      oFields = displayFields(exact.operable),
+      uFields = displayFields(exact.understandable),
+      rFields = displayFields(exact.robust);
     db.prepare(
-      "INSERT OR REPLACE INTO page_scores(id,run_id,page_id,perceivable_num,perceivable_den,operable_num,operable_den,understandable_num,understandable_den,robust_num,robust_den,overall_num,overall_den,weighted_defects,total_violations,model_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT OR REPLACE INTO page_scores(id,run_id,page_id,perceivable_num,perceivable_den,operable_num,operable_den,understandable_num,understandable_den,robust_num,robust_den,overall_num,overall_den,weighted_defects,total_violations,model_version,total_score,total_score_tenths,total_numerator,total_denominator,perceivable_score,perceivable_score_tenths,perceivable_numerator,perceivable_denominator,operable_score,operable_score_tenths,operable_numerator,operable_denominator,understandable_score,understandable_score_tenths,understandable_numerator,understandable_denominator,robust_score,robust_score_tenths,robust_numerator,robust_denominator,score_details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     ).run(
       `ps_${runId}_${row.page_id}`,
       runId,
@@ -98,19 +112,55 @@ export function persistRunScores(runId: string) {
       opportunities.reduce((sum, item) => sum + (item.passed ? 0 : impactWeight(item.impact)), 0),
       opportunities.filter((item) => !item.passed).length,
       "accesscheck-score-v1",
+      allFields.score,
+      allFields.tenths,
+      allFields.numerator,
+      allFields.denominator,
+      pFields.score,
+      pFields.tenths,
+      pFields.numerator,
+      pFields.denominator,
+      oFields.score,
+      oFields.tenths,
+      oFields.numerator,
+      oFields.denominator,
+      uFields.score,
+      uFields.tenths,
+      uFields.numerator,
+      uFields.denominator,
+      rFields.score,
+      rFields.tenths,
+      rFields.numerator,
+      rFields.denominator,
+      JSON.stringify(serializeExactBreakdown(exact)),
+      new Date().toISOString(),
     );
   }
   const runOpportunities = loadRunOpportunities(runId);
   const runExact = exactBreakdown(runOpportunities);
   const value = (score: typeof runExact.overall) =>
     score ? { num: Number(score.numerator), den: Number(score.denominator) } : { num: 0, den: 0 };
+  const displayFields = (score: typeof runExact.overall) => {
+    const display = roundHalfUpTenths(score);
+    return {
+      score: display,
+      tenths: display === null ? null : Math.round(display * 10),
+      numerator: score ? Number(score.numerator) : null,
+      denominator: score ? Number(score.denominator) : null,
+    };
+  };
   const all = value(runExact.overall),
     p = value(runExact.perceivable),
     o = value(runExact.operable),
     u = value(runExact.understandable),
     r = value(runExact.robust);
+  const allFields = displayFields(runExact.overall),
+    pFields = displayFields(runExact.perceivable),
+    oFields = displayFields(runExact.operable),
+    uFields = displayFields(runExact.understandable),
+    rFields = displayFields(runExact.robust);
   db.prepare(
-    "INSERT OR REPLACE INTO site_scores(id,run_id,perceivable_num,perceivable_den,operable_num,operable_den,understandable_num,understandable_den,robust_num,robust_den,overall_num,overall_den,page_count,model_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT OR REPLACE INTO site_scores(id,run_id,perceivable_num,perceivable_den,operable_num,operable_den,understandable_num,understandable_den,robust_num,robust_den,overall_num,overall_den,page_count,model_version,total_score,total_score_tenths,total_numerator,total_denominator,perceivable_score,perceivable_score_tenths,perceivable_numerator,perceivable_denominator,operable_score,operable_score_tenths,operable_numerator,operable_denominator,understandable_score,understandable_score_tenths,understandable_numerator,understandable_denominator,robust_score,robust_score_tenths,robust_numerator,robust_denominator,score_details_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
   ).run(
     `ss_${runId}`,
     runId,
@@ -126,8 +176,41 @@ export function persistRunScores(runId: string) {
     all.den,
     runPages.length,
     "accesscheck-score-v1",
+    allFields.score,
+    allFields.tenths,
+    allFields.numerator,
+    allFields.denominator,
+    pFields.score,
+    pFields.tenths,
+    pFields.numerator,
+    pFields.denominator,
+    oFields.score,
+    oFields.tenths,
+    oFields.numerator,
+    oFields.denominator,
+    uFields.score,
+    uFields.tenths,
+    uFields.numerator,
+    uFields.denominator,
+    rFields.score,
+    rFields.tenths,
+    rFields.numerator,
+    rFields.denominator,
+    JSON.stringify(serializeExactBreakdown(runExact)),
+    new Date().toISOString(),
   );
   return buildRunScore(runId);
+}
+
+function serializeExactBreakdown(breakdown: ReturnType<typeof exactBreakdown>) {
+  return Object.fromEntries(
+    Object.entries(breakdown).map(([key, value]) => [
+      key,
+      value
+        ? { numerator: value.numerator.toString(), denominator: value.denominator.toString() }
+        : null,
+    ]),
+  );
 }
 export function buildRunScore(runId: string) {
   const opportunities = loadRunOpportunities(runId);

@@ -31,6 +31,8 @@ export interface AxeRuleResult {
   helpUrl: string;
   nodes: Array<{
     framePath?: string;
+    frameUrl?: string;
+    frameOriginRelation?: "top" | "same_origin" | "cross_origin";
     impact?: Impact | null;
     html: string;
     target: string[];

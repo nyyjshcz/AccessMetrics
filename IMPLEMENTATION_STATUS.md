@@ -9,7 +9,7 @@
 - 依赖基线与负面 fixture：Node 24.19.0、pnpm 11.19.0、Python 3.12.13、Next/Playwright/axe 精确版本检查。
 - 依赖预检会实际执行 `PYTHON_BIN`/系统 Python 并解析 `--version`；当前捆绑解释器为 Python 3.12.13，系统 Python 3.13.7 会按设计失败，不再信任伪造的 `PYTHON_VERSION`。
 - 依赖预检也会实际执行 pnpm（Windows 通过 `cmd.exe`，Unix 直接执行）并核对 11.19.0，不只检查 `package.json` 的声明。
-- SQLite 迁移 1–17：外键、WAL、job/page lease、恢复、幂等唯一键与索引、frame 覆盖、研究 campaign/freeze/export、人工 review/adjudication、门证据/outbox、发布 revision/CAS 字段、R5 双角色 artifact 会话、study export current 唯一约束、扫描时本地化 hash、frame 覆盖问题记录和 axe 运行时证据快照。
+- SQLite 迁移 1–21：外键、WAL、job/page lease、恢复、幂等唯一键与索引、frame 覆盖、研究 campaign/freeze/export、人工 review/adjudication、门证据/outbox、发布 revision/CAS 字段、R5 双角色 artifact 会话、study export current 唯一约束、扫描时本地化 hash、frame 覆盖问题记录和 axe 运行时证据快照；迁移 18–21 补齐按任务/运行追溯的页面身份、精确/展示分数字段、结果节点 frame 证据、评审当前版本唯一性，并重建旧版 pages 表以移除站点级 URL 唯一约束。
 - URL 安全、robots、同站 BFS、页面深度/资源过滤、Playwright + 本地 axe 四类结果、同源/跨源 frame 尝试、节点清理和非 HTML 失败记录。
 - WCAG 2.2 方法目录、axe 4.13.0 完整规则目录生成器、中文目录、独立黄金快照、节点/规则严重程度来源和 `accesscheck-score-v1` TypeScript/Python 参考实现；多原则规则只计一次总体机会并分别归入原则分项。
 - axe 目录已冻结为 105 条规则并补齐 WCAG 条款、原则、等级、是否进入 A/AA 评分及未映射原因；运行时不再依赖不完整的手写规则子集。中文规则目录已生成 105 条，未人工核对时明确保持 `ai_draft`。
@@ -44,13 +44,13 @@ pnpm contract:check
 pnpm typecheck
 pnpm lint
 pnpm format:check
-pnpm test:integration     # 3 files, 10 tests
+pnpm test:integration     # 3 files, 11 tests
 pnpm test:scoring-parity  # 4 files, 20 tests
-pnpm test                 # 7 files, 30 tests
+pnpm test                 # 7 files, 31 tests
 pnpm test:analysis
 pnpm build                # Next production build
 pnpm test:e2e             # 3 browser tests（核心页面 axe、匿名权限、完整 fixture 扫描/审核/发布/导出/撤下流程）
-pnpm test:all             # 上述依赖、静态检查、hygiene/handoff:check、30 个 Vitest 测试、Python 分析、构建与 3 个 E2E 总门
+pnpm test:all             # 上述依赖、静态检查、hygiene/handoff:check、31 个 Vitest 测试、Python 分析、构建与 3 个 E2E 总门
 pnpm project:status       # 输出 WAITING_EXTERNAL_INPUT，自动实现 ready
 pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部输入齐全
 ```

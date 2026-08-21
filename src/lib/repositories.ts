@@ -71,6 +71,8 @@ export function createScanJob(
     site_id: site.id,
     status: "queued",
     options_json: JSON.stringify(options),
+    max_pages: options.maxPages,
+    request_id: crypto.randomUUID(),
     requested_by: requestedBy ?? null,
     idempotency_key: idempotencyKey ?? null,
     submitted_url: submittedUrl ?? origin,
@@ -84,7 +86,7 @@ export function createScanJob(
   };
   getDb()
     .prepare(
-      "INSERT INTO scan_jobs(id,site_id,status,options_json,requested_by,idempotency_key,submitted_url,normalized_url,study_campaign_id,study_slot,study_candidate_id,study_replacement_rank,study_attempt_no,created_at) VALUES (@id,@site_id,@status,@options_json,@requested_by,@idempotency_key,@submitted_url,@normalized_url,@study_campaign_id,@study_slot,@study_candidate_id,@study_replacement_rank,@study_attempt_no,@created_at)",
+      "INSERT INTO scan_jobs(id,site_id,status,options_json,max_pages,request_id,requested_by,idempotency_key,submitted_url,normalized_url,study_campaign_id,study_slot,study_candidate_id,study_replacement_rank,study_attempt_no,created_at) VALUES (@id,@site_id,@status,@options_json,@max_pages,@request_id,@requested_by,@idempotency_key,@submitted_url,@normalized_url,@study_campaign_id,@study_slot,@study_candidate_id,@study_replacement_rank,@study_attempt_no,@created_at)",
     )
     .run(job);
   return { ...job, site };
@@ -121,11 +123,12 @@ export function createRun(job: any) {
         : null;
     })(),
     started_at: now(),
+    created_at: now(),
     status: "running",
   };
   getDb()
     .prepare(
-      "INSERT INTO scan_runs(id,job_id,site_id,scanner_version,axe_version,catalog_version,score_model_version,rule_catalog_hash,config_snapshot_json,viewport_json,user_agent,scan_time_localization_hash,started_at,status) VALUES (@id,@job_id,@site_id,@scanner_version,@axe_version,@catalog_version,@score_model_version,@rule_catalog_hash,@config_snapshot_json,@viewport_json,@user_agent,@scan_time_localization_hash,@started_at,@status)",
+      "INSERT INTO scan_runs(id,job_id,site_id,scanner_version,axe_version,catalog_version,score_model_version,rule_catalog_hash,config_snapshot_json,viewport_json,user_agent,scan_time_localization_hash,started_at,created_at,status) VALUES (@id,@job_id,@site_id,@scanner_version,@axe_version,@catalog_version,@score_model_version,@rule_catalog_hash,@config_snapshot_json,@viewport_json,@user_agent,@scan_time_localization_hash,@started_at,@created_at,@status)",
     )
     .run(run);
   return run;
@@ -133,23 +136,35 @@ export function createRun(job: any) {
 export function addDiscoveredPages(jobId: string, siteId: string, urls: string[]) {
   transaction((db) =>
     urls.forEach((url, index) => {
+      const existing = db
+        .prepare("SELECT id FROM job_pages WHERE job_id=? AND normalized_url=?")
+        .get(jobId, url) as { id: string } | undefined;
+      if (existing) return;
       const pageId = id("page");
+      const jobPageId = id("jobpage");
       db.prepare(
-        "INSERT OR IGNORE INTO pages(id,site_id,canonical_url,first_seen_at) VALUES (?,?,?,?)",
-      ).run(pageId, siteId, url, now());
-      const row = db
-        .prepare("SELECT id FROM pages WHERE site_id=? AND canonical_url=?")
-        .get(siteId, url) as any;
+        "INSERT INTO pages(id,site_id,canonical_url,normalized_url,requested_url,first_seen_at,created_at) VALUES (?,?,?,?,?,?,?)",
+      ).run(pageId, siteId, url, url, url, now(), now());
       db.prepare(
-        "INSERT OR IGNORE INTO job_pages(job_id,page_id,requested_url,normalized_url,discovery_order,status,created_at,updated_at) VALUES (?,?,?,?,?,'discovered',?,?)",
-      ).run(jobId, row.id, url, url, index, now(), now());
+        "INSERT INTO job_pages(id,job_id,page_id,requested_url,normalized_url,discovery_order,status,created_at,updated_at) VALUES (?,?,?,?,?,?, 'discovered',?,?)",
+      ).run(jobPageId, jobId, pageId, url, url, index, now(), now());
+      db.prepare("UPDATE pages SET job_page_id=? WHERE id=?").run(jobPageId, pageId);
     }),
   );
 }
 export function finishJob(jobId: string, status: string, error?: unknown) {
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? String((error as any).code)
+      : error
+        ? "JOB_FAILED"
+        : null;
+  const message = error instanceof Error ? error.message : error ? String(error) : null;
   getDb()
     .prepare("UPDATE scan_jobs SET status=?,finished_at=?,error_message=? WHERE id=?")
-    .run(status, now(), error ? String(error) : null, jobId);
+    .run(status, now(), message ? message.slice(0, 1000) : null, jobId);
+  if (code)
+    getDb().prepare("UPDATE scan_jobs SET error_code=? WHERE id=?").run(code.slice(0, 128), jobId);
 }
 export function finishRun(
   runId: string,
@@ -217,9 +232,16 @@ export function savePageResult(runId: string, pageId: string, result: any) {
     "INSERT INTO rule_results(id,run_id,page_id,rule_id,result_type,impact,description,help,help_url,tags_json,node_count,raw_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
   );
   const nodeInsert = db.prepare(
-    "INSERT INTO result_nodes(id,rule_result_id,ordinal,target_json,html_sanitized,failure_summary,any_json,all_json,none_json) VALUES (?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO result_nodes(id,rule_result_id,ordinal,frame_path_json,frame_url,frame_origin_relation,target_json,html_sanitized,failure_summary,any_json,all_json,none_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
   );
   transaction(() => {
+    // A lease-expiry retry reuses the same run/page identity.  Replace the
+    // previous attempt atomically so a completed page can never accumulate
+    // duplicate rule facts or fail on the result unique constraint.
+    db.prepare(
+      "DELETE FROM result_nodes WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id=? AND page_id=?)",
+    ).run(runId, pageId);
+    db.prepare("DELETE FROM rule_results WHERE run_id=? AND page_id=?").run(runId, pageId);
     db.prepare(
       "UPDATE pages SET run_id=?,requested_url=?,final_url=?,normalized_url=?,title=?,http_status=?,content_type=?,load_ms=?,scan_status='success',frame_total=?,same_origin_frame_total=?,cross_origin_frame_total=?,frame_tested_total=?,frame_skipped_total=?,frame_error_count=?,frame_coverage_status=?,frame_coverage_issues_json=?,axe_timestamp=?,axe_test_engine_json=?,axe_test_environment_json=?,axe_tool_options_json=? WHERE id=?",
     ).run(
@@ -262,7 +284,17 @@ export function savePageResult(runId: string, pageId: string, result: any) {
                 : "inapplicable";
         const catalog = catalogEntryWithTags(rule.id, rule.tags ?? []);
         const rr = id("rr");
-        const rawForStorage = resultType === "pass" ? { ...rule, nodes: undefined } : rule;
+        const rawForStorage =
+          resultType === "pass"
+            ? { ...rule, nodes: undefined }
+            : {
+                ...rule,
+                nodes: (rule.nodes ?? []).map((node: any) => ({
+                  ...node,
+                  frameUrl: sanitizeFrameUrl(node.frameUrl),
+                  html: typeof node.html === "string" ? node.html.slice(0, 300) : "",
+                })),
+              };
         insert.run(
           rr,
           runId,
@@ -291,13 +323,15 @@ export function savePageResult(runId: string, pageId: string, result: any) {
           rule.nodes.forEach((node: any, index: number) => {
             const nodeId = id("node");
             const targetJson = JSON.stringify(node.target);
-            const targetHash = sha256(
-              canonicalize({ pageId, ruleId: rule.id, target: node.target }),
-            );
+            const framePath = node.framePath ? [String(node.framePath)] : [];
+            const targetHash = sha256(canonicalize({ framePath, target: node.target }));
             nodeInsert.run(
               nodeId,
               rr,
               index,
+              JSON.stringify(framePath),
+              sanitizeFrameUrl(node.frameUrl),
+              node.frameOriginRelation ?? (framePath.length ? "same_origin" : "top"),
               targetJson,
               node.html,
               node.failureSummary ?? null,
@@ -318,9 +352,8 @@ export function savePageResult(runId: string, pageId: string, result: any) {
                       ? 1
                       : null;
             db.prepare(
-              "UPDATE result_nodes SET frame_path_json=?,target_hash=?,impact=?,effective_impact=?,severity_weight=?,severity_source=?,html_excerpt=?,checks_json=?,created_at=? WHERE id=?",
+              "UPDATE result_nodes SET target_hash=?,impact=?,effective_impact=?,severity_weight=?,severity_source=?,html_excerpt=?,checks_json=?,created_at=? WHERE id=?",
             ).run(
-              JSON.stringify(node.framePath ? [node.framePath] : []),
               targetHash,
               node.impact ?? null,
               effectiveImpact,
@@ -340,6 +373,18 @@ export function savePageResult(runId: string, pageId: string, result: any) {
           });
       }
   });
+}
+
+function sanitizeFrameUrl(value: unknown) {
+  if (typeof value !== "string" || !value) return null;
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    return url.toString().slice(0, 2048);
+  } catch {
+    return null;
+  }
 }
 
 export function savePageFailure(runId: string, pageId: string, error: unknown) {

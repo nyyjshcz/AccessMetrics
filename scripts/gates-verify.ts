@@ -1,8 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
-import { listEvidenceFiles, verifyApprovedGate } from "./gate-utils";
+import { canonicalize, sha256 } from "../src/lib/canonical";
+import { listEvidenceFiles, listGateFiles, verifyApprovedGate } from "./gate-utils";
 import { positionalArgs } from "./cli-args";
 const argv = process.argv.slice(2);
+if (argv.includes("--help")) {
+  console.log("usage: pnpm gates:verify -- --evidence-path <absolute-private-gates-directory>");
+  process.exit(0);
+}
 const flagIndex = argv.indexOf("--evidence-path");
 const providedRoot =
   flagIndex >= 0
@@ -62,13 +67,72 @@ const fileCount = ["R1", "R2", "R3", "R4", "R5"].reduce((total, gate) => {
     return total;
   }
 }, 0);
+let r4EvidenceBundleHash: string | null = null;
+let fullGateBundleHash: string | null = null;
+try {
+  const r4Files = listGateFiles(root, ["R1", "R2", "R3", "R4"]).map((file) => ({
+    path: file.path,
+    sha256: file.sha256,
+  }));
+  r4EvidenceBundleHash = sha256(canonicalize(r4Files));
+  const r5Files = listEvidenceFiles(path.join(root, "R5")).map((file) => ({
+    path: file.path,
+    sha256: file.sha256,
+  }));
+  const r5Bundle = gateResults.R5?.files.find((file) => file.path === "r5-artifact-bundle.json");
+  let bundleHash: string | null = null;
+  if (r5Bundle) {
+    try {
+      const bundle = JSON.parse(r5Bundle.bytes.toString("utf8")) as { bundleHash?: unknown };
+      bundleHash = typeof bundle.bundleHash === "string" ? bundle.bundleHash : null;
+    } catch {
+      bundleHash = null;
+    }
+  }
+  if (gateResults.R5 && verified.R5 && bundleHash) {
+    fullGateBundleHash = sha256(
+      canonicalize({
+        r4: r4EvidenceBundleHash,
+        r5: r5Files,
+        r5ArtifactBundleHash: bundleHash,
+        r5Receipts: gateResults.R5.selected.map(({ receipt }) => receipt.receiptHash).sort(),
+      }),
+    );
+  }
+} catch (error) {
+  errors.hashes = error instanceof Error ? error.message : String(error);
+}
+const indexPath = path.join(process.cwd(), "docs", "gate-attestation-index.json");
+if (fs.existsSync(indexPath)) {
+  try {
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf8")) as Record<string, unknown>;
+    if (
+      index.throughGate === "R4" &&
+      r4EvidenceBundleHash &&
+      index.r4EvidenceBundleHash !== r4EvidenceBundleHash
+    )
+      errors.index = "公开 gate index 的 R4 hash 与当前证据不一致";
+    if (
+      index.throughGate === "R5" &&
+      fullGateBundleHash &&
+      index.fullGateBundleHash !== fullGateBundleHash
+    )
+      errors.index = "公开 gate index 的 full hash 与当前证据不一致";
+    if (index.throughGate === "R5" && index.r5Status !== "passed")
+      errors.index = "公开 gate index 标记的 R5 状态不是 passed";
+  } catch {
+    errors.index = "公开 gate index 不是有效 JSON";
+  }
+}
 console.log(
   JSON.stringify(
     {
       root,
-      verified: missing.length === 0,
+      verified: missing.length === 0 && Object.keys(errors).length === 0,
       missing,
       errors,
+      r4EvidenceBundleHash,
+      fullGateBundleHash,
       verifiedGates: verified,
       fileCount,
       checkedAt: new Date().toISOString(),

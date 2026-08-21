@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { canonicalize, sha256 } from "../src/lib/canonical";
 import { git } from "./release-utils";
-import { requireApprovedRoleReceipts, listGateFiles, listEvidenceFiles } from "./gate-utils";
+import { verifyApprovedGate, listGateFiles, listEvidenceFiles } from "./gate-utils";
 
 if (process.argv.includes("--help")) {
   console.log(
@@ -21,13 +21,14 @@ if (index.throughGate !== "R4" || index.r5Status === "passed")
 if (!/^[a-f0-9]{40}$/.test(commit) || git("rev-parse", commit) !== commit)
   throw new Error("--rc-commit must be an existing full commit SHA");
 const r4Gates = ["R1", "R2", "R3", "R4"] as const;
+for (const gate of r4Gates) verifyApprovedGate(evidencePath, gate);
 const r4Hash = sha256(
   canonicalize(
     listGateFiles(evidencePath, r4Gates).map((file) => ({ path: file.path, sha256: file.sha256 })),
   ),
 );
 if (index.r4EvidenceBundleHash !== r4Hash) throw new Error("R1-R4 evidence changed after indexing");
-const r5Verified = requireApprovedRoleReceipts(evidencePath, "R5");
+const r5Verified = verifyApprovedGate(evidencePath, "R5");
 const r5Receipts = r5Verified.selected.map(({ receipt }) => receipt);
 if (r5Receipts.some((receipt) => receipt.boundCommit !== commit))
   throw new Error("both R5 receipts must bind the exact rc commit");

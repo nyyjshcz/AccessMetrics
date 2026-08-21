@@ -79,7 +79,9 @@ function makeMarkdown(kind: "research" | "federation", data: ReportData, reportD
         `| ${site} | ${score.exact ?? "N/A"} | ${score.display ?? "N/A"} | ${rank[site] ?? "N/A"} |`,
     )
     .join("\n");
-  return `# ${title}\n\n> 候选/最终报告，由冻结的结构化数据生成。\n\n## 重要边界\n\n本项目仅评价 axe-core 能够自动判断的网页无障碍检查项。分数不等同于完整人工审计、官方 WCAG 合规认证或“符合 WCAG 的百分比”。需要人工判断的项目会单独列出。\n\n## 数据绑定\n\n- report-data SHA-256：\`${reportDataHash}\`\n- 生成状态：\`${String(data.status ?? "provided-data")}\`\n- 本报告不得脱离对应 manifest、研究冻结和人工门证据单独引用。\n\n## 站点分数\n\n| 站点 | 精确分数 | 展示分数 | 排名 |\n|---|---:|---:|---:|\n${rows || "| （冻结数据未提供站点） | N/A | N/A | N/A |"}\n\n## 方法与局限\n\n评分、四项原则、问题严重程度、人工抽查、失败页面和敏感性分析均以冻结导出和对应版本快照为准。没有真实冻结数据时，生成器拒绝把模板或 fixture 当作正式结论。\n\n## 结论\n\n本节必须在 R4 人工复核后由真实数据重新生成；执行 AI 不代填结论、单位、姓名、日期或接收状态。\n`;
+  const exportId = String(data.exportId ?? "") || "MISSING";
+  const manifestHash = String(data.manifestHash ?? "") || "MISSING";
+  return `# ${title}\n\n> 候选/最终报告，由冻结的结构化数据生成。\n\n## 重要边界\n\n本项目仅评价 axe-core 能够自动判断的网页无障碍检查项。分数不等同于完整人工审计、官方 WCAG 合规认证或“符合 WCAG 的百分比”。需要人工判断的项目会单独列出。\n\n## 数据绑定\n\n- report-data SHA-256：\`${reportDataHash}\`\n- final export-id：\`${exportId}\`\n- final manifest SHA-256：\`${manifestHash}\`\n- 生成状态：\`${String(data.status ?? "provided-data")}\`\n- 本报告不得脱离对应 manifest、研究冻结和人工门证据单独引用。\n\n## 站点分数\n\n| 站点 | 精确分数 | 展示分数 | 排名 |\n|---|---:|---:|---:|\n${rows || "| （冻结数据未提供站点） | N/A | N/A | N/A |"}\n\n## 方法与局限\n\n评分、四项原则、问题严重程度、人工抽查、失败页面和敏感性分析均以冻结导出和对应版本快照为准。没有真实冻结数据时，生成器拒绝把模板或 fixture 当作正式结论。\n\n## 结论\n\n本节必须在 R4 人工复核后由真实数据重新生成；执行 AI 不代填结论、单位、姓名、日期或接收状态。\n`;
 }
 
 async function main() {

@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import Database from "better-sqlite3";
 import { canonicalize, sha256 } from "../src/lib/canonical";
-import { listEvidenceFiles, listGateFiles, requireApprovedRoleReceipts } from "./gate-utils";
+import { listEvidenceFiles, listGateFiles, verifyApprovedGate } from "./gate-utils";
 import { args, git, writeJsonAtomic } from "./release-utils";
 
 const options = args();
@@ -162,7 +162,9 @@ function verifyGateEvidence(evidenceRoot: string) {
   );
   if (actualR4 !== options["expected-r4-evidence-bundle-sha256"])
     addError("R1-R4 evidence bundle hash 不一致");
-  const r5 = requireApprovedRoleReceipts(evidenceRoot, "R5");
+  for (const gate of ["R1", "R2", "R3", "R4"] as const)
+    verifyApprovedGate(evidenceRoot, gate, options["publication-db"]);
+  const r5 = verifyApprovedGate(evidenceRoot, "R5", options["publication-db"]);
   for (const { receipt } of r5.selected)
     if (receipt.boundCommit !== rcCommit) addError("R5 receipt 未绑定准确 rcCommit");
   const bundleFile = r5.files.find(
@@ -302,8 +304,14 @@ function runCleanClone() {
           options["final-export-path"],
           "--expected-manifest-sha256",
           options["expected-manifest-sha256"],
+          "--report-data",
+          path.join(clone, "analysis", "outputs", "report-data.json"),
+          "--reports-root",
+          path.join(clone, "analysis", "outputs"),
           "--gate-evidence-path",
           options["gate-evidence-path"],
+          "--publication-db",
+          options["publication-db"],
           "--expected-r4-evidence-bundle-sha256",
           options["expected-r4-evidence-bundle-sha256"],
           "--expected-full-gate-bundle-sha256",

@@ -60,6 +60,7 @@ export function migrate() {
     migration019,
     migration020,
     migration021,
+    migration022,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -689,6 +690,47 @@ function migration021(db: Database.Database) {
       ON pages(run_id, normalized_url) WHERE run_id IS NOT NULL AND normalized_url IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_job_page_unique
       ON pages(job_page_id) WHERE job_page_id IS NOT NULL;
+  `);
+}
+
+function migration022(db: Database.Database) {
+  const addColumn = (column: string, definition: string) => {
+    const present = (db.prepare("PRAGMA table_info(r5_sessions)").all() as any[]).some(
+      (row) => row.name === column,
+    );
+    if (!present) db.exec(`ALTER TABLE r5_sessions ADD COLUMN ${column} ${definition}`);
+  };
+  addColumn("exercise_revision", "INTEGER NOT NULL DEFAULT 0");
+  addColumn("exercise_status", "TEXT NOT NULL DEFAULT 'not_started'");
+  addColumn("exercise_bound_tree_hash", "TEXT");
+  addColumn("exercise_environment_hash", "TEXT");
+  addColumn("exercise_index_hash", "TEXT");
+  addColumn("exercise_catalog_hash", "TEXT");
+  addColumn("exercise_root", "TEXT");
+  addColumn("exercise_steps_json", "TEXT");
+  addColumn("exercise_observations_json", "TEXT");
+  addColumn("exercise_artifact_path", "TEXT");
+  addColumn("understanding_artifact_path", "TEXT");
+  addColumn("handoff_artifact_path", "TEXT");
+  addColumn("understanding_revision", "INTEGER NOT NULL DEFAULT 0");
+  addColumn("understanding_status", "TEXT NOT NULL DEFAULT 'not_started'");
+  addColumn("handoff_revision", "INTEGER NOT NULL DEFAULT 0");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS r5_artifact_outbox (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES r5_sessions(id) ON DELETE RESTRICT,
+      kind TEXT NOT NULL CHECK(kind IN ('exercise','understanding','handoff')),
+      target_relpath TEXT NOT NULL UNIQUE,
+      artifact_json TEXT NOT NULL,
+      expected_file_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      written_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_r5_artifact_outbox_status
+      ON r5_artifact_outbox(status,created_at);
   `);
 }
 

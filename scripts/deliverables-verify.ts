@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { canonicalize, sha256 } from "../src/lib/canonical";
 import { scanPublicationDirectory } from "../src/lib/privacy";
-import { listGateFiles } from "./gate-utils";
+import { listEvidenceFiles, listGateFiles, verifyApprovedGate } from "./gate-utils";
 
 const options: Record<string, string> = {};
 for (let index = 2; index < process.argv.length; index++) {
@@ -12,7 +12,7 @@ for (let index = 2; index < process.argv.length; index++) {
 }
 if (process.argv.includes("--help")) {
   console.log(
-    "usage: pnpm deliverables:verify -- --final-export-path <absolute-dir> --expected-manifest-sha256 <sha256> [--report-data <absolute-json>] [--reports-root <absolute-dir>] [--gate-evidence-path <absolute-dir>] [--expected-r4-evidence-bundle-sha256 <sha256>] [--expected-full-gate-bundle-sha256 <sha256>]",
+    "usage: pnpm deliverables:verify -- --final-export-path <absolute-dir> --expected-manifest-sha256 <sha256> --report-data <absolute-json> --reports-root <absolute-dir> --gate-evidence-path <absolute-dir> --expected-r4-evidence-bundle-sha256 <sha256> --expected-full-gate-bundle-sha256 <sha256> [--publication-db <absolute-db>]",
   );
   process.exit(0);
 }
@@ -20,6 +20,14 @@ if (process.argv.includes("--help")) {
 const root = options["final-export-path"];
 if (!root || !path.isAbsolute(root) || !options["expected-manifest-sha256"])
   throw new Error("需要绝对 final-export-path 和 expected-manifest-sha256");
+for (const key of [
+  "report-data",
+  "reports-root",
+  "gate-evidence-path",
+  "expected-r4-evidence-bundle-sha256",
+  "expected-full-gate-bundle-sha256",
+])
+  if (!options[key]) throw new Error(`缺少 --${key}`);
 const resolvedRoot = path.resolve(root);
 const manifestPath = path.join(resolvedRoot, "manifest.json");
 const digestPath = path.join(resolvedRoot, "manifest.sha256");
@@ -57,9 +65,9 @@ if (!privacy.passed)
   throw new Error(`隐私检查失败: ${privacy.findings.map((item) => item.ruleId).join(",")}`);
 
 const reportDataPath = options["report-data"];
-if (reportDataPath) {
-  if (!path.isAbsolute(reportDataPath) || !fs.existsSync(reportDataPath))
-    throw new Error("report-data 必须是存在的绝对路径");
+if (!reportDataPath || !path.isAbsolute(reportDataPath) || !fs.existsSync(reportDataPath))
+  throw new Error("report-data 必须是存在的绝对路径");
+{
   const reportData = JSON.parse(fs.readFileSync(reportDataPath, "utf8")) as Record<string, unknown>;
   const requiredFields = [
     "schemaVersion",
@@ -111,37 +119,74 @@ if (reportDataPath) {
     )
       throw new Error("manualValidation 不得包含总体准确率或全市外推字段");
   }
-}
-
-const reportsRoot = options["reports-root"];
-if (reportsRoot) {
-  if (!path.isAbsolute(reportsRoot) || !fs.existsSync(reportsRoot))
-    throw new Error("reports-root 必须是存在的绝对路径");
-  const reportFiles = fs
-    .readdirSync(reportsRoot)
-    .filter((file) => /\.(?:md|docx|pdf)$/i.test(file));
-  if (!reportFiles.some((file) => file.endsWith(".md")))
-    throw new Error("报告目录缺少 Markdown 报告");
-  for (const file of reportFiles) {
-    const bytes = fs.readFileSync(path.join(reportsRoot, file));
-    if (file.endsWith(".md") && !bytes.toString("utf8").includes(manifestHash))
-      throw new Error(`报告未引用 final manifest hash: ${file}`);
+  const reportDataRoot = path.dirname(reportDataPath);
+  const charts = Array.isArray(reportData.charts) ? reportData.charts : [];
+  for (const chart of charts) {
+    if (!chart || typeof chart !== "object" || Array.isArray(chart))
+      throw new Error("report-data charts 条目无效");
+    const item = chart as Record<string, unknown>;
+    if (typeof item.path !== "string" || path.isAbsolute(item.path))
+      throw new Error("report-data chart path 不安全");
+    const chartPath = path.resolve(reportDataRoot, item.path);
+    if (!chartPath.startsWith(`${reportDataRoot}${path.sep}`) || !fs.existsSync(chartPath))
+      throw new Error(`report-data chart 缺失: ${item.path}`);
+    if (item.sha256 !== sha256(fs.readFileSync(chartPath)))
+      throw new Error(`report-data chart hash 不一致: ${item.path}`);
   }
 }
 
-if (options["gate-evidence-path"]) {
-  const evidenceRoot = options["gate-evidence-path"];
-  if (!path.isAbsolute(evidenceRoot)) throw new Error("gate-evidence-path 必须是绝对路径");
-  const r4 = listGateFiles(evidenceRoot, ["R1", "R2", "R3", "R4"]);
-  const r4Hash = sha256(canonicalize(r4.map((file) => ({ path: file.path, sha256: file.sha256 }))));
-  if (r4Hash !== options["expected-r4-evidence-bundle-sha256"])
-    throw new Error("R4 evidence bundle hash mismatch");
-  if (
-    options["expected-full-gate-bundle-sha256"] &&
-    !/^[a-f0-9]{64}$/.test(options["expected-full-gate-bundle-sha256"])
-  )
-    throw new Error("full gate bundle hash 无效");
+const reportsRoot = options["reports-root"];
+if (!reportsRoot || !path.isAbsolute(reportsRoot) || !fs.existsSync(reportsRoot))
+  throw new Error("reports-root 必须是存在的绝对路径");
+const reportFiles: string[] = [];
+const collectReports = (directory: string) => {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const full = path.join(directory, entry.name);
+    if (entry.isDirectory()) collectReports(full);
+    else if (entry.isFile() && /\.(?:md|docx|pdf)$/i.test(entry.name)) reportFiles.push(full);
+  }
+};
+collectReports(reportsRoot);
+const markdownReports = reportFiles.filter((file) => file.toLowerCase().endsWith(".md"));
+if (markdownReports.length < 2) throw new Error("报告目录至少需要两份 Markdown 最终报告");
+for (const file of markdownReports) {
+  const text = fs.readFileSync(file, "utf8");
+  if (!text.includes(manifestHash) || !text.includes(manifest.exportId))
+    throw new Error(`报告未引用 final export/manifest hash: ${path.relative(reportsRoot, file)}`);
 }
+
+const evidenceRoot = options["gate-evidence-path"];
+if (!evidenceRoot || !path.isAbsolute(evidenceRoot))
+  throw new Error("gate-evidence-path 必须是绝对路径");
+const publicationDb = options["publication-db"] ?? process.env.DATABASE_URL;
+for (const gate of ["R1", "R2", "R3", "R4", "R5"] as const)
+  verifyApprovedGate(evidenceRoot, gate, publicationDb);
+const r4 = listGateFiles(evidenceRoot, ["R1", "R2", "R3", "R4"]);
+const r4Hash = sha256(canonicalize(r4.map((file) => ({ path: file.path, sha256: file.sha256 }))));
+if (r4Hash !== options["expected-r4-evidence-bundle-sha256"])
+  throw new Error("R4 evidence bundle hash mismatch");
+const r5Files = listEvidenceFiles(path.join(evidenceRoot, "R5")).map((file) => ({
+  path: file.path,
+  sha256: file.sha256,
+}));
+const bundleFile = listEvidenceFiles(path.join(evidenceRoot, "R5")).find(
+  (file) => file.path === "r5-artifact-bundle.json",
+);
+if (!bundleFile) throw new Error("R5 common artifact bundle missing");
+const bundle = JSON.parse(bundleFile.bytes.toString("utf8")) as { bundleHash?: string };
+if (!bundle.bundleHash) throw new Error("R5 common artifact bundle hash missing");
+const fullHash = sha256(
+  canonicalize({
+    r4: r4Hash,
+    r5: r5Files,
+    r5ArtifactBundleHash: bundle.bundleHash,
+    r5Receipts: verifyApprovedGate(evidenceRoot, "R5", publicationDb)
+      .selected.map(({ receipt }) => receipt.receiptHash)
+      .sort(),
+  }),
+);
+if (fullHash !== options["expected-full-gate-bundle-sha256"])
+  throw new Error("full gate bundle hash mismatch");
 
 const files = fs.readdirSync(resolvedRoot, { recursive: true }).map(String).sort();
 console.log(

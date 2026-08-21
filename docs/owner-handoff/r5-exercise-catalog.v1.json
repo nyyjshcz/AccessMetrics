@@ -1,1 +1,39 @@
-{"schemaVersion":"r5-exercise-catalog-v1","exercises":["dependency-preflight","fixture-scan","worker-recovery","export-manifest","backup-restore","publication-fail-closed"]}
+{
+  "schemaVersion": "r5-exercise-catalog-v1",
+  "runner": "scripts/r5-fixed-exercise.mjs",
+  "timeoutMs": 60000,
+  "maxOutputBytes": 1048576,
+  "exercises": [
+    {
+      "id": "dependency-preflight",
+      "commandId": "r5-fixed-dependency-preflight",
+      "cwd": ".",
+      "required": true
+    },
+    { "id": "fixture-scan", "commandId": "r5-fixed-fixture-scan", "cwd": ".", "required": true },
+    {
+      "id": "worker-recovery",
+      "commandId": "r5-fixed-worker-recovery",
+      "cwd": ".",
+      "required": true
+    },
+    {
+      "id": "export-manifest",
+      "commandId": "r5-fixed-export-manifest",
+      "cwd": ".",
+      "required": true
+    },
+    {
+      "id": "backup-restore",
+      "commandId": "r5-fixed-backup-restore",
+      "cwd": ".",
+      "required": true
+    },
+    {
+      "id": "publication-fail-closed",
+      "commandId": "r5-fixed-publication-fail-closed",
+      "cwd": ".",
+      "required": true
+    }
+  ]
+}

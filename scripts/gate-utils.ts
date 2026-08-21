@@ -173,8 +173,10 @@ function sortedArtifacts(artifacts: GateReceipt["artifacts"]) {
 function verifyDatabaseBindings(
   gate: Gate,
   selected: Array<{ file: EvidenceFile; receipt: GateReceipt }>,
+  databasePathOverride?: string,
 ) {
-  const configuredPath = process.env.DATABASE_URL ?? path.join("data", "accesscheck.db");
+  const configuredPath =
+    databasePathOverride ?? process.env.DATABASE_URL ?? path.join("data", "accesscheck.db");
   const databasePath = path.resolve(process.cwd(), configuredPath);
   if (!fs.existsSync(databasePath)) throw new Error(`database is missing: ${databasePath}`);
   let db: Database.Database;
@@ -243,7 +245,7 @@ function verifyDatabaseBindings(
  * must still exist with the recorded hash, and R5 must contain one common,
  * self-hashed six-artifact bundle bound by both roles.
  */
-export function verifyApprovedGate(root: string, gate: Gate) {
+export function verifyApprovedGate(root: string, gate: Gate, databasePathOverride?: string) {
   const result = requireApprovedRoleReceipts(root, gate);
   const files = new Map(result.files.map((file) => [file.path, file]));
   for (const { file, receipt } of result.selected) {
@@ -257,7 +259,7 @@ export function verifyApprovedGate(root: string, gate: Gate) {
         throw new Error(`${gate} ${receipt.role} artifact hash mismatch: ${artifact.logicalId}`);
     }
   }
-  verifyDatabaseBindings(gate, result.selected);
+  verifyDatabaseBindings(gate, result.selected, databasePathOverride);
   if (gate !== "R5") return result;
 
   const bundleFile = files.get("r5-artifact-bundle.json");
@@ -287,7 +289,7 @@ export function verifyApprovedGate(root: string, gate: Gate) {
     artifactHashes.some(
       (value) =>
         typeof value !== "string" ||
-        !/^(computer_lead|math_lead)\/[^/]+\/(exercise|understanding|handoff)\.json:[a-f0-9]{64}$/.test(
+        !/^(computer_lead|math_lead)\/[^/]+\/(exercise|understanding|handoff)\.r[1-9][0-9]*\.json:[a-f0-9]{64}$/.test(
           value,
         ),
     ) ||

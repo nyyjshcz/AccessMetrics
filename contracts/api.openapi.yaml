@@ -135,22 +135,82 @@ paths:
           application/json:
             schema:
               type: object
-              required: [commit, commands, result]
+              required: [rcCommit, r1R4IndexHash, exerciseCatalogHash]
               additionalProperties: false
               properties:
-                commit: { type: string, pattern: "^[a-f0-9]{40}$" }
-                commands: { type: array, minItems: 6, maxItems: 6 }
-                result: { type: string, minLength: 20 }
+                rcCommit: { type: string, pattern: "^[a-f0-9]{40}$" }
+                r1R4IndexHash: { type: string, pattern: "^[a-f0-9]{64}$" }
+                exerciseCatalogHash: { type: string, pattern: "^[a-f0-9]{64}$" }
       responses:
-        "201": { description: fixed exercise artifact recorded }
+        "201": { description: server-created clean-clone exercise draft }
+  /api/reviewer/r5/exercises/{exerciseId}/steps/{stepId}/run:
+    post:
+      parameters:
+        - { name: exerciseId, in: path, required: true, schema: { type: string } }
+        - { name: stepId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expectedRevision, observation]
+              additionalProperties: false
+              properties:
+                expectedRevision: { type: integer, minimum: 1 }
+                observation: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        "200": { description: fixed catalog command result with output hashes }
+  /api/reviewer/r5/exercises/{exerciseId}/finalize:
+    post:
+      parameters:
+        - { name: exerciseId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId, expectedRevision, reauthReviewToken]
+              additionalProperties: false
+      responses:
+        "201": { description: immutable passed exercise artifact }
   /api/reviewer/r5/understanding-checks:
     post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rcCommit, r1R4IndexHash, questionSetHash, answers]
+              additionalProperties: false
+              properties:
+                rcCommit: { type: string, pattern: "^[a-f0-9]{40}$" }
+                r1R4IndexHash: { type: string, pattern: "^[a-f0-9]{64}$" }
+                questionSetHash: { type: string, pattern: "^[a-f0-9]{64}$" }
+                answers: { type: array, minItems: 6, maxItems: 6 }
       responses:
-        "201": { description: server-scored understanding artifact recorded }
+        "201": { description: server-scored understanding draft }
+  /api/reviewer/r5/understanding-checks/{sessionId}/finalize:
+    post:
+      parameters:
+        - { name: sessionId, in: path, required: true, schema: { type: string } }
+      responses:
+        "201": { description: immutable passed understanding artifact }
   /api/reviewer/r5/handoffs:
     post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                [rcCommit, r1R4IndexHash, handoffCatalogHash, confirmGateIds, reauthReviewToken]
+              additionalProperties: false
       responses:
-        "201": { description: handoff artifact recorded }
+        "201": { description: server-recomputed handoff artifact }
   /api/meta/build:
     get:
       responses:

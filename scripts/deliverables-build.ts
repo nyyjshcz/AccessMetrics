@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { verifyApprovedGate } from "./gate-utils";
 const options: Record<string, string> = {};
 for (let index = 2; index < process.argv.length; index++) {
   if (!process.argv[index].startsWith("--")) continue;
@@ -21,6 +22,8 @@ for (const key of ["report-data", "output-root", "evidence-root"])
 const marker = path.join(options["evidence-root"], "deliverables", exportId, "R4-PASSED");
 if (!fs.existsSync(marker))
   throw new Error("R4 candidate 未通过真人确认，拒绝生成 final deliverables");
+const evidenceGates = path.join(options["evidence-root"], "gates");
+verifyApprovedGate(evidenceGates, "R4", process.env.DATABASE_URL);
 if (!fs.existsSync(options["report-data"])) throw new Error("report-data 不存在，不能生成正式成果");
 const outputs = [];
 const tsx = path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");

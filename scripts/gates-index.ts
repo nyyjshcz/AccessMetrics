@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { canonicalize, sha256 } from "../src/lib/canonical";
-import { hashReceiptSet, requireApprovedRoleReceipts, listGateFiles } from "./gate-utils";
+import { hashReceiptSet, verifyApprovedGate, listGateFiles } from "./gate-utils";
 
 if (process.argv.includes("--help")) {
   console.log(
@@ -17,7 +17,7 @@ const receipts: Array<{ path: string; sha256: string }> = [];
 const receiptRecords: Array<{ path: string; receiptHash: string; role: string; revision: number }> =
   [];
 for (const gate of ["R1", "R2", "R3", "R4"]) {
-  const verified = requireApprovedRoleReceipts(evidencePath, gate as "R1" | "R2" | "R3" | "R4");
+  const verified = verifyApprovedGate(evidencePath, gate as "R1" | "R2" | "R3" | "R4");
   for (const file of verified.files)
     receipts.push({ path: path.join(gate, file.path).replaceAll("\\", "/"), sha256: file.sha256 });
   for (const { file, receipt } of verified.selected)
@@ -31,9 +31,7 @@ for (const gate of ["R1", "R2", "R3", "R4"]) {
 if (receipts.length === 0) throw new Error("no verified R1-R4 receipt files found");
 receipts.sort((a, b) => a.path.localeCompare(b.path));
 const r4Gates = ["R1", "R2", "R3", "R4"] as const;
-const allR4Receipts = r4Gates.flatMap(
-  (gate) => requireApprovedRoleReceipts(evidencePath, gate).selected,
-);
+const allR4Receipts = r4Gates.flatMap((gate) => verifyApprovedGate(evidencePath, gate).selected);
 const index = {
   schemaVersion: "gate-attestation-index-v1",
   throughGate: "R4",
@@ -43,7 +41,7 @@ const index = {
   receipts,
   receiptRecords: receiptRecords.sort((a, b) => a.path.localeCompare(b.path)),
   receiptSetHash: hashReceiptSet(allR4Receipts),
-  status: "WAITING_EXTERNAL_INPUT",
+  status: "R4_INDEXED",
 };
 const target = path.join(process.cwd(), "docs", "gate-attestation-index.json");
 fs.writeFileSync(target, `${JSON.stringify(index, null, 2)}\n`);

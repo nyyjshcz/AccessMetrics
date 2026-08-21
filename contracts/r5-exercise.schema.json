@@ -1,13 +1,55 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["schemaVersion", "role", "commit", "commands", "result"],
+  "required": [
+    "schemaVersion",
+    "role",
+    "commit",
+    "boundTreeHash",
+    "r1R4IndexHash",
+    "exerciseCatalogHash",
+    "environmentHash",
+    "steps",
+    "allCriticalStepsPassed"
+  ],
   "additionalProperties": false,
   "properties": {
-    "schemaVersion": { "const": "r5-exercise-v1" },
-    "role": { "type": "string" },
-    "commit": { "type": "string" },
-    "commands": { "type": "array" },
-    "result": { "type": "string" }
+    "schemaVersion": { "const": "r5-exercise-v2" },
+    "role": { "enum": ["computer_lead", "math_lead"] },
+    "commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "boundTreeHash": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "r1R4IndexHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "exerciseCatalogHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "environmentHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "steps": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "commandId",
+          "cwd",
+          "exitCode",
+          "stdoutSha256",
+          "stderrSha256",
+          "observation",
+          "passed"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "commandId": { "type": "string" },
+          "cwd": { "const": "." },
+          "exitCode": { "const": 0 },
+          "stdoutSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "stderrSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "observation": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "passed": { "const": true }
+        }
+      }
+    },
+    "allCriticalStepsPassed": { "const": true }
   }
 }

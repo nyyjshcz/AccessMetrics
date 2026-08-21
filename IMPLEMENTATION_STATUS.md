@@ -1,7 +1,7 @@
 # 实施状态
 
 - 当前状态：`WAITING_EXTERNAL_INPUT`
-- 当前自动化基线 commit：`a73880653240133a756f42eb6085bbb006d0d664`（`security: harden auth rate limits and gate evidence`；未创建 release tag，未公网发布）。
+- 当前自动化基线 commit：`待本轮提交后更新`（未创建 release tag，未公网发布）。
 - 自动化实现：已完成计划步骤 1–17，以及步骤 18/19 所有不依赖真人或外部单位的代码、契约、脚手架、fixture、报告生成器、可复现分析管线和 fail-closed 校验。
 - 真实阻塞：R1–R5 真人确认、真实研究站点/许可/标准来源、生产服务器/域名/密钥/镜像与渲染器 digest。详见 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。
 
@@ -10,11 +10,11 @@
 - 依赖基线与负面 fixture：Node 24.19.0、pnpm 11.19.0、Python 3.12.13、Next/Playwright/axe 精确版本检查。
 - 依赖预检会实际执行 `PYTHON_BIN`/系统 Python 并解析 `--version`；当前捆绑解释器为 Python 3.12.13，系统 Python 3.13.7 会按设计失败，不再信任伪造的 `PYTHON_VERSION`。
 - 依赖预检也会实际执行 pnpm（Windows 通过 `cmd.exe`，Unix 直接执行）并核对 11.19.0，不只检查 `package.json` 的声明。
-- SQLite 迁移 1–21：外键、WAL、job/page lease、恢复、幂等唯一键与索引、frame 覆盖、研究 campaign/freeze/export、人工 review/adjudication、门证据/outbox、发布 revision/CAS 字段、R5 双角色 artifact 会话、study export current 唯一约束、扫描时本地化 hash、frame 覆盖问题记录和 axe 运行时证据快照；迁移 18–21 补齐按任务/运行追溯的页面身份、精确/展示分数字段、结果节点 frame 证据、评审当前版本唯一性，并重建旧版 pages 表以移除站点级 URL 唯一约束。
+- SQLite 迁移 1–22：外键、WAL、job/page lease、恢复、幂等唯一键与索引、frame 覆盖、研究 campaign/freeze/export、人工 review/adjudication、门证据/outbox、发布 revision/CAS 字段、R5 双角色 artifact 会话、study export current 唯一约束、扫描时本地化 hash、frame 覆盖问题记录、axe 运行时证据快照，以及 R5 clean-clone exercise 草稿、revision artifact 路径和 artifact outbox；迁移 18–22 补齐按任务/运行追溯的页面身份、精确/展示分数字段、结果节点 frame 证据、评审当前版本唯一性、R5 不可覆盖证据和恢复队列，并重建旧版 pages 表以移除站点级 URL 唯一约束。
 - URL 安全、robots、同站 BFS、页面深度/资源过滤、Playwright + 本地 axe 四类结果、同源/跨源 frame 尝试、节点清理和非 HTML 失败记录。
 - WCAG 2.2 方法目录、axe 4.13.0 完整规则目录生成器、中文目录、独立黄金快照、节点/规则严重程度来源和 `accesscheck-score-v1` TypeScript/Python 参考实现；多原则规则只计一次总体机会并分别归入原则分项。
 - axe 目录已冻结为 105 条规则并补齐 WCAG 条款、原则、等级、是否进入 A/AA 评分及未映射原因；运行时不再依赖不完整的手写规则子集。中文规则目录已生成 105 条，未人工核对时明确保持 `ai_draft`。
-- Worker、管理员/双 reviewer 会话、CSRF/Origin、API、Web 页面、取消、抽样、复核/裁决、HTML/PDF/CSV/JSON、manifest 原始字节 hash、ZIP/隐私门；R5 固定练习、理解检查、A–E 交接确认由服务端评分并生成共同 bundle。理解检查现在绑定固定题集 hash，按每主题五个要点和总分门槛服务端计算，失败尝试留证且不能靠客户端 `passed` 绕过。
+- Worker、管理员/双 reviewer 会话、CSRF/Origin、API、Web 页面、取消、抽样、复核/裁决、HTML/PDF/CSV/JSON、manifest 原始字节 hash、ZIP/隐私门；R5 exercise API 由服务端创建绑定 rcCommit 的隔离 clean clone，只执行固定 catalog 命令并保存 tree/environment/index/catalog/output hash、观察记录和 revision；理解检查由服务端评分，handoff 从正式文件重算 A–E evidence hash，finalize 需要本人二次认证，三类 artifact 使用不可覆盖 revision 文件、DB outbox 和共同 bundle。理解检查绑定固定题集 hash，按每主题五个要点和总分门槛服务端计算，失败尝试留证且不能靠客户端 `passed` 绕过。
 - campaign、review、R1–R5、候选报告、发布验证、镜像/部署、加密私有证据备份恢复和交接包的命令与模板；缺真人输入时均 fail-closed，不写假数据。
 - 可复现分析管线：只接受带 `manifest.json`/`manifest.sha256` 的已验证导出，输出 `report-data-v1`、站点分数/常见规则/严重度/四原则/敏感性/人工样本边界、确定性图表和数据表；Jupyter notebook 在缺真实导出时明确等待，不生成假研究结论。
 - `analysis:run` 现在会执行并保存 `accesscheck_analysis.executed.ipynb`；优先使用 Jupyter/nbconvert，缺少该命令时使用仓库内标准库 runner，代码 cell 异常会使命令失败。
@@ -30,7 +30,8 @@
 - 生产配置现在要求 Worker 使用隔离的 `scan-isolated` 内部网络和显式代理，代理策略拒绝私网、保留地址、文档示例网段、metadata、IPv4-mapped/ULA/link-local IPv6，并提供 `pnpm egress:check`；Caddy 未提供 `CADDY_SITE` 时 fail-closed，应用镜像在构建时安装固定 Playwright Chromium。
 - 本轮完成度复核又补齐了 `scan:page`/`scan:one-page` 的无副作用共享 CLI（每次命令只启动一次扫描）、下载型非 HTML 响应的 `NON_HTML` 结构化错误、robots deny/最大深度/总时长/三次确定性发现回归，以及混合图片 pass/violation、浏览器关闭后重启和 PDF 下载 fixture；egress proxy 的 IPv6 判定改为按地址段解析并拒绝所有 IPv4-mapped 形式。
 - 本轮安全与验收复核补齐了双角色 cookie 并存时的服务端 role 选择、错误角色 403/未登录 401 区分、生产 reviewer token 不得相同、Caddy 可信代理标记重写，以及只接受可信代理注入的 rate-limit 客户端地址。
-- R5 artifact 现在由服务端按 canonical 字节写一次并校验磁盘 hash；修订会使共同 bundle 和双方 finalize 失效，缺失/篡改/冲突均 fail-closed。gate receipt 改为完整 receipt 字节 hash，outbox 幂等写入并有双角色 fixture 验证。
+- R5 artifact 现在由服务端按 canonical 字节写入不可覆盖的 `*.r<revision>.json`，并通过 DB outbox 恢复/校验磁盘 hash；修订会使共同 bundle 和双方 finalize 失效，缺失/篡改/冲突均 fail-closed。gate receipt 改为完整 receipt 字节 hash，outbox 幂等写入并有双角色 fixture 验证。
+- 成果 candidate/verify/release 链现在要求固定的 report-data、两份最终报告、图表/表格 hash、R1–R5 数据库绑定 evidence 和分别重算的 `r4EvidenceBundleHash`/`fullGateBundleHash`；缺任何输入均失败，不再把可选参数或文件存在当作完成证明。
 - `gates:verify`、`project:status` 和 `project:resume` 现在会核对 receipt artifact 当前 hash、数据库 current approved 记录、outbox=`written`、outbox 字节/目标路径/hash、R5 六项排序 bundle、共同 bundle hash、两份公共 artifact 集、前置门顺序及 R5 两份相同 40 位 bound commit；不会以文件存在代替数据库事实。
 
 ## 最近自动化质量门（2026-08-22）

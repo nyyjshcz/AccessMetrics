@@ -4,6 +4,8 @@ import path from "node:path";
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { sanitizeNodeHtml } from "@/lib/sanitize";
+import { sha256 } from "@/lib/canonical";
+import { validateReceipt, verifyApprovedGate } from "../../scripts/gate-utils";
 
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "accesscheck-test-"));
 process.env.DATABASE_URL = path.join(testRoot, "test.db");
@@ -171,6 +173,43 @@ describe("database and evidence chain", () => {
 
   it("requires 10–20 planned slots and never fabricates a campaign", () => {
     expect(() => study.createCampaign({ targetSiteCount: 2, slots: [] })).toThrow("10–20");
+  });
+
+  it("writes idempotent schema-valid gate receipts through the outbox", () => {
+    const artifactPath = path.join(testRoot, "private", "gates", "R1", "protocol.md");
+    const artifactBytes = Buffer.from("protocol fixture\n");
+    fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+    fs.writeFileSync(artifactPath, artifactBytes);
+    const input = {
+      gateId: "R1",
+      role: "computer_lead",
+      decision: "approved" as const,
+      statementVersion: "r1-v1",
+      boundCommit: "a".repeat(40),
+      artifacts: [{ logicalId: "protocol.md", sha256: sha256(artifactBytes) }],
+      note: "本人已核对协议、样本和模型来源，并确认记录可以复核。",
+    };
+    const first = study.submitGateEvidence(input);
+    const second = study.submitGateEvidence({ ...input, role: "math_lead" });
+    const retry = study.submitGateEvidence(input);
+    expect(retry).toMatchObject({ reused: true, receiptHash: first.receiptHash });
+    expect(study.writePendingEvidence(path.join(testRoot, "private"))).toHaveLength(2);
+    if (!first.targetRelpath) throw new Error("first gate evidence did not return a target path");
+    const receiptPath = path.join(testRoot, "private", first.targetRelpath);
+    const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
+    expect(validateReceipt(receipt, "R1", "computer_lead").receiptHash).toBe(first.receiptHash);
+    expect(
+      (
+        dbModule
+          .getDb()
+          .prepare("SELECT status FROM human_gate_evidence_outbox WHERE evidence_id=?")
+          .get(first.evidenceId) as { status: string }
+      ).status,
+    ).toBe("written");
+    expect(verifyApprovedGate(path.join(testRoot, "private", "gates"), "R1").selected).toHaveLength(
+      2,
+    );
+    expect(second.receiptHash).not.toBe(first.receiptHash);
   });
 
   it("neutralizes spreadsheet formula prefixes in CSV cells", () => {

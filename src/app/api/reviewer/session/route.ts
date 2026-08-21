@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { currentCsrfToken, currentSession } from "@/lib/auth";
 
 export async function GET() {
-  const session = await currentSession();
+  const session = await currentSession(["computer_reviewer", "math_reviewer"]);
   if (!session || !["computer_reviewer", "math_reviewer"].includes(session.user.role))
     return NextResponse.json({ authenticated: false });
   return NextResponse.json({

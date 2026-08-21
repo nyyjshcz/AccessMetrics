@@ -1,6 +1,9 @@
 {$CADDY_SITE} {
   encode gzip
-  reverse_proxy web:3000
+  reverse_proxy web:3000 {
+    header_up -X-AccessCheck-Trusted-Proxy
+    header_up X-AccessCheck-Trusted-Proxy caddy
+  }
   @secure protocol https
   header {
     X-Content-Type-Options nosniff

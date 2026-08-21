@@ -3,6 +3,7 @@ import { loginWithToken, sessionCookieName } from "@/lib/auth";
 import { migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { consumeRateLimit, requestClientKey } from "@/lib/rate-limit";
+import { config } from "@/lib/config";
 
 export async function POST(request: Request) {
   try {
@@ -26,14 +27,14 @@ export async function POST(request: Request) {
     response.cookies.set(sessionCookieName, result.rawToken, {
       httpOnly: true,
       sameSite: "strict",
-      secure: process.env.NODE_ENV === "production",
+      secure: config.APP_ENV === "production" || process.env.NODE_ENV === "production",
       expires: result.expires,
       path: "/",
     });
     response.cookies.set("accesscheck_csrf", result.rawCsrf, {
       httpOnly: false,
       sameSite: "strict",
-      secure: process.env.NODE_ENV === "production",
+      secure: config.APP_ENV === "production" || process.env.NODE_ENV === "production",
       expires: result.expires,
       path: "/",
     });

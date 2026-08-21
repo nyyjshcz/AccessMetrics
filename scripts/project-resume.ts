@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { requireApprovedRoleReceipts } from "./gate-utils";
+import { verifyApprovedGate } from "./gate-utils";
 
 const root = process.cwd();
 const externalPath = path.join(root, "EXTERNAL_INPUTS.md");
@@ -36,14 +36,14 @@ const missing = required.filter((file) => !fs.existsSync(path.join(root, file)))
 const evidenceRoot = path.resolve(
   process.env.PRIVATE_EVIDENCE_ROOT ?? path.join(root, "private-inputs"),
 );
+let earlierGateFailed = false;
 const missingEvidence = ["R1", "R2", "R3", "R4", "R5"].filter((gate) => {
+  if (earlierGateFailed) return true;
   try {
-    requireApprovedRoleReceipts(
-      path.join(evidenceRoot, "gates"),
-      gate as "R1" | "R2" | "R3" | "R4" | "R5",
-    );
+    verifyApprovedGate(path.join(evidenceRoot, "gates"), gate as "R1" | "R2" | "R3" | "R4" | "R5");
     return false;
   } catch {
+    earlierGateFailed = true;
     return true;
   }
 });

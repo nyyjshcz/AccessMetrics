@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { canonicalize, sha256 } from "../src/lib/canonical";
 
 export const GATES = ["R1", "R2", "R3", "R4", "R5"] as const;
@@ -161,6 +162,164 @@ export function requireApprovedRoleReceipts(root: string, gate: Gate) {
     return current;
   });
   return { ...result, selected };
+}
+
+function sortedArtifacts(artifacts: GateReceipt["artifacts"]) {
+  return artifacts
+    .map((artifact) => ({ logicalId: artifact.logicalId, sha256: artifact.sha256 }))
+    .sort((a, b) => a.logicalId.localeCompare(b.logicalId));
+}
+
+function verifyDatabaseBindings(
+  gate: Gate,
+  selected: Array<{ file: EvidenceFile; receipt: GateReceipt }>,
+) {
+  const configuredPath = process.env.DATABASE_URL ?? path.join("data", "accesscheck.db");
+  const databasePath = path.resolve(process.cwd(), configuredPath);
+  if (!fs.existsSync(databasePath)) throw new Error(`database is missing: ${databasePath}`);
+  let db: Database.Database;
+  try {
+    db = new Database(databasePath, { readonly: true, fileMustExist: true });
+  } catch (error) {
+    throw new Error(
+      `database cannot be opened: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
+    for (const { file, receipt } of selected) {
+      const row = db
+        .prepare(
+          `SELECT e.gate_id,e.role,e.decision,e.is_current,e.bound_commit,e.artifacts_json,e.receipt_hash,
+                  o.target_relpath,o.receipt_json,o.expected_file_hash,o.status
+             FROM human_gate_evidence e
+             LEFT JOIN human_gate_evidence_outbox o ON o.evidence_id=e.id
+            WHERE e.receipt_hash=?`,
+        )
+        .get(receipt.receiptHash) as
+        | {
+            gate_id: string;
+            role: string;
+            decision: string;
+            is_current: number;
+            bound_commit: string | null;
+            artifacts_json: string;
+            receipt_hash: string;
+            target_relpath: string | null;
+            receipt_json: string | null;
+            expected_file_hash: string | null;
+            status: string | null;
+          }
+        | undefined;
+      if (!row) throw new Error(`${gate} ${receipt.role} is absent from the evidence database`);
+      if (
+        row.gate_id !== gate ||
+        row.role !== receipt.role ||
+        row.decision !== "approved" ||
+        row.is_current !== 1 ||
+        row.receipt_hash !== receipt.receiptHash
+      )
+        throw new Error(`${gate} ${receipt.role} database row is not the current approved receipt`);
+      if (row.artifacts_json !== canonicalize(receipt.artifacts))
+        throw new Error(`${gate} ${receipt.role} database artifact set differs from receipt`);
+      const expectedPath = `gates/${gate}/${file.path}`;
+      const targetPath = row.target_relpath?.replaceAll("\\", "/");
+      if (targetPath !== expectedPath)
+        throw new Error(`${gate} ${receipt.role} outbox target path mismatch`);
+      if (row.status !== "written")
+        throw new Error(`${gate} ${receipt.role} outbox is not written`);
+      if (row.receipt_json !== file.bytes.toString("utf8"))
+        throw new Error(`${gate} ${receipt.role} outbox bytes differ from evidence file`);
+      if (row.expected_file_hash !== file.sha256)
+        throw new Error(`${gate} ${receipt.role} outbox file hash mismatch`);
+    }
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Verify the evidence bytes referenced by the current approved receipts.
+ * Merely finding two JSON receipts is not enough: every referenced artifact
+ * must still exist with the recorded hash, and R5 must contain one common,
+ * self-hashed six-artifact bundle bound by both roles.
+ */
+export function verifyApprovedGate(root: string, gate: Gate) {
+  const result = requireApprovedRoleReceipts(root, gate);
+  const files = new Map(result.files.map((file) => [file.path, file]));
+  for (const { file, receipt } of result.selected) {
+    if (receipt.artifacts.length === 0)
+      throw new Error(`${gate} ${receipt.role} receipt has no artifact references`);
+    for (const artifact of receipt.artifacts) {
+      const referenced = files.get(artifact.logicalId);
+      if (!referenced)
+        throw new Error(`${gate} ${receipt.role} missing artifact ${artifact.logicalId}`);
+      if (referenced.sha256 !== artifact.sha256)
+        throw new Error(`${gate} ${receipt.role} artifact hash mismatch: ${artifact.logicalId}`);
+    }
+  }
+  verifyDatabaseBindings(gate, result.selected);
+  if (gate !== "R5") return result;
+
+  const bundleFile = files.get("r5-artifact-bundle.json");
+  if (!bundleFile) throw new Error("R5 common artifact bundle is missing");
+  let bundle: unknown;
+  try {
+    bundle = JSON.parse(bundleFile.bytes.toString("utf8"));
+  } catch {
+    throw new Error("R5 common artifact bundle is not valid JSON");
+  }
+  if (!bundle || typeof bundle !== "object" || Array.isArray(bundle))
+    throw new Error("R5 common artifact bundle must be an object");
+  const bundleRecord = bundle as Record<string, unknown>;
+  const keys = Object.keys(bundleRecord).sort();
+  if (keys.join(",") !== "artifactHashes,bundleHash,schemaVersion,status")
+    throw new Error("R5 common artifact bundle contains unknown fields");
+  if (
+    bundleRecord.schemaVersion !== "r5-artifact-bundle-v1" ||
+    bundleRecord.status !== "verified" ||
+    !Array.isArray(bundleRecord.artifactHashes) ||
+    bundleRecord.artifactHashes.length !== 6 ||
+    !HEX.test(String(bundleRecord.bundleHash))
+  )
+    throw new Error("R5 common artifact bundle schema is invalid");
+  const artifactHashes = bundleRecord.artifactHashes;
+  if (
+    artifactHashes.some(
+      (value) =>
+        typeof value !== "string" ||
+        !/^(computer_lead|math_lead)\/[^/]+\/(exercise|understanding|handoff)\.json:[a-f0-9]{64}$/.test(
+          value,
+        ),
+    ) ||
+    new Set(artifactHashes).size !== artifactHashes.length
+  )
+    throw new Error("R5 common artifact bundle must contain six unique role artifacts");
+  if (canonicalize(artifactHashes) !== canonicalize([...artifactHashes].sort()))
+    throw new Error("R5 common artifact bundle artifactHashes must be sorted");
+  const expectedBundleHash = sha256(
+    canonicalize({
+      schemaVersion: bundleRecord.schemaVersion,
+      artifactHashes,
+      status: bundleRecord.status,
+    }),
+  );
+  if (bundleRecord.bundleHash !== expectedBundleHash)
+    throw new Error("R5 common artifact bundle hash mismatch");
+  const bundleFileHash = sha256(bundleFile.bytes);
+  const [first, second] = result.selected;
+  if (
+    canonicalize(sortedArtifacts(first.receipt.artifacts)) !==
+    canonicalize(sortedArtifacts(second.receipt.artifacts))
+  )
+    throw new Error("R5 receipts do not bind the same artifact set");
+  for (const { receipt } of result.selected) {
+    const bundleArtifact = receipt.artifacts.find(
+      (artifact) => artifact.logicalId === "r5-artifact-bundle.json",
+    );
+    if (!bundleArtifact || bundleArtifact.sha256 !== bundleFileHash)
+      throw new Error(`R5 ${receipt.role} receipt does not bind the common bundle bytes`);
+  }
+  return result;
 }
 
 export function hashReceiptSet(receipts: Array<{ file: EvidenceFile; receipt: GateReceipt }>) {

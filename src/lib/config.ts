@@ -65,9 +65,12 @@ export function assertProductionSecrets() {
   if (config.APP_ENV !== "production") return;
   const missing: string[] = [];
   if (!config.SCAN_ADMIN_TOKEN) missing.push("SCAN_ADMIN_TOKEN");
-  if (!(config.COMPUTER_REVIEW_TOKEN ?? config.COMPUTER_REVIEWER_TOKEN))
-    missing.push("COMPUTER_REVIEW_TOKEN");
-  if (!(config.MATH_REVIEW_TOKEN ?? config.MATH_REVIEWER_TOKEN)) missing.push("MATH_REVIEW_TOKEN");
+  const computerToken = config.COMPUTER_REVIEW_TOKEN ?? config.COMPUTER_REVIEWER_TOKEN;
+  const mathToken = config.MATH_REVIEW_TOKEN ?? config.MATH_REVIEWER_TOKEN;
+  if (!computerToken) missing.push("COMPUTER_REVIEW_TOKEN");
+  if (!mathToken) missing.push("MATH_REVIEW_TOKEN");
+  if (computerToken && mathToken && computerToken === mathToken)
+    missing.push("COMPUTER_REVIEW_TOKEN and MATH_REVIEW_TOKEN must differ");
   if (!config.ADMIN_REAUTH_TOKEN) missing.push("ADMIN_REAUTH_TOKEN");
   if (config.SESSION_SECRET === "development-session-secret-change-me")
     missing.push("SESSION_SECRET");

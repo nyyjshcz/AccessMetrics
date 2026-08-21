@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { requireApprovedRoleReceipts } from "./gate-utils";
+import { verifyApprovedGate } from "./gate-utils";
 
 const root = process.cwd();
 const external = fs.readFileSync(path.join(root, "EXTERNAL_INPUTS.md"), "utf8");
@@ -34,15 +34,21 @@ const evidenceRoot = path.resolve(
   process.env.PRIVATE_EVIDENCE_ROOT ?? path.join(root, "private-inputs"),
 );
 const gateChecks: Record<string, { passed: boolean; reason?: string }> = {};
+let earlierGateFailed = false;
 const missingEvidence = ["R1", "R2", "R3", "R4", "R5"].filter((gate) => {
+  if (earlierGateFailed) {
+    gateChecks[gate] = {
+      passed: false,
+      reason: "earlier gate is not verified; gate order is invalid",
+    };
+    return true;
+  }
   try {
-    requireApprovedRoleReceipts(
-      path.join(evidenceRoot, "gates"),
-      gate as "R1" | "R2" | "R3" | "R4" | "R5",
-    );
+    verifyApprovedGate(path.join(evidenceRoot, "gates"), gate as "R1" | "R2" | "R3" | "R4" | "R5");
     gateChecks[gate] = { passed: true };
     return false;
   } catch (error) {
+    earlierGateFailed = true;
     gateChecks[gate] = {
       passed: false,
       reason: error instanceof Error ? error.message : String(error),

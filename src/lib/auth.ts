@@ -113,24 +113,33 @@ export function loginWithToken(role: Role, token: string) {
   };
 }
 
-export async function currentSession() {
+export async function currentSession(allowedRoles?: Role[]) {
   const jar = await cookies();
-  const signed = jar.get(REVIEWER_COOKIE)?.value ?? jar.get(COOKIE)?.value;
-  if (!signed) return null;
-  const [raw, signature] = signed.split(".");
-  if (!raw || !signature || !constantTimeTokenMatches(signature, sign(raw))) return null;
-  const session = getDb()
-    .prepare(
-      "SELECT s.id,s.csrf_hash,s.expires_at,u.id user_id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND u.active=1",
-    )
-    .get(digest(raw)) as any;
-  if (!session || new Date(session.expires_at) <= new Date()) return null;
-  return {
-    id: session.id,
-    csrfHash: session.csrf_hash,
-    expiresAt: session.expires_at,
-    user: { id: session.user_id, username: session.username, role: session.role as Role },
-  };
+  const candidates = [
+    { cookieName: REVIEWER_COOKIE, roles: ["computer_reviewer", "math_reviewer"] as Role[] },
+    { cookieName: COOKIE, roles: ["admin"] as Role[] },
+  ];
+  for (const candidate of candidates) {
+    if (allowedRoles && !candidate.roles.some((role) => allowedRoles.includes(role))) continue;
+    const signed = jar.get(candidate.cookieName)?.value;
+    if (!signed) continue;
+    const [raw, signature] = signed.split(".");
+    if (!raw || !signature || !constantTimeTokenMatches(signature, sign(raw))) continue;
+    const session = getDb()
+      .prepare(
+        "SELECT s.id,s.csrf_hash,s.expires_at,u.id user_id,u.username,u.role FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND u.active=1",
+      )
+      .get(digest(raw)) as any;
+    if (!session || new Date(session.expires_at) <= new Date()) continue;
+    if (allowedRoles && !allowedRoles.includes(session.role as Role)) continue;
+    return {
+      id: session.id,
+      csrfHash: session.csrf_hash,
+      expiresAt: session.expires_at,
+      user: { id: session.user_id, username: session.username, role: session.role as Role },
+    };
+  }
+  return null;
 }
 
 export async function currentCsrfToken(session: { csrfHash: string; user: { role: Role } }) {
@@ -142,10 +151,13 @@ export async function currentCsrfToken(session: { csrfHash: string; user: { role
 }
 
 export async function requireRole(...roles: Role[]) {
-  const session = await currentSession();
-  if (!session) throw new AppError("UNAUTHORIZED", "请先登录", 401);
-  if (!roles.includes(session.user.role)) throw new AppError("FORBIDDEN", "当前角色没有权限", 403);
-  return session;
+  const session = await currentSession(roles);
+  if (session) return session;
+  // Preserve the useful distinction between an unauthenticated caller (401)
+  // and a logged-in user using the wrong role (403), even when the browser
+  // carries both the admin and reviewer cookies at once.
+  if (await currentSession()) throw new AppError("FORBIDDEN", "当前角色没有权限", 403);
+  throw new AppError("UNAUTHORIZED", "请先登录", 401);
 }
 
 export function csrfMatches(session: { csrfHash: string }, token: string | null | undefined) {

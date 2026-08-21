@@ -19,6 +19,11 @@ export function consumeRateLimit(key: string, limit: number, windowMs: number) {
 }
 
 export function requestClientKey(request: Request, scope: string) {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  // Only the Caddy reverse proxy may identify the original client. Direct
+  // requests and spoofed X-Forwarded-For headers share a conservative bucket.
+  const trustedProxy = request.headers.get("x-accesscheck-trusted-proxy") === "caddy";
+  const forwarded = trustedProxy
+    ? request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+    : undefined;
   return `${scope}:${forwarded || "unknown"}`;
 }

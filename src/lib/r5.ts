@@ -120,6 +120,22 @@ function ensureRoot() {
   fs.mkdirSync(config.privateEvidenceRoot, { recursive: true, mode: 0o700 });
 }
 
+function bundlePath() {
+  return path.join(config.privateEvidenceRoot, "gates", "R5", "r5-artifact-bundle.json");
+}
+
+function invalidateBundle(boundCommit: string) {
+  const target = bundlePath();
+  if (fs.existsSync(target)) fs.unlinkSync(target);
+  transaction((db) =>
+    db
+      .prepare(
+        "UPDATE r5_sessions SET status='started',finalized_at=NULL,updated_at=? WHERE bound_commit=?",
+      )
+      .run(now(), boundCommit),
+  );
+}
+
 function sessionFor(role: Role, boundCommit: string) {
   migrate();
   const existing = getDb()
@@ -161,11 +177,27 @@ function writeArtifact(
   const directory = path.join(config.privateEvidenceRoot, "r5", session.role, session.id);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const target = path.join(directory, filename);
-  const temporary = `${target}.tmp-${process.pid}`;
-  fs.writeFileSync(temporary, bytes, { mode: 0o600 });
-  fs.renameSync(temporary, target);
   const column = `${kind}_json`;
   const hashColumn = `${kind}_hash`;
+  const previousHash = session[hashColumn] as string | null | undefined;
+  if (previousHash) {
+    if (previousHash === hash) {
+      if (!fs.existsSync(target) || sha256(fs.readFileSync(target)) !== previousHash)
+        throw new AppError("R5_ARTIFACT_TAMPERED", `${filename} 文件缺失或 hash 不一致`, 409);
+      return { logicalId: `${session.role}/${session.id}/${filename}`, sha256: hash };
+    }
+    // A changed artifact is a revision. It invalidates any common bundle and
+    // forces both roles to finalize the same bound commit again.
+    invalidateBundle(session.bound_commit);
+  }
+  if (fs.existsSync(target)) {
+    const onDiskHash = sha256(fs.readFileSync(target));
+    if (onDiskHash !== previousHash)
+      throw new AppError("R5_ARTIFACT_TAMPERED", `${filename} 文件已被外部修改`, 409);
+  }
+  const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });
+  fs.renameSync(temporary, target);
   transaction((db) => {
     db.prepare(`UPDATE r5_sessions SET ${column}=?,${hashColumn}=?,updated_at=? WHERE id=?`).run(
       bytes,
@@ -340,13 +372,29 @@ function buildBundle(boundCommit: string) {
     .all(boundCommit) as any[];
   if (sessions.length !== 2 || new Set(sessions.map((session) => session.role)).size !== 2)
     return null;
-  const artifactHashes = sessions
-    .flatMap((session) => [
-      `${session.role}/${session.id}/exercise.json:${session.exercise_hash}`,
-      `${session.role}/${session.id}/understanding.json:${session.understanding_hash}`,
-      `${session.role}/${session.id}/handoff.json:${session.handoff_hash}`,
-    ])
-    .sort();
+  const artifactHashes: string[] = [];
+  for (const session of sessions) {
+    for (const [kind, hash] of [
+      ["exercise", session.exercise_hash],
+      ["understanding", session.understanding_hash],
+      ["handoff", session.handoff_hash],
+    ] as Array<[string, unknown]>) {
+      if (typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) return null;
+      const file = path.join(
+        config.privateEvidenceRoot,
+        "r5",
+        session.role,
+        session.id,
+        `${kind}.json`,
+      );
+      if (!fs.existsSync(file))
+        throw new AppError("R5_ARTIFACT_MISSING", `${kind}.json 文件缺失`, 409);
+      if (sha256(fs.readFileSync(file)) !== hash)
+        throw new AppError("R5_ARTIFACT_TAMPERED", `${kind}.json hash 不一致`, 409);
+      artifactHashes.push(`${session.role}/${session.id}/${kind}.json:${hash}`);
+    }
+  }
+  artifactHashes.sort();
   const bundle = {
     schemaVersion: "r5-artifact-bundle-v1",
     artifactHashes,
@@ -358,7 +406,7 @@ function buildBundle(boundCommit: string) {
   ensureRoot();
   const directory = path.join(config.privateEvidenceRoot, "gates", "R5");
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const target = path.join(directory, "r5-artifact-bundle.json");
+  const target = bundlePath();
   const bytes = `${canonicalize(bundle)}\n`;
   if (fs.existsSync(target) && fs.readFileSync(target, "utf8") !== bytes)
     throw new AppError("R5_BUNDLE_CONFLICT", "R5 common bundle 已存在且内容不同", 409);

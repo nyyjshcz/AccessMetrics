@@ -72,7 +72,10 @@ describe("R5 server-scored handoff chain", () => {
     });
     r5.submitUnderstanding("computer_reviewer", { sessionId: computer.sessionId, answers });
     r5.submitUnderstanding("math_reviewer", { sessionId: math.sessionId, answers });
-    r5.submitHandoff("computer_reviewer", { sessionId: computer.sessionId, items });
+    const computerHandoff = r5.submitHandoff("computer_reviewer", {
+      sessionId: computer.sessionId,
+      items,
+    });
     r5.submitHandoff("math_reviewer", { sessionId: math.sessionId, items });
     const first = r5.finalizeR5("computer_reviewer", { sessionId: computer.sessionId });
     expect(first.artifactBundle).toBeNull();
@@ -81,6 +84,30 @@ describe("R5 server-scored handoff chain", () => {
     expect(
       fs.existsSync(path.join(root, "private", "gates", "R5", "r5-artifact-bundle.json")),
     ).toBe(true);
+    const revisedItems = items.map((item) => ({ ...item, note: `${item.note} 修订说明` }));
+    const revised = r5.submitHandoff("computer_reviewer", {
+      sessionId: computer.sessionId,
+      items: revisedItems,
+    });
+    expect(revised.artifact.sha256).not.toBe(computerHandoff.artifact.sha256);
+    expect(
+      fs.existsSync(path.join(root, "private", "gates", "R5", "r5-artifact-bundle.json")),
+    ).toBe(false);
+    const handoffPath = path.join(
+      root,
+      "private",
+      "r5",
+      "computer_lead",
+      computer.sessionId,
+      "handoff.json",
+    );
+    fs.writeFileSync(handoffPath, "tampered\n");
+    expect(() =>
+      r5.submitHandoff("computer_reviewer", {
+        sessionId: computer.sessionId,
+        items: revisedItems,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "R5_ARTIFACT_TAMPERED" }));
   });
 
   it("rejects a client-supplied pass flag and incomplete topic set", () => {

@@ -64,6 +64,11 @@ if (
   !productionCompose.includes("cap_drop: [ALL]")
 )
   errors.push("production worker/web must drop capabilities and enable no-new-privileges");
+if (
+  !caddyfile.includes("header_up -X-AccessCheck-Trusted-Proxy") ||
+  !caddyfile.includes("header_up X-AccessCheck-Trusted-Proxy caddy")
+)
+  errors.push("Caddy must strip and rewrite the trusted proxy marker");
 const localWorkerPrivateMount =
   /worker:[\s\S]*?PRIVATE_EVIDENCE_ROOT|worker:[\s\S]*?private-evidence/i.test(
     fs.existsSync("compose.yaml") ? fs.readFileSync("compose.yaml", "utf8") : "",

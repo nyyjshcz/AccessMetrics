@@ -593,21 +593,23 @@ export function submitGateEvidence(input: {
     !getDb().prepare("SELECT 1 FROM study_campaigns WHERE id=?").get(input.campaignId)
   )
     throw new AppError("CAMPAIGN_NOT_FOUND", "campaign 不存在", 404);
-  const hash = sha256(
-    canonicalize({
-      gateId: input.gateId,
-      campaignId: input.campaignId ?? null,
-      role: input.role,
-      decision: input.decision,
-      statementVersion: input.statementVersion,
-      boundCommit: input.boundCommit ?? null,
-      artifacts: input.artifacts,
-      note: input.note,
-    }),
-  );
+  const campaignId = input.campaignId ?? null;
+  const boundCommit = input.boundCommit ?? null;
+  const artifactsJson = canonicalize(input.artifacts);
   const existingByHash = getDb()
-    .prepare("SELECT id,receipt_hash FROM human_gate_evidence WHERE receipt_hash=?")
-    .get(hash) as { id: string; receipt_hash: string } | undefined;
+    .prepare(
+      "SELECT id,receipt_hash FROM human_gate_evidence WHERE gate_id=? AND role=? AND campaign_id IS ? AND decision=? AND statement_version=? AND bound_commit IS ? AND artifacts_json=? AND note=? AND is_current=1 ORDER BY revision DESC LIMIT 1",
+    )
+    .get(
+      input.gateId,
+      input.role,
+      campaignId,
+      input.decision,
+      input.statementVersion,
+      boundCommit,
+      artifactsJson,
+      input.note,
+    ) as { id: string; receipt_hash: string } | undefined;
   if (existingByHash)
     return {
       evidenceId: existingByHash.id,
@@ -619,19 +621,16 @@ export function submitGateEvidence(input: {
     schemaVersion: "human-gate-receipt-v1",
     evidenceId,
     gateId: input.gateId,
-    campaignId: input.campaignId ?? null,
+    campaignId,
     role: input.role,
     decision: input.decision,
     statementVersion: input.statementVersion,
-    boundCommit: input.boundCommit ?? null,
+    boundCommit,
     artifacts: input.artifacts,
     note: input.note,
-    receiptHash: hash,
     revision: 1,
     reviewedAt: new Date().toISOString(),
   };
-  const targetRelpath = `gates/${input.gateId}/${input.role}/${hash}.json`;
-  const artifactBundleHash = sha256(canonicalize(input.artifacts));
   const previous = getDb()
     .prepare(
       "SELECT id,revision FROM human_gate_evidence WHERE gate_id=? AND role=? AND is_current=1 ORDER BY revision DESC LIMIT 1",
@@ -639,7 +638,11 @@ export function submitGateEvidence(input: {
     .get(input.gateId, input.role) as { id: string; revision: number } | undefined;
   const revision = previous ? previous.revision + 1 : 1;
   receipt.revision = revision;
-  const finalReceiptBytes = canonicalize(receipt);
+  const receiptHash = sha256(canonicalize(receipt));
+  const finalReceipt = { ...receipt, receiptHash };
+  const targetRelpath = `gates/${input.gateId}/${input.role}/${receiptHash}.json`;
+  const artifactBundleHash = sha256(canonicalize(input.artifacts));
+  const finalReceiptBytes = canonicalize(finalReceipt);
   transaction((db) => {
     db.prepare(
       "UPDATE human_gate_evidence SET is_current=0 WHERE gate_id=? AND role=? AND is_current=1",
@@ -649,18 +652,18 @@ export function submitGateEvidence(input: {
     ).run(
       evidenceId,
       input.gateId,
-      input.campaignId ?? null,
+      campaignId,
       input.role,
       input.decision,
       input.statementVersion,
-      input.boundCommit ?? null,
+      boundCommit,
       canonicalize(input.artifacts),
       input.note,
       revision,
       previous?.id ?? null,
       1,
-      receipt.reviewedAt,
-      hash,
+      finalReceipt.reviewedAt,
+      receiptHash,
       artifactBundleHash,
     );
     db.prepare(
@@ -672,7 +675,7 @@ export function submitGateEvidence(input: {
       finalReceiptBytes,
       sha256(finalReceiptBytes),
       "pending",
-      receipt.reviewedAt,
+      finalReceipt.reviewedAt,
     );
     if (input.gateId === "R1" && input.campaignId && input.decision === "approved") {
       const approved = db
@@ -686,7 +689,7 @@ export function submitGateEvidence(input: {
         ).run(input.campaignId);
     }
   });
-  return { evidenceId, receiptHash: hash, targetRelpath };
+  return { evidenceId, receiptHash, targetRelpath };
 }
 
 export function deriveGateArtifacts(gateId: string) {

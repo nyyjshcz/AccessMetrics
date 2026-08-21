@@ -1,7 +1,7 @@
 # 实施状态
 
 - 当前状态：`WAITING_EXTERNAL_INPUT`
-- 当前自动化基线 commit：`76f0801`（`fix: make fixed R5 exercise checks executable`；未创建 release tag，未公网发布）。
+- 当前自动化基线 commit：`76f08012744e86047b04e5e8ccb930fe81fa6a88`（`fix: make fixed R5 exercise checks executable`；未创建 release tag，未公网发布）。
 - 自动化实现：已完成计划步骤 1–17，以及步骤 18/19 所有不依赖真人或外部单位的代码、契约、脚手架、fixture、报告生成器、可复现分析管线和 fail-closed 校验。
 - 真实阻塞：R1–R5 真人确认、真实研究站点/许可/标准来源、生产服务器/域名/密钥/镜像与渲染器 digest。详见 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。
 

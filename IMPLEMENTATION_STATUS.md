@@ -26,6 +26,8 @@
 - `scan:site`、`scan:page` 和 `backup:create` 的 CommonJS CLI 入口已改为显式异步主函数，实际命令可启动并在 URL 安全层 fail-closed；备份/恢复烟测已验证数据库、AES-256-GCM 私有文件、manifest hash 和文件数一致。
 - 所有计划示例使用的 `pnpm <script> -- <参数>` 分隔符已统一处理；扫描、导出、研究导入、发布预检、备份恢复等 CLI 不会再把单独的 `--` 当作业务参数。
 - 本轮审计还补齐了 axe 四类结果的扫描时间/引擎/环境/选项快照、页面级节点计数与 weighted defect 展示、通过规则的轻量 raw 证据、节点 HTML 300 字符上限、基于页面/规则/目标的稳定 target hash，以及错误响应的稳定 `errorEnvelope`。
+- 本轮生产安全审计还补齐了显式 egress proxy：Crawler 的 robots 请求和 Chromium 请求共用代理策略，禁止代理绕过、QUIC、后台网络和 WebRTC 本地地址泄漏；扫描器把 401/403/其他 HTTP 错误保存为结构化失败；Worker 按固定 `SCAN_RETRY_COUNT=1` 重试并把配置快照写入 run；站点发现受最大深度和总时长限制，最终重定向必须保持同源。
+- 生产配置现在要求 Worker 使用隔离的 `scan-isolated` 内部网络和显式代理，代理策略拒绝私网、保留地址、文档示例网段、metadata、IPv4-mapped/ULA/link-local IPv6，并提供 `pnpm egress:check`；Caddy 未提供 `CADDY_SITE` 时 fail-closed，应用镜像在构建时安装固定 Playwright Chromium。
 
 ## 最近自动化质量门（2026-08-22）
 
@@ -36,6 +38,7 @@ pnpm dependency:preflight
 pnpm test:dependency-preflight
 pnpm db:migrate
 pnpm db:check
+pnpm egress:check
 pnpm catalog:generate
 pnpm catalog:check
 pnpm ops:check
@@ -51,7 +54,7 @@ pnpm test                 # 7 files, 31 tests
 pnpm test:analysis
 pnpm build                # Next production build
 pnpm test:e2e             # 3 browser tests（核心页面 axe、匿名权限、完整 fixture 扫描/审核/发布/导出/撤下流程）
-pnpm test:all             # 上述依赖、静态检查、hygiene/handoff:check、31 个 Vitest 测试、Python 分析、构建与 3 个 E2E 总门
+pnpm test:all             # 上述依赖、静态检查、hygiene/handoff:check、egress policy、31 个 Vitest 测试、Python 分析、构建与 3 个 E2E 总门
 pnpm project:status       # 输出 WAITING_EXTERNAL_INPUT，自动实现 ready
 pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部输入齐全
 ```

@@ -33,6 +33,8 @@ export function isPrivateIp(address: string): boolean {
       (a === 100 && b >= 64 && b <= 127) ||
       (a === 192 && b === 0) ||
       (a === 198 && b >= 18 && b <= 19) ||
+      (a === 198 && b === 51) ||
+      (a === 203 && b === 0 && Number(address.split(".")[2]) === 113) ||
       a >= 224
     );
   }
@@ -42,7 +44,8 @@ export function isPrivateIp(address: string): boolean {
       normalized.startsWith("fd") ||
       normalized.startsWith("fe80:") ||
       normalized.startsWith("fec0:") ||
-      normalized.startsWith("ff")
+      normalized.startsWith("ff") ||
+      normalized.startsWith("2001:db8:")
     )
       return true;
     const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];

@@ -2,12 +2,15 @@ import { chromium, type Browser } from "playwright";
 import { canonicalizeUrl } from "./url-security";
 import { validateTargetUrl, type NetworkPolicy } from "./url-security";
 import { config } from "./config";
+import { chromiumLaunchOptions } from "./browser";
+import type { APIRequestContext } from "playwright";
 
 export interface CrawlOptions {
   maxPages?: number;
   sameOriginOnly?: boolean;
   delayMs?: number;
   maxDepth?: number;
+  maxDurationMs?: number;
   respectRobots?: boolean;
   networkPolicy?: NetworkPolicy;
 }
@@ -16,17 +19,21 @@ export async function discoverSite(
   options: CrawlOptions = {},
 ): Promise<string[]> {
   const maxPages = Math.min(options.maxPages ?? config.SCAN_MAX_PAGES, config.SCAN_MAX_PAGES);
+  const maxDepth = options.maxDepth ?? config.MAX_CRAWL_DEPTH;
+  const maxDurationMs = options.maxDurationMs ?? config.MAX_SITE_DURATION_MS;
   const target = await validateTargetUrl(startUrl, options.networkPolicy);
   const origin = target.origin;
   const queue: Array<{ url: string; depth: number }> = [
     { url: canonicalizeUrl(startUrl), depth: 0 },
   ];
   const seen = new Set<string>();
-  const robots =
-    options.respectRobots === false ? [] : await readRobots(origin, options.networkPolicy);
-  const browser: Browser = await chromium.launch({ headless: true });
+  const browser: Browser = await chromium.launch(chromiumLaunchOptions());
   try {
     const context = await browser.newContext({ serviceWorkers: "block" });
+    const robots =
+      options.respectRobots === false
+        ? []
+        : await readRobots(origin, options.networkPolicy, context.request);
     await context.route("**/*", async (route) => {
       const requestUrl = route.request().url();
       if (/^(about:|data:|blob:)/i.test(requestUrl)) return route.continue();
@@ -45,22 +52,26 @@ export async function discoverSite(
       }
     });
     const page = await context.newPage();
-    while (queue.length > 0 && seen.size < maxPages) {
+    const crawlStarted = Date.now();
+    while (queue.length > 0 && seen.size < maxPages && Date.now() - crawlStarted < maxDurationMs) {
       const currentEntry = queue.shift()!;
       const current = currentEntry.url;
       if (seen.has(current)) continue;
       const parsed = new URL(current);
       if ((options.sameOriginOnly ?? true) && parsed.origin !== origin) continue;
       if (isDisallowed(parsed.pathname, robots)) continue;
-      if (options.maxDepth !== undefined && currentEntry.depth > options.maxDepth) continue;
+      if (currentEntry.depth > maxDepth) continue;
       if (/[.](?:pdf|zip|png|jpe?g|gif|svg|webp|mp4|mp3|docx?)$/i.test(parsed.pathname)) continue;
       seen.add(current);
       try {
         await validateTargetUrl(current, options.networkPolicy);
-        await page.goto(current, {
+        const response = await page.goto(current, {
           waitUntil: "domcontentloaded",
           timeout: config.SCAN_TIMEOUT_MS,
         });
+        const finalUrl = await validateTargetUrl(page.url(), options.networkPolicy);
+        if (finalUrl.origin !== origin) throw new Error("redirect crossed site origin");
+        if ((response?.status() ?? 0) >= 400) continue;
         const links = await page
           .locator("a[href]")
           .evaluateAll((anchors) => anchors.map((a) => (a as HTMLAnchorElement).href));
@@ -94,22 +105,24 @@ export async function discoverSite(
   }
 }
 
-async function readRobots(origin: string, networkPolicy?: NetworkPolicy): Promise<string[]> {
+async function readRobots(
+  origin: string,
+  networkPolicy: NetworkPolicy | undefined,
+  request: APIRequestContext,
+): Promise<string[]> {
   try {
     let target = `${origin}/robots.txt`;
-    let response: Response | undefined;
+    let response: import("playwright").APIResponse | undefined;
     for (let redirect = 0; redirect < 4; redirect++) {
       await validateTargetUrl(target, networkPolicy);
-      response = await fetch(target, {
-        redirect: "manual",
-        signal: AbortSignal.timeout(3000),
-      });
-      if (response.status < 300 || response.status >= 400) break;
-      const location = response.headers.get("location");
+      response = await request.get(target, { maxRedirects: 0, timeout: 3000 });
+      if (response.status() < 300 || response.status() >= 400) break;
+      const location = response.headers()["location"];
       if (!location) return [];
       target = new URL(location, target).toString();
+      if (new URL(target).origin !== origin) return [];
     }
-    if (!response || !response.ok) return [];
+    if (!response || !response.ok()) return [];
     const rules: string[] = [];
     let active = false;
     for (const line of (await response.text()).split(/\r?\n/)) {

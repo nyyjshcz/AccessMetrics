@@ -7,6 +7,7 @@ import type { ScanOptions } from "./domain";
 import { catalogEntryWithTags } from "./wcag";
 import { AppError } from "./errors";
 import { canonicalize, sha256 } from "./canonical";
+import { config } from "./config";
 
 const now = () => new Date().toISOString();
 export function upsertSite(origin: string, name = origin, category?: string, candidateId?: string) {
@@ -113,7 +114,19 @@ export function createRun(job: any) {
       .createHash("sha256")
       .update(fs.readFileSync(path.join(process.cwd(), "scoring", "axe-rule-catalog.json")))
       .digest("hex"),
-    config_snapshot_json: job.options_json ?? "{}",
+    config_snapshot_json: JSON.stringify({
+      jobOptions: job.options_json ? JSON.parse(job.options_json) : {},
+      scanner: {
+        maxPages: config.SCAN_MAX_PAGES,
+        timeoutMs: config.SCAN_TIMEOUT_MS,
+        delayMs: config.SCAN_DELAY_MS,
+        retryCount: config.SCAN_RETRY_COUNT,
+        maxDepth: config.MAX_CRAWL_DEPTH,
+        maxSiteDurationMs: config.MAX_SITE_DURATION_MS,
+        proxyConfigured: Boolean(config.EGRESS_PROXY_URL),
+        proxyPolicyVersion: "destination-policy-v1",
+      },
+    }),
     viewport_json: JSON.stringify({ width: 1280, height: 720 }),
     user_agent: null,
     scan_time_localization_hash: (() => {

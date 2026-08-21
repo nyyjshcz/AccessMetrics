@@ -13,6 +13,7 @@ const required = [
   "tools/playwright/seccomp_profile.json",
   "tools/egress-proxy/acl.yaml",
   "tools/egress-proxy/proxy.mjs",
+  "scripts/check-egress-proxy.mjs",
   "scripts/write-build-provenance.mjs",
   "tools/document-renderer/Dockerfile",
 ];
@@ -42,6 +43,27 @@ const warnings = [
     ? "Caddyfile must include conditional HSTS"
     : null,
 ].filter(Boolean);
+const errors: string[] = [];
+const workerBlock =
+  productionCompose.match(
+    /worker:[\s\S]*?(?=\n\s{2}\w[\w-]*:|\nnetworks:|\nsecrets:|\nvolumes:|$)/,
+  )?.[0] ?? "";
+const scanNetwork =
+  productionCompose.match(/scan-isolated:\s*\n([\s\S]*?)(?=\n\s{2}\w[\w-]*:|$)/)?.[1] ?? "";
+if (!workerBlock.includes("networks: [scan-isolated]"))
+  errors.push("production worker must be isolated on scan-isolated");
+if (!scanNetwork.includes("internal: true")) errors.push("scan-isolated must be internal:true");
+if (workerBlock.includes("external-egress"))
+  errors.push("production worker must not join external-egress");
+if (!workerBlock.includes("EGRESS_PROXY_URL: http://egress-proxy:8080"))
+  errors.push("production worker must use explicit EGRESS_PROXY_URL");
+if (/worker:[\s\S]*?private-evidence/i.test(productionCompose))
+  errors.push("production worker must not mount private evidence");
+if (
+  !productionCompose.includes("no-new-privileges:true") ||
+  !productionCompose.includes("cap_drop: [ALL]")
+)
+  errors.push("production worker/web must drop capabilities and enable no-new-privileges");
 const localWorkerPrivateMount =
   /worker:[\s\S]*?PRIVATE_EVIDENCE_ROOT|worker:[\s\S]*?private-evidence/i.test(
     fs.existsSync("compose.yaml") ? fs.readFileSync("compose.yaml", "utf8") : "",
@@ -60,5 +82,11 @@ for (const [name, compose] of [
   if (/web:[\s\S]*?command:\s*\[[^\]]*next\s+start/i.test(compose))
     warnings.push(`${name} compose must start the standalone server directly`);
 }
-console.log(JSON.stringify({ passed: missing.length === 0, missing, warnings }, null, 2));
-if (missing.length) process.exitCode = 1;
+console.log(
+  JSON.stringify(
+    { passed: missing.length === 0 && errors.length === 0, missing, errors, warnings },
+    null,
+    2,
+  ),
+);
+if (missing.length || errors.length) process.exitCode = 1;

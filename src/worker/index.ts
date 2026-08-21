@@ -1,4 +1,9 @@
-import { config } from "../lib/config";
+import {
+  config,
+  assertPrivateEvidenceRoot,
+  assertProductionProxy,
+  assertProductionSecrets,
+} from "../lib/config";
 import { migrate, getDb } from "../lib/db";
 import { logger } from "../lib/logger";
 import {
@@ -66,26 +71,47 @@ async function processJob(job: any) {
     getDb()
       .prepare("UPDATE scan_jobs SET heartbeat_at=? WHERE id=? AND status='running'")
       .run(new Date().toISOString(), job.id);
-    try {
-      const target = await validateTargetUrl(page.canonical_url);
-      const result = await scanPage(canonicalizeUrl(target.toString()), config.SCAN_TIMEOUT_MS);
-      savePageResult(run.id, page.page_id, result);
+    let completed = false;
+    let lastError: unknown;
+    let attemptsUsed = 0;
+    for (let attempt = 0; attempt <= config.SCAN_RETRY_COUNT; attempt++) {
+      attemptsUsed = attempt + 1;
+      try {
+        const target = await validateTargetUrl(page.canonical_url);
+        const result = await scanPage(canonicalizeUrl(target.toString()), config.SCAN_TIMEOUT_MS);
+        savePageResult(run.id, page.page_id, result);
+        completed = true;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt < config.SCAN_RETRY_COUNT)
+          await new Promise((resolve) => setTimeout(resolve, Math.min(1000, config.SCAN_DELAY_MS)));
+      }
+    }
+    if (completed) {
       success++;
       getDb()
         .prepare(
-          "UPDATE job_pages SET status='completed',attempts=attempts+1,attempt_count=attempt_count+1,updated_at=? WHERE job_id=? AND page_id=?",
+          "UPDATE job_pages SET status='completed',attempts=attempts+?,attempt_count=attempt_count+?,updated_at=? WHERE job_id=? AND page_id=?",
         )
-        .run(new Date().toISOString(), job.id, page.page_id);
-    } catch (error) {
+        .run(attemptsUsed, attemptsUsed, new Date().toISOString(), job.id, page.page_id);
+    } else {
       failed++;
-      savePageFailure(run.id, page.page_id, error);
+      savePageFailure(run.id, page.page_id, lastError);
       getDb()
         .prepare(
-          "UPDATE job_pages SET status='failed',attempts=attempts+1,attempt_count=attempt_count+1,last_error=?,updated_at=? WHERE job_id=? AND page_id=?",
+          "UPDATE job_pages SET status='failed',attempts=attempts+?,attempt_count=attempt_count+?,last_error=?,updated_at=? WHERE job_id=? AND page_id=?",
         )
-        .run(String(error), new Date().toISOString(), job.id, page.page_id);
+        .run(
+          attemptsUsed,
+          attemptsUsed,
+          String(lastError),
+          new Date().toISOString(),
+          job.id,
+          page.page_id,
+        );
       logger.warn(
-        { jobId: job.id, runId: run.id, url: page.canonical_url, error: String(error) },
+        { jobId: job.id, runId: run.id, url: page.canonical_url, error: String(lastError) },
         "page scan failed",
       );
     }
@@ -133,6 +159,9 @@ async function processJob(job: any) {
 }
 
 async function main() {
+  assertPrivateEvidenceRoot();
+  assertProductionSecrets();
+  assertProductionProxy();
   migrate();
   const once = process.argv.includes("--once");
   do {

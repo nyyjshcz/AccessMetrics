@@ -6,6 +6,7 @@ import { classifyImpact } from "./wcag";
 import { sanitizeNodeHtml } from "./sanitize";
 import { AppError } from "./errors";
 import { validateTargetUrl, type NetworkPolicy } from "./url-security";
+import { chromiumLaunchOptions } from "./browser";
 
 let browser: Browser | undefined;
 export const AXE_SCAN_OPTIONS = {
@@ -19,7 +20,7 @@ export const AXE_SCAN_OPTIONS = {
   iframes: false,
 };
 async function getBrowser() {
-  browser ??= await chromium.launch({ headless: true });
+  browser ??= await chromium.launch(chromiumLaunchOptions());
   return browser;
 }
 export async function scanPage(
@@ -64,6 +65,14 @@ export async function scanPage(
   };
   try {
     const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    const httpStatus = response?.status() ?? 0;
+    if (httpStatus === 401)
+      throw new AppError("HTTP_UNAUTHORIZED", "目标页面要求身份验证，已跳过", 422);
+    if (httpStatus === 403) throw new AppError("HTTP_FORBIDDEN", "目标页面拒绝访问，已跳过", 422);
+    if (httpStatus >= 400)
+      throw new AppError("HTTP_ERROR", `目标页面返回 HTTP ${httpStatus}`, 422, {
+        status: httpStatus,
+      });
     const contentType = response?.headers()["content-type"]?.toLowerCase() ?? "";
     if (contentType && !/(text\/html|application\/xhtml\+xml)/i.test(contentType))
       throw new AppError("NON_HTML", "目标响应不是 HTML/XHTML，未运行 axe", 422, {
@@ -157,7 +166,7 @@ export async function scanPage(
     return {
       url,
       finalUrl: page.url(),
-      status: response?.status() ?? 0,
+      status: httpStatus,
       contentType,
       title: await page.title().catch(() => ""),
       discoveredAt: new Date(started).toISOString(),

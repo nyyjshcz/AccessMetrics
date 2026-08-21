@@ -1,3 +1,5 @@
 # 受控出站代理接口
 
-生产扫描不能直接把主机名交给普通 HTTP 客户端。部署时将此目录替换为经过安全评审的固定 Smokescreen/stripe-goproxy commit 构建包装层：HTTP、CONNECT、WebSocket 使用同一个 DestinationPolicy，解析全部地址、拒绝任一私网地址，并由 dialer 直接连接本次已验证 IP，同时保留 Host/SNI。当前仓库的 TypeScript `validateTargetUrl` 是应用层第一道检查，不能单独宣称防住 DNS rebinding；没有固定的代理镜像 digest 时，正式公网扫描保持阻塞。
+`proxy.mjs` 是可审计的本地包装实现：HTTP/HTTPS forward、CONNECT 和 `ws://` Upgrade 共用 `DestinationPolicy`，解析全部地址、拒绝任一私网/保留/元数据地址，并由 dialer 直接连接本次已验证 IP，同时保留 Host/SNI。`pnpm egress:check` 会验证核心策略。
+
+正式公网扫描仍必须把本目录锁定到经过安全评审的固定 Smokescreen/stripe-goproxy commit 和不可变镜像 digest，并完成真实 Chromium 的 HTTP/HTTPS/WS/WSS 烟测。应用层 `validateTargetUrl` 和这个原型代理都不能在缺少固定生产 digest 时替代外部安全复核；因此当前正式公网部署仍保持阻塞。

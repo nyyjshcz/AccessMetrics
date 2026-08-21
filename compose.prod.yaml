@@ -54,6 +54,7 @@ services:
       HTTPS_PROXY: http://egress-proxy:8080
       HTTP_PROXY: http://egress-proxy:8080
       NO_PROXY: localhost,127.0.0.1
+      EGRESS_PROXY_URL: http://egress-proxy:8080
     volumes:
       - ./data:/var/lib/accesscheck/data:rw
     command: ["pnpm", "worker"]

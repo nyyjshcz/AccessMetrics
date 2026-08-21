@@ -9,6 +9,16 @@ describe("known issue fixture scanner", () => {
   it("discovers deterministic same-origin pages and preserves key axe rule IDs", async () => {
     const root = path.join(process.cwd(), "tests", "fixtures", "known-issues");
     const serve = (request: http.IncomingMessage, response: http.ServerResponse, port?: number) => {
+      if (request.url === "/status-401") {
+        response.statusCode = 401;
+        response.end("auth required");
+        return;
+      }
+      if (request.url === "/status-403") {
+        response.statusCode = 403;
+        response.end("forbidden");
+        return;
+      }
       const file = path.join(
         root,
         request.url?.split("?")[0] === "/" ? "index.html" : request.url!.slice(1),
@@ -73,6 +83,12 @@ describe("known issue fixture scanner", () => {
       expect(sandboxed.frameCoverage.status).toBe("coverage_limited");
       expect(sandboxed.frameCoverage.issues?.length).toBeGreaterThan(0);
       expect(crossPort).toBeGreaterThan(0);
+      await expect(scanPage(`${target}status-401`, 5000, testPolicy)).rejects.toMatchObject({
+        code: "HTTP_UNAUTHORIZED",
+      });
+      await expect(scanPage(`${target}status-403`, 5000, testPolicy)).rejects.toMatchObject({
+        code: "HTTP_FORBIDDEN",
+      });
     } finally {
       await closeScanner();
       await new Promise<void>((resolve) => server.close(() => resolve()));

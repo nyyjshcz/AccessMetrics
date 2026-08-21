@@ -1,4 +1,4 @@
-{$CADDY_SITE:localhost} {
+{$CADDY_SITE} {
   encode gzip
   reverse_proxy web:3000
   @secure protocol https

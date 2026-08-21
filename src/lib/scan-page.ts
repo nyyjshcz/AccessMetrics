@@ -64,7 +64,20 @@ export async function scanPage(
     }
   };
   try {
-    const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    let response: import("playwright").Response | null;
+    try {
+      response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    } catch (error) {
+      // Playwright emits a navigation error rather than an HTTP response when
+      // the target is a download. Preserve the plan's structured NON_HTML
+      // contract instead of leaking an implementation-specific browser error.
+      if (/download is starting/i.test(String(error)))
+        throw new AppError("NON_HTML", "目标响应触发下载，未运行 axe", 422, {
+          contentType: "download",
+          status: 0,
+        });
+      throw error;
+    }
     const httpStatus = response?.status() ?? 0;
     if (httpStatus === 401)
       throw new AppError("HTTP_UNAUTHORIZED", "目标页面要求身份验证，已跳过", 422);

@@ -9,6 +9,12 @@ describe("known issue fixture scanner", () => {
   it("discovers deterministic same-origin pages and preserves key axe rule IDs", async () => {
     const root = path.join(process.cwd(), "tests", "fixtures", "known-issues");
     const serve = (request: http.IncomingMessage, response: http.ServerResponse, port?: number) => {
+      if (request.url === "/robots.txt") {
+        response.statusCode = 200;
+        response.setHeader("content-type", "text/plain");
+        response.end("User-agent: *\nDisallow: /about.html\n");
+        return;
+      }
       if (request.url === "/status-401") {
         response.statusCode = 401;
         response.end("auth required");
@@ -59,11 +65,23 @@ describe("known issue fixture scanner", () => {
         delayMs: 0,
         networkPolicy: testPolicy,
       });
+      const third = await discoverSite(target, {
+        maxPages: 3,
+        delayMs: 0,
+        networkPolicy: testPolicy,
+      });
       expect(first).toEqual(second);
+      expect(second).toEqual(third);
+      expect(first).not.toContain(`${target}about.html`);
       const result = await scanPage(target, 30000, testPolicy);
       const ruleIds = result.axe.violations.map((item) => item.id);
       expect(ruleIds).toEqual(expect.arrayContaining(["image-alt", "button-name", "link-name"]));
       expect(result.axe.passes.length).toBeGreaterThan(0);
+      const mixed = await scanPage(`${target}mixed-image-alt.html`, 30000, testPolicy);
+      const mixedViolations = mixed.axe.violations.find((item) => item.id === "image-alt");
+      const mixedPasses = mixed.axe.passes.find((item) => item.id === "image-alt");
+      expect(mixedViolations?.nodes.length).toBeGreaterThan(0);
+      expect(mixedPasses?.nodes.length).toBeGreaterThan(0);
       const sameOrigin = await scanPage(`${target}same-origin-frame.html`, 30000, testPolicy);
       expect(sameOrigin.frameCoverage).toMatchObject({
         frameTotal: 1,
@@ -82,6 +100,28 @@ describe("known issue fixture scanner", () => {
       expect(sandboxed.frameCoverage.frameTotal).toBe(1);
       expect(sandboxed.frameCoverage.status).toBe("coverage_limited");
       expect(sandboxed.frameCoverage.issues?.length).toBeGreaterThan(0);
+      await expect(scanPage(`${target}non-html.pdf`, 5000, testPolicy)).rejects.toMatchObject({
+        code: "NON_HTML",
+      });
+      expect(
+        await discoverSite(`${target}links-loop.html#one`, {
+          maxPages: 3,
+          maxDepth: 0,
+          delayMs: 0,
+          networkPolicy: testPolicy,
+        }),
+      ).toEqual([`${target}links-loop.html`]);
+      expect(
+        await discoverSite(target, {
+          maxPages: 3,
+          maxDepth: 0,
+          maxDurationMs: 0,
+          delayMs: 0,
+          networkPolicy: testPolicy,
+        }),
+      ).toEqual([]);
+      await closeScanner();
+      await expect(scanPage(target, 30000, testPolicy)).resolves.toMatchObject({ status: 200 });
       expect(crossPort).toBeGreaterThan(0);
       await expect(scanPage(`${target}status-401`, 5000, testPolicy)).rejects.toMatchObject({
         code: "HTTP_UNAUTHORIZED",

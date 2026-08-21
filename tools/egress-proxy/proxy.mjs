@@ -45,25 +45,57 @@ function ipv4Forbidden(address) {
   );
 }
 
-function ipv6Forbidden(address) {
+function ipv6Words(address) {
   const normalized = address.toLowerCase();
-  if (normalized === "::" || normalized === "::1") return true;
-  if (
-    normalized.startsWith("fc") ||
-    normalized.startsWith("fd") ||
-    normalized.startsWith("fe8") ||
-    normalized.startsWith("fe9") ||
-    normalized.startsWith("fea") ||
-    normalized.startsWith("feb") ||
-    normalized.startsWith("fec") ||
-    normalized.startsWith("fed") ||
-    normalized.startsWith("fee") ||
-    normalized.startsWith("ff") ||
-    normalized.startsWith("2001:db8:")
-  )
+  if (normalized.includes("%")) return null;
+  let value = normalized;
+  if (value.includes(".")) {
+    const separator = value.lastIndexOf(":");
+    if (separator < 0) return null;
+    const octets = value
+      .slice(separator + 1)
+      .split(".")
+      .map(Number);
+    if (
+      octets.length !== 4 ||
+      octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+    )
+      return null;
+    value = `${value.slice(0, separator)}:${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
+  }
+  const halves = value.split("::");
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  if ([...left, ...right].some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return null;
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) return null;
+  return [
+    ...left.map((part) => Number.parseInt(part, 16)),
+    ...Array.from({ length: missing }, () => 0),
+    ...right.map((part) => Number.parseInt(part, 16)),
+  ];
+}
+
+function ipv6Forbidden(address) {
+  const words = ipv6Words(address);
+  if (!words) return true;
+  const allZero = words.every((word) => word === 0);
+  const loopback = allZero || (words.slice(0, 7).every((word) => word === 0) && words[7] === 1);
+  if (loopback) return true;
+  const first = words[0];
+  if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 ULA
+  if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((first & 0xffc0) === 0xfec0) return true; // deprecated site-local
+  if ((first & 0xff00) === 0xff00) return true; // ff00::/8 multicast
+  if (words[0] === 0x2001 && words[1] === 0x0db8) return true; // documentation
+  if (words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff) {
+    // Keep IPv4-mapped IPv6 out of the production dialer entirely. Accepting
+    // a public mapped address would still allow a different address family to
+    // bypass the policy's explicit IPv4/IPv6 boundary.
     return true;
-  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
-  return mapped ? ipv4Forbidden(mapped) : false;
+  }
+  return false;
 }
 
 export function isForbiddenAddress(address) {
@@ -72,7 +104,9 @@ export function isForbiddenAddress(address) {
 }
 
 export class DestinationPolicy {
-  constructor({ lookupAll = (hostname) => dns.lookup(hostname, { all: true, verbatim: true }) } = {}) {
+  constructor({
+    lookupAll = (hostname) => dns.lookup(hostname, { all: true, verbatim: true }),
+  } = {}) {
     this.lookupAll = lookupAll;
   }
 
@@ -80,9 +114,7 @@ export class DestinationPolicy {
     const host = normalizeHost(hostname);
     if (!ALLOWED_PORTS.has(Number(port))) throw new Error("port not allowed");
     if (METADATA_HOSTS.has(host)) throw new Error("metadata destination not allowed");
-    const addresses = net.isIP(host)
-      ? [{ address: host }]
-      : await this.lookupAll(host);
+    const addresses = net.isIP(host) ? [{ address: host }] : await this.lookupAll(host);
     if (!addresses.length || addresses.some((entry) => isForbiddenAddress(entry.address)))
       throw new Error("private destination not allowed");
     // The chosen address is returned to the caller and used by the dialer;
@@ -173,7 +205,11 @@ export function createProxyServer({ policy = new DestinationPolicy() } = {}) {
         port,
         address: resolved.address,
       });
-      const upstream = net.connect({ host: resolved.address, port, family: net.isIP(resolved.address) });
+      const upstream = net.connect({
+        host: resolved.address,
+        port,
+        family: net.isIP(resolved.address),
+      });
       upstream.once("connect", () => {
         clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         if (head.length) upstream.write(head);
@@ -198,10 +234,16 @@ export function createProxyServer({ policy = new DestinationPolicy() } = {}) {
         port,
         address: resolved.address,
       });
-      const upstream = net.connect({ host: resolved.address, port, family: net.isIP(resolved.address) });
+      const upstream = net.connect({
+        host: resolved.address,
+        port,
+        family: net.isIP(resolved.address),
+      });
       upstream.once("connect", () => {
         const headers = cleanHeaders(request.headers, target.host);
-        const lines = [`${request.method} ${target.pathname}${target.search} HTTP/${request.httpVersion}`];
+        const lines = [
+          `${request.method} ${target.pathname}${target.search} HTTP/${request.httpVersion}`,
+        ];
         for (const [key, value] of Object.entries(headers))
           lines.push(`${key}: ${Array.isArray(value) ? value.join(", ") : value}`);
         upstream.write(`${lines.join("\r\n")}\r\n\r\n`);

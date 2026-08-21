@@ -207,6 +207,8 @@
 
 所有直接依赖使用 `--save-exact`，Python lock 带 hash，Docker 基础镜像在验证后锁 digest。`docs/dependency-baseline.md` 保存 OS/架构、`node --version`、pnpm 版本、`pnpm list`、Playwright 浏览器版本、`pip freeze`、LibreOffice/Poppler/字体版本、Smokescreen commit 和全部镜像 digest。
 
+**执行基线决策（2026-08-22）**：当前桌面运行时实际提供 pnpm `11.19.0`，无法提供计划表中的 `11.20.0`。依据第 0 节的版本变更规则，仓库采用可复现的 `11.19.0`，并已在 `docs/decisions/runtime-baseline.md`、`package.json`、lockfile 和 `docs/dependency-preflight.json` 中固定；这不是把版本静默改成 latest。若后续获得 pnpm `11.20.0` 或需要升级，必须重新冻结依赖并重跑完整黄金质量门。生产 Playwright、文档渲染器和 egress proxy 的镜像 digest 仍需外部环境实际提供，未以本地占位值冒充已验证。
+
 步骤 1 首先只创建并运行独立的 `scripts/verify-dependency-baseline.mjs`，在它通过前不创建 Next scaffold、不安装项目依赖：逐项查询 npm/PyPI 的精确版本元数据，确认版本存在、不是 prerelease/deprecated；确认 Node、Playwright、文档渲染器和代理基础镜像 tag/digest 可解析；确认 `create-next-app@16.3.0` 及其 Next 配套包与本表一致。任一精确版本不存在、只有 canary/RC、平台二进制缺失或镜像不可拉取时必须立即停止，不能擅自改用 `latest`；按下一段决策流程更新计划副本后，重新从空目录验证。该预检自身有 fixture 测试，至少证明“不存在版本”和“prerelease 冒充稳定版”会失败。
 
 如果执行时某个精确版本因安全漏洞或平台不可用必须调整，先在 `docs/decisions/` 写兼容性/安全决策，再更新本表的仓库副本、lockfile、镜像 digest 和实际版本快照，并从空环境重跑全部黄金测试；不得只升级 axe 或评分相关依赖后继续混用旧正式数据。正式研究扫描开始后冻结依赖，任何行为变化都生成新 scanner/axe/catalog 版本和新 run。

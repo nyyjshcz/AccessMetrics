@@ -16,10 +16,16 @@ const blocked = [
   "fc00::1",
   "fe80::1",
   "::ffff:127.0.0.1",
+  "::ffff:7f00:1",
+  "0:0:0:0:0:ffff:c0a8:101",
+  "::ffff:5db8:d822",
+  "2001:0db8:0000:0000:0000:0000:0000:0001",
+  "fec0::1",
   "2001:db8::1",
 ];
 for (const address of blocked) assert.equal(isForbiddenAddress(address), true, address);
 assert.equal(isForbiddenAddress("93.184.216.34"), false);
+assert.equal(isForbiddenAddress("2001:4860:4860::8888"), false);
 
 const policy = new DestinationPolicy({
   lookupAll: async (hostname) =>

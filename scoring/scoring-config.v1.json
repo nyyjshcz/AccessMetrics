@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "accesscheck-score-config-v1",
+  "modelVersion": "accesscheck-score-v1",
+  "weights": {
+    "perceivable": 40,
+    "operable": 30,
+    "understandable": 20,
+    "robust": 10
+  },
+  "impactWeights": {
+    "critical": 4,
+    "serious": 3,
+    "moderate": 2,
+    "minor": 1
+  },
+  "rounding": "half_up_to_one_decimal",
+  "incompletePolicy": "reported_but_not_penalized",
+  "nullImpactPolicy": "default_minor_only_for_violation_nodes"
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schemaVersion", "role", "items", "confirmed"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "r5-handoff-v1" },
+    "role": { "type": "string" },
+    "items": { "type": "array" },
+    "confirmed": { "const": true }
+  }
+}

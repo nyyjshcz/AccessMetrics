@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "rcCommit",
+    "finalCandidate",
+    "verifiedTreeHash",
+    "fullGateBundleHash",
+    "validationAttestationHash",
+    "builtAt",
+    "builderVersion"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "build-provenance-v1" },
+    "finalCandidate": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "rcCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "verifiedTreeHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "fullGateBundleHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "validationAttestationHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "builtAt": { "type": "string" },
+    "builderVersion": { "type": "string" }
+  }
+}

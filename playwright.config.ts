@@ -1,0 +1,29 @@
+import { defineConfig, devices } from "@playwright/test";
+export default defineConfig({
+  testDir: "tests/e2e",
+  timeout: 30000,
+  use: { baseURL: "http://127.0.0.1:3100", trace: "retain-on-failure" },
+  webServer: {
+    command: "pnpm start --hostname 127.0.0.1 --port 3100",
+    url: "http://127.0.0.1:3100/api/health",
+    reuseExistingServer: true,
+    timeout: 120000,
+    env: {
+      HOSTNAME: "127.0.0.1",
+      PORT: "3100",
+      APP_ENV: "test",
+      APP_BASE_URL: "http://127.0.0.1:3100",
+      DATABASE_URL: "./data/e2e-accesscheck.db",
+      PRIVATE_EVIDENCE_ROOT: "./data/e2e-private",
+      PUBLIC_EXPORT_ROOT: "./data/e2e-exports",
+      SESSION_SECRET: "e2e-session-secret-01234567890123456789",
+      CSRF_SECRET: "e2e-csrf-secret-012345678901234567890",
+      SCAN_ADMIN_TOKEN: "e2e-admin-token",
+      COMPUTER_REVIEW_TOKEN: "e2e-computer-token",
+      MATH_REVIEW_TOKEN: "e2e-math-token",
+      ADMIN_REAUTH_TOKEN: "e2e-admin-reauth-token",
+      SCAN_TEST_ALLOW_PRIVATE_ADDRESSES: "1",
+    },
+  },
+  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+});

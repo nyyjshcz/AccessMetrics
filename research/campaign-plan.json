@@ -1,0 +1,12 @@
+{
+  "campaignPlanVersion": "campaign-plan-v1",
+  "protocolHash": "WAITING_R1_PROTOCOL_HASH",
+  "sampleFrameHash": "WAITING_R1_SAMPLE_FRAME_HASH",
+  "baseline": { "scannerVersion": "accesscheck-scanner-v1", "axeVersion": "4.13.0", "modelVersion": "accesscheck-score-v1" },
+  "targetSiteCount": 10,
+  "pageLimit": 15,
+  "retryPolicy": { "maxAttempts": 1 },
+  "replacementPolicy": { "predeclaredOnly": true },
+  "allowedFailureReasonCodes": ["offline", "not_html", "out_of_scope", "network_denied"],
+  "slots": []
+}

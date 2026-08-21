@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "canonical-manifest-json-v1",
+  "exportId": "export_example",
+  "generatedAt": "2030-01-01T00:00:00.000Z",
+  "exportKind": "run",
+  "files": [
+    {
+      "path": "scan.json",
+      "size": 0,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}

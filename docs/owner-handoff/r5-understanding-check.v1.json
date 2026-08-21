@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "r5-understanding-check-v1",
+  "rubricVersion": "r5-understanding-rubric-2026-08-22",
+  "questions": [
+    "ssrf",
+    "axe-severity",
+    "wcag-mapping",
+    "scoring",
+    "worker-lease",
+    "manifest-traceability"
+  ],
+  "passingRule": "all_five_key_points_per_topic_and_total_score_at_least_80",
+  "questionSetHash": "computed_from_rubric_and_question_order"
+}

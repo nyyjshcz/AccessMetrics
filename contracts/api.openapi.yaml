@@ -1,0 +1,157 @@
+openapi: 3.1.0
+info:
+  title: AccessCheck Lishui API
+  version: 1.0.0
+paths:
+  /api/health:
+    get:
+      responses:
+        "200": { description: healthy }
+  /api/scans:
+    post:
+      responses:
+        "202": { description: queued }
+        "422": { description: invalid URL or options }
+  /api/scans/{jobId}:
+    get:
+      responses:
+        "200": { description: scan job }
+  /api/runs/{runId}:
+    get:
+      responses:
+        "200": { description: run and score }
+  /api/runs/{runId}/issues:
+    get:
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - {
+            name: pageSize,
+            in: query,
+            schema: { type: integer, minimum: 1, maximum: 100, default: 20 },
+          }
+        - { name: pageId, in: query, schema: { type: string } }
+        - {
+            name: principle,
+            in: query,
+            schema: { type: string, enum: [perceivable, operable, understandable, robust] },
+          }
+        - {
+            name: impact,
+            in: query,
+            schema: { type: string, enum: [critical, serious, moderate, minor] },
+          }
+        - { name: ruleId, in: query, schema: { type: string } }
+        - {
+            name: resultType,
+            in: query,
+            schema: { type: string, enum: [violation, incomplete, pass], default: violation },
+          }
+        - {
+            name: reviewVerdict,
+            in: query,
+            schema: { type: string, enum: [confirmed, not_an_issue, uncertain, unreviewed] },
+          }
+        - {
+            name: sort,
+            in: query,
+            schema: { type: string, enum: [impact_desc, page_asc, rule_asc], default: impact_desc },
+          }
+      responses:
+        "200": { description: paginated issues }
+  /api/admin/login:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [adminToken]
+              additionalProperties: false
+              properties:
+                adminToken: { type: string, maxLength: 1024 }
+      responses:
+        "200": { description: token session }
+  /api/admin/session:
+    get:
+      responses:
+        "200": { description: current admin session or unauthenticated }
+  /api/reviewer/login:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reviewToken]
+              additionalProperties: false
+              properties:
+                reviewToken: { type: string, maxLength: 1024 }
+      responses:
+        "200": { description: role-bound reviewer session }
+  /api/reviewer/session:
+    get:
+      responses:
+        "200": { description: current reviewer session or unauthenticated }
+  /api/admin/scans/{jobId}/cancel:
+    post:
+      responses:
+        "200": { description: cancelled }
+  /api/admin/review-freezes:
+    post:
+      responses:
+        "201": { description: verified review freeze }
+  /api/admin/study-freezes/{freezeId}/finalize:
+    post:
+      responses:
+        "200": { description: study freeze finalized after R4 }
+  /api/runs/{runId}/export:
+    post:
+      responses:
+        "201": { description: export created or reused }
+  /api/exports/{runId}/json:
+    get:
+      responses:
+        "200": { description: JSON export }
+  /api/gates/evidence:
+    post:
+      responses:
+        "201": { description: evidence outbox entry }
+  /api/reviewer/review-batches/{batchId}/next:
+    get:
+      responses:
+        "200": { description: next role-bound sample }
+  /api/reviewer/r5/status:
+    get:
+      responses:
+        "200": { description: R5 status without answer leakage }
+  /api/reviewer/r5/exercises:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [commit, commands, result]
+              additionalProperties: false
+              properties:
+                commit: { type: string, pattern: "^[a-f0-9]{40}$" }
+                commands: { type: array, minItems: 6, maxItems: 6 }
+                result: { type: string, minLength: 20 }
+      responses:
+        "201": { description: fixed exercise artifact recorded }
+  /api/reviewer/r5/understanding-checks:
+    post:
+      responses:
+        "201": { description: server-scored understanding artifact recorded }
+  /api/reviewer/r5/handoffs:
+    post:
+      responses:
+        "201": { description: handoff artifact recorded }
+  /api/meta/build:
+    get:
+      responses:
+        "200": { description: non-sensitive build provenance }

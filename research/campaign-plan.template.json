@@ -1,0 +1,17 @@
+{
+  "campaignPlanVersion": "campaign-plan-v1",
+  "protocolHash": "WAITING_R1_PROTOCOL_SHA256",
+  "sampleFrameHash": "WAITING_R1_SAMPLE_FRAME_SHA256",
+  "baseline": {
+    "scannerVersion": "accesscheck-scanner-v1",
+    "axeVersion": "4.13.0",
+    "catalogVersion": "wcag-2.2-axe-4.13.0-v1",
+    "modelVersion": "accesscheck-score-v1"
+  },
+  "targetSiteCount": 10,
+  "pageLimit": 15,
+  "retryPolicy": { "maxAttemptsPerSlot": 3, "retryableReasonCodes": [] },
+  "replacementPolicy": { "sameCategoryOnly": true, "orderedByRank": true },
+  "allowedFailureReasonCodes": ["DNS_FAILED", "ROBOTS_DENIED", "TIMEOUT", "NON_HTML", "SCAN_ERROR"],
+  "slots": []
+}

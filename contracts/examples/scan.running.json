@@ -1,0 +1,11 @@
+{
+  "job": {
+    "id": "job_example",
+    "status": "running",
+    "discovered": 3,
+    "succeeded": 1,
+    "failed": 0,
+    "remaining": 2
+  },
+  "run": { "id": "run_example", "status": "running" }
+}

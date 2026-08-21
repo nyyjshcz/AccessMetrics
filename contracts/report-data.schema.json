@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://accesscheck.local/contracts/report-data.schema.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "exportId",
+    "manifestHash",
+    "sourceExportId",
+    "sourceManifestHash",
+    "studyFreezeId",
+    "populationDigest",
+    "outcomeDigest",
+    "reviewFreezeHash",
+    "modelDecisionHash",
+    "modelObservationsHash",
+    "r4EvidenceBundleHash",
+    "scanTimeLocalizationHash",
+    "reportLocalizationHash",
+    "generatedAt",
+    "provenance",
+    "sampleSummary",
+    "pageStatusSummary",
+    "frameCoverageSummary",
+    "scores",
+    "severitySummary",
+    "commonRules",
+    "principleSummary",
+    "sensitivity",
+    "manualValidation",
+    "charts",
+    "limitations"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "report-data-v1" },
+    "exportId": { "type": "string", "minLength": 1 },
+    "manifestHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "sourceExportId": { "type": "string", "minLength": 1 },
+    "sourceManifestHash": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "studyFreezeId": { "type": ["string", "null"] },
+    "populationDigest": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "outcomeDigest": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "reviewFreezeHash": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "modelDecisionHash": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "modelObservationsHash": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "r4EvidenceBundleHash": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "scanTimeLocalizationHash": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "reportLocalizationHash": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "generatedAt": { "type": ["string", "null"] },
+    "provenance": {
+      "type": "object",
+      "required": ["analysisVersion", "codeCommit", "versions"],
+      "additionalProperties": false,
+      "properties": {
+        "analysisVersion": { "type": "string" },
+        "codeCommit": { "type": ["string", "null"] },
+        "versions": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "sampleSummary": { "type": "object" },
+    "pageStatusSummary": { "type": "object" },
+    "frameCoverageSummary": { "type": "object" },
+    "scores": { "type": "object" },
+    "severitySummary": { "type": "object" },
+    "commonRules": { "type": "array", "items": { "type": "object" } },
+    "principleSummary": { "type": "object" },
+    "sensitivity": { "type": "object" },
+    "manualValidation": {
+      "type": "object",
+      "required": [
+        "populationSize",
+        "targetSize",
+        "samplerVersion",
+        "confirmedCount",
+        "notAnIssueCount",
+        "uncertainCount",
+        "agreementCount",
+        "disagreementCount",
+        "agreementRate",
+        "kappa",
+        "kappaNullReason",
+        "interpretationScope"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "populationSize": { "type": "integer", "minimum": 0 },
+        "targetSize": { "type": "integer", "minimum": 0, "maximum": 40 },
+        "samplerVersion": { "const": "manual-review-sampler-v1" },
+        "confirmedCount": { "type": "integer", "minimum": 0 },
+        "notAnIssueCount": { "type": "integer", "minimum": 0 },
+        "uncertainCount": { "type": "integer", "minimum": 0 },
+        "agreementCount": { "type": "integer", "minimum": 0 },
+        "disagreementCount": { "type": "integer", "minimum": 0 },
+        "agreementRate": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "kappa": { "type": ["number", "null"], "minimum": -1, "maximum": 1 },
+        "kappaNullReason": { "type": ["string", "null"] },
+        "interpretationScope": { "type": "string" }
+      }
+    },
+    "charts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "sha256", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "pattern": "^(charts|tables)/[^/]+$" },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "kind": { "enum": ["png", "data"] }
+        }
+      }
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } }
+  }
+}

@@ -1,0 +1,98 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "10001:10001"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp
+    environment:
+      APP_ENV: production
+      DATABASE_URL: /var/lib/accesscheck/data/accesscheck.db
+      PRIVATE_EVIDENCE_ROOT: /var/lib/accesscheck/private-evidence
+      PUBLIC_EXPORT_ROOT: /var/lib/accesscheck/public-exports
+      SESSION_SECRET_FILE: /run/secrets/session_secret
+      CSRF_SECRET_FILE: /run/secrets/csrf_secret
+      SCAN_ADMIN_TOKEN_FILE: /run/secrets/scan_admin_token
+      COMPUTER_REVIEW_TOKEN_FILE: /run/secrets/computer_review_token
+      MATH_REVIEW_TOKEN_FILE: /run/secrets/math_review_token
+      ADMIN_REAUTH_TOKEN_FILE: /run/secrets/admin_reauth_token
+    volumes:
+      - ./private-inputs:/var/lib/accesscheck/private-evidence:rw
+      - ./data:/var/lib/accesscheck/data:rw
+      - ./data/exports:/var/lib/accesscheck/public-exports:ro
+    secrets:
+      [
+        session_secret,
+        csrf_secret,
+        scan_admin_token,
+        computer_review_token,
+        math_review_token,
+        admin_reauth_token,
+      ]
+    expose: [3000]
+    networks: [app]
+  worker:
+    build: .
+    user: "10002:10002"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./tools/playwright/seccomp_profile.json
+    cap_drop: [ALL]
+    mem_limit: 2g
+    pids_limit: 256
+    init: true
+    tmpfs: [/tmp]
+    environment:
+      APP_ENV: production
+      DATABASE_URL: /var/lib/accesscheck/data/accesscheck.db
+      HTTPS_PROXY: http://egress-proxy:8080
+      HTTP_PROXY: http://egress-proxy:8080
+      NO_PROXY: localhost,127.0.0.1
+    volumes:
+      - ./data:/var/lib/accesscheck/data:rw
+    command: ["pnpm", "worker"]
+    networks: [scan-isolated]
+    depends_on: [egress-proxy]
+  egress-proxy:
+    image: ${EGRESS_PROXY_IMAGE:?set a pinned Smokescreen/goproxy image digest before production deployment}
+    read_only: true
+    networks: [scan-isolated, external-egress]
+    expose: [8080]
+  caddy:
+    image: caddy:2.10.2-alpine
+    environment:
+      CADDY_SITE: ${CADDY_SITE:?set a real HTTPS domain before production deployment}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [web]
+    networks: [app]
+secrets:
+  session_secret:
+    file: ./private-inputs/session_secret
+  scan_admin_token:
+    file: ./private-inputs/scan_admin_token
+  csrf_secret:
+    file: ./private-inputs/csrf_secret
+  computer_review_token:
+    file: ./private-inputs/computer_review_token
+  math_review_token:
+    file: ./private-inputs/math_review_token
+  admin_reauth_token:
+    file: ./private-inputs/admin_reauth_token
+volumes:
+  caddy-data:
+  caddy-config:
+networks:
+  app:
+  scan-isolated:
+    internal: true
+  external-egress:

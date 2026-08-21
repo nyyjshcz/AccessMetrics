@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "scan-export-v1",
+  "exportId": "export_partial",
+  "run": { "id": "run_example", "status": "partial", "pageCount": 3, "failedCount": 1 },
+  "score": {
+    "overall": 72.5,
+    "perceivable": 70,
+    "operable": 75,
+    "understandable": 80,
+    "robust": 65
+  },
+  "issues": [{ "ruleId": "image-alt", "resultType": "violation", "impact": "critical" }]
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schemaVersion", "exportId", "files", "generatedAt"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "canonical-manifest-json-v1" },
+    "exportId": { "type": "string" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "size", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "pattern": "^[^/].*" },
+          "size": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    },
+    "generatedAt": { "type": "string" },
+    "exportKind": { "enum": ["run", "study_source", "study_final"] },
+    "kind": { "enum": ["run", "study_source", "study_final"] },
+    "studyFreezeId": { "type": "string" },
+    "sourceExportId": { "type": ["string", "null"] },
+    "sourceManifestHash": { "type": ["string", "null"] },
+    "outcomeDigest": { "type": ["string", "null"] },
+    "reviewFreezeHash": { "type": ["string", "null"] },
+    "reportLocalizationHash": { "type": ["string", "null"] },
+    "scanTimeLocalizationHash": { "type": ["string", "null"] },
+    "modelDecisionHash": { "type": ["string", "null"] },
+    "modelObservationsHash": { "type": ["string", "null"] },
+    "r4EvidenceBundleHash": { "type": ["string", "null"] },
+    "revision": { "type": "integer", "minimum": 1 },
+    "runIds": { "type": "array", "items": { "type": "string" } }
+  }
+}

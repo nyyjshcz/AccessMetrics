@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schemaVersion", "candidateBundleId", "sourceManifestHash", "files", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "candidate-bundle-v1" },
+    "candidateBundleId": { "type": "string" },
+    "sourceManifestHash": { "type": "string" },
+    "files": { "type": "array", "items": { "type": "object" } },
+    "status": { "const": "review_candidate" }
+  }
+}

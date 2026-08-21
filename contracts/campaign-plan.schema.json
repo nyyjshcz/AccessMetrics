@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "campaignPlanVersion",
+    "protocolHash",
+    "sampleFrameHash",
+    "baseline",
+    "targetSiteCount",
+    "pageLimit",
+    "retryPolicy",
+    "replacementPolicy",
+    "allowedFailureReasonCodes",
+    "slots"
+  ],
+  "properties": {
+    "campaignPlanVersion": { "const": "campaign-plan-v1" },
+    "protocolHash": { "type": "string" },
+    "sampleFrameHash": { "type": "string" },
+    "targetSiteCount": { "type": "integer", "minimum": 10, "maximum": 20 },
+    "pageLimit": { "type": "integer", "minimum": 1, "maximum": 15 },
+    "slots": { "type": "array" }
+  }
+}

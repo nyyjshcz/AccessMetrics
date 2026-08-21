@@ -1,0 +1,11 @@
+{$CADDY_SITE:localhost} {
+  encode gzip
+  reverse_proxy web:3000
+  @secure protocol https
+  header {
+    X-Content-Type-Options nosniff
+    Referrer-Policy no-referrer
+    Content-Security-Policy "default-src 'self'; frame-ancestors 'none'"
+  }
+  header @secure Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+}

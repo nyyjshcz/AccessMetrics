@@ -1,0 +1,6 @@
+{
+  "authenticated": true,
+  "user": { "id": "usr_example", "username": "admin_service", "role": "admin" },
+  "csrfToken": "example-csrf-token",
+  "expiresAt": "2030-01-01T00:00:00.000Z"
+}

@@ -1,0 +1,9 @@
+{
+  "opportunities": [
+    { "passed": true, "principle": "perceivable" },
+    { "passed": true, "principle": "perceivable" },
+    { "passed": false, "impact": "critical", "principle": "perceivable" },
+    { "passed": false, "impact": "serious", "principle": "perceivable" }
+  ],
+  "expected": { "overall": 56.3 }
+}

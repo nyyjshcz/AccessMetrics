@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "campaign_id",
+    "slot",
+    "replacement_rank",
+    "candidate_id",
+    "run_id",
+    "started_at",
+    "terminal_status",
+    "usability_decision",
+    "reason_code",
+    "replacement_activated_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "campaign_id": { "type": "string" },
+    "slot": { "type": "integer" },
+    "replacement_rank": { "type": "integer", "minimum": 0 },
+    "candidate_id": { "type": "string" },
+    "run_id": { "type": ["string", "null"] },
+    "started_at": { "type": "string" },
+    "terminal_status": { "type": "string" },
+    "usability_decision": { "type": "string" },
+    "reason_code": { "type": ["string", "null"] },
+    "replacement_activated_at": { "type": ["string", "null"] }
+  }
+}

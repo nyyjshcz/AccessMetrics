@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "gate-attestation-index-v1",
+  "throughGate": "none",
+  "r5Status": "not_yet_recorded",
+  "r4EvidenceBundleHash": null,
+  "fullGateBundleHash": null,
+  "receipts": [],
+  "status": "WAITING_EXTERNAL_INPUT"
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "evidenceId",
+    "gateId",
+    "campaignId",
+    "role",
+    "decision",
+    "statementVersion",
+    "artifacts",
+    "reviewedAt",
+    "note",
+    "revision",
+    "receiptHash"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "human-gate-receipt-v1" },
+    "evidenceId": { "type": "string" },
+    "gateId": { "enum": ["R1", "R2", "R3", "R4", "R5"] },
+    "campaignId": { "type": ["string", "null"] },
+    "role": { "enum": ["computer_lead", "math_lead"] },
+    "decision": { "enum": ["approved", "rejected"] },
+    "statementVersion": { "type": "string" },
+    "boundCommit": { "type": ["string", "null"] },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["logicalId", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "logicalId": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    },
+    "reviewedAt": { "type": "string" },
+    "note": { "type": "string", "maxLength": 2000 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "receiptHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

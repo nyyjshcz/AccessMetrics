@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "study-csv-columns-v1",
+  "columns": [
+    "run_id",
+    "site_id",
+    "page_id",
+    "canonical_url",
+    "rule_id",
+    "result_type",
+    "impact",
+    "effective_impact",
+    "principles",
+    "wcag_criteria",
+    "target_hash"
+  ]
+}

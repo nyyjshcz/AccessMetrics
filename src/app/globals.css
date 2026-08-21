@@ -1,0 +1,119 @@
+:root {
+  --bg: #f5f7fb;
+  --panel: #fff;
+  --ink: #172033;
+  --muted: #64748b;
+  --accent: #146c94;
+  --danger: #b42318;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    "Microsoft YaHei",
+    sans-serif;
+}
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+.shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px;
+}
+.topbar {
+  background: #0f3550;
+  color: #fff;
+}
+.topbar .shell {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-block: 16px;
+}
+.brand {
+  font-weight: 700;
+  color: #fff;
+}
+.grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+.card {
+  background: var(--panel);
+  border: 1px solid #dbe4ef;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 2px 8px #0f35500d;
+}
+label {
+  display: block;
+  font-weight: 600;
+  margin: 12px 0 6px;
+}
+input,
+select,
+button,
+textarea {
+  width: 100%;
+  border: 1px solid #b9c7d7;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font: inherit;
+}
+button {
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  border: 0;
+  font-weight: 700;
+  margin-top: 16px;
+}
+button.secondary {
+  background: #e5edf5;
+  color: var(--ink);
+}
+.muted {
+  color: var(--muted);
+}
+.score {
+  font-size: 2.4rem;
+  font-weight: 800;
+  color: var(--accent);
+}
+.pill {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #e5edf5;
+  font-size: 0.85rem;
+}
+.error {
+  color: var(--danger);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+}
+th,
+td {
+  text-align: left;
+  padding: 10px;
+  border-bottom: 1px solid #e5eaf0;
+}
+th {
+  background: #eef4f8;
+}

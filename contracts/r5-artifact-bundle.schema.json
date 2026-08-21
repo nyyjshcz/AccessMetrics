@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schemaVersion", "artifactHashes", "bundleHash", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "r5-artifact-bundle-v1" },
+    "artifactHashes": { "type": "array", "items": { "type": "string" } },
+    "bundleHash": { "type": "string" },
+    "status": { "const": "verified" }
+  }
+}

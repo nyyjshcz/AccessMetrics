@@ -1,0 +1,64 @@
+import fs from "node:fs";
+
+if (process.argv.includes("--help")) {
+  console.log("usage: pnpm ops:check");
+  process.exit(0);
+}
+const required = [
+  "Dockerfile",
+  "docker-compose.yml",
+  "compose.yaml",
+  "compose.prod.yaml",
+  "Caddyfile",
+  "tools/playwright/seccomp_profile.json",
+  "tools/egress-proxy/acl.yaml",
+  "tools/egress-proxy/proxy.mjs",
+  "scripts/write-build-provenance.mjs",
+  "tools/document-renderer/Dockerfile",
+];
+const missing = required.filter((file) => !fs.existsSync(file));
+const dockerfile = fs.existsSync("Dockerfile") ? fs.readFileSync("Dockerfile", "utf8") : "";
+const caddyfile = fs.existsSync("Caddyfile") ? fs.readFileSync("Caddyfile", "utf8") : "";
+const productionCompose = fs.existsSync("compose.prod.yaml")
+  ? fs.readFileSync("compose.prod.yaml", "utf8")
+  : "";
+const warnings = [
+  !dockerfile.includes("node:24.19.0") ? "Dockerfile Node baseline differs" : null,
+  !dockerfile.includes("ACCESSCHECK_FINAL_CANDIDATE")
+    ? "Dockerfile must support release provenance build args"
+    : null,
+  !dockerfile.includes("org.opencontainers.image.revision")
+    ? "Dockerfile must set OCI revision label from release candidate"
+    : null,
+  !fs.existsSync("tools/egress-proxy/Dockerfile") ? "egress proxy image not supplied" : null,
+  !productionCompose.includes("EGRESS_PROXY_IMAGE:?")
+    ? "production compose must use a pinned egress proxy image"
+    : null,
+  !productionCompose.includes("CSRF_SECRET_FILE")
+    ? "production compose does not mount CSRF secret"
+    : null,
+  !caddyfile.includes("CADDY_SITE") ? "Caddyfile must use an externally supplied site" : null,
+  !caddyfile.includes("Strict-Transport-Security")
+    ? "Caddyfile must include conditional HSTS"
+    : null,
+].filter(Boolean);
+const localWorkerPrivateMount =
+  /worker:[\s\S]*?PRIVATE_EVIDENCE_ROOT|worker:[\s\S]*?private-evidence/i.test(
+    fs.existsSync("compose.yaml") ? fs.readFileSync("compose.yaml", "utf8") : "",
+  );
+if (localWorkerPrivateMount) warnings.push("local compose worker must not mount private evidence");
+const productionWorkerPrivateMount = /worker:[\s\S]*?private-evidence/i.test(productionCompose);
+if (productionWorkerPrivateMount)
+  warnings.push("production worker must not mount private evidence");
+for (const [name, compose] of [
+  ["local", fs.existsSync("compose.yaml") ? fs.readFileSync("compose.yaml", "utf8") : ""],
+  [
+    "docker",
+    fs.existsSync("docker-compose.yml") ? fs.readFileSync("docker-compose.yml", "utf8") : "",
+  ],
+] as const) {
+  if (/web:[\s\S]*?command:\s*\[[^\]]*next\s+start/i.test(compose))
+    warnings.push(`${name} compose must start the standalone server directly`);
+}
+console.log(JSON.stringify({ passed: missing.length === 0, missing, warnings }, null, 2));
+if (missing.length) process.exitCode = 1;

@@ -1,0 +1,14 @@
+version: 1
+mode: deny_by_default
+allowed:
+  - scheme: https
+    ports: [443]
+  - scheme: http
+    ports: [80]
+blocked:
+  - private_networks: true
+  - localhost: true
+  - link_local: true
+  - metadata_services: true
+logging:
+  redact_query: true

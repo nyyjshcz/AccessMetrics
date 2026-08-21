@@ -1,0 +1,13 @@
+# Python 3.12 / Windows x64 direct-analysis lock. Hashes are for the exact
+# wheels used by the project baseline; dependency resolution must be frozen by
+# the environment manager before a formal study run.
+numpy==2.5.1 \
+    --hash=sha256:f7d60026c0bdb1380e83bfa7a0419c4577ee4b9a08880afcb6dadeb74c649fa2
+pandas==3.0.5 \
+    --hash=sha256:80a611068e8a3ac23f7398c6c14eb46dc974e5cc9997f653e2dcfd1da74edd41
+scipy==1.18.0 \
+    --hash=sha256:71ccc8faa2dd16ac310233203474a8b5cb67f10dedd54a3116d34943f4b19132
+matplotlib==3.10.8 \
+    --hash=sha256:dd80ecb295460a5d9d260df63c43f4afbdd832d725a531f008dad1664f458adf
+jupyter==1.1.1 \
+    --hash=sha256:7a59533c22af65439b24bbe60373a4e95af8f16ac65a6c00820ad378e3f7cc83

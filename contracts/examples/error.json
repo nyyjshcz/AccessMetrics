@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_URL",
+    "message": "请输入公开的 HTTP 或 HTTPS 网站地址",
+    "requestId": "req_example"
+  }
+}

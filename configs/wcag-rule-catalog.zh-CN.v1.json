@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "wcag-rule-catalog-zh-v1",
+  "status": "ai_draft",
+  "rules": {
+    "image-alt": { "name": "图片替代文本", "explanation": "图片需要能传达同等信息的替代文本" },
+    "color-contrast": { "name": "颜色对比度", "explanation": "文字与背景需要有足够对比度" },
+    "button-name": { "name": "按钮名称", "explanation": "按钮需要可被辅助技术识别的名称" },
+    "link-name": { "name": "链接名称", "explanation": "链接需要可理解的名称" },
+    "label": { "name": "表单标签", "explanation": "表单控件需要关联标签" }
+  }
+}

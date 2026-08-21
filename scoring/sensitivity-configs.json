@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "sensitivity-configs-v1",
+  "main": "accesscheck-score-v1",
+  "scenarios": [
+    {
+      "id": "equal-principle",
+      "principleWeights": { "perceivable": 25, "operable": 25, "understandable": 25, "robust": 25 }
+    },
+    {
+      "id": "critical-heavy",
+      "impactWeights": { "critical": 5, "serious": 3, "moderate": 2, "minor": 1 }
+    },
+    { "id": "page-macro-average", "aggregation": "equal_page_average" },
+    {
+      "id": "density-descriptive",
+      "aggregation": "defects_per_1000_dom_elements",
+      "warning": "descriptive_only_not_primary_score"
+    }
+  ],
+  "status": "ready_for_real_data"
+}

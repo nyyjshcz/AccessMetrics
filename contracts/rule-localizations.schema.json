@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schemaVersion", "status", "rules"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "type": "string" },
+    "status": { "type": "string" },
+    "rules": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "ruleId",
+          "sourceDescription",
+          "sourceHelp",
+          "sourceVersion",
+          "sourceHash",
+          "zhName",
+          "zhImpact",
+          "zhFix",
+          "manualCheck",
+          "translationStatus",
+          "reviewer",
+          "reviewedAt"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "ruleId": { "type": "string" },
+          "sourceDescription": { "type": "string" },
+          "sourceHelp": { "type": "string" },
+          "sourceVersion": { "type": "string" },
+          "sourceHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "zhName": { "type": "string" },
+          "zhImpact": { "type": "string" },
+          "zhFix": { "type": "string" },
+          "manualCheck": { "type": "string" },
+          "translationStatus": { "enum": ["ai_draft", "human_reviewed"] },
+          "reviewer": { "type": ["string", "null"] },
+          "reviewedAt": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

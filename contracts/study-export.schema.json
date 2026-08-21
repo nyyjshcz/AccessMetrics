@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schemaVersion", "exportId", "exportKind", "studyFreezeId", "runSet"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "study-export-v1" },
+    "exportId": { "type": "string" },
+    "exportKind": { "enum": ["study_source", "study_final"] },
+    "studyFreezeId": { "type": "string" },
+    "runSet": { "type": "array", "items": { "type": "string" } },
+    "outcomeDigest": { "type": ["string", "null"] }
+  }
+}

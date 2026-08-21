@@ -1,0 +1,13 @@
+{
+  "rulesetVersion": "publication-privacy-rules-v1",
+  "rules": [
+    "secret-token",
+    "cookie",
+    "email",
+    "phone",
+    "private-path",
+    "raw-html",
+    "path-safety",
+    "manifest-required"
+  ]
+}

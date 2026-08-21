@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://accesscheck.local/contracts/scan-export.schema.json",
+  "type": "object",
+  "required": ["schemaVersion", "exportId", "run", "score", "issues"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "scan-export-v1" },
+    "exportId": { "type": "string" },
+    "run": { "type": "object" },
+    "score": { "type": "object" },
+    "issues": { "type": "array" },
+    "pages": { "type": "array", "items": { "type": "object" } }
+  }
+}

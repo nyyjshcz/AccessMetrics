@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "rulesetVersion",
+    "exportId",
+    "manifestHash",
+    "fileAllowlistHash",
+    "checkedFiles",
+    "findings",
+    "passed",
+    "generatedAt",
+    "privacyCheckHash"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "publication-privacy-report-v1" },
+    "findings": { "type": "array" },
+    "passed": { "type": "boolean" }
+  }
+}

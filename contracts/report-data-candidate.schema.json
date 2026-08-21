@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://accesscheck.local/contracts/report-data-candidate.schema.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "artifactKind",
+    "sourceExportId",
+    "sourceManifestHash",
+    "studyFreezeId",
+    "populationDigest",
+    "reviewFreezeHash",
+    "reportLocalizationDraftHash",
+    "modelDecisionHash",
+    "modelObservationsHash",
+    "createdFromCommit",
+    "files"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "report-data-candidate-v1" },
+    "artifactKind": { "const": "candidate" },
+    "sourceExportId": { "type": "string", "minLength": 1 },
+    "sourceManifestHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "studyFreezeId": { "type": "string", "minLength": 1 },
+    "populationDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "reviewFreezeHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "reportLocalizationDraftHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "modelDecisionHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "modelObservationsHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "createdFromCommit": { "type": "string", "pattern": "^[a-f0-9]{40,64}$" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "bytes", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    }
+  }
+}

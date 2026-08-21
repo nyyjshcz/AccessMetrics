@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "role",
+    "rubricVersion",
+    "questionSetHash",
+    "answers",
+    "scores",
+    "totalScore",
+    "criticalPassed",
+    "passed"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "r5-understanding-check-v1" },
+    "role": { "type": "string" },
+    "rubricVersion": { "const": "r5-understanding-rubric-2026-08-22" },
+    "questionSetHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "answers": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": ["topic", "answer"],
+        "additionalProperties": false,
+        "properties": {
+          "topic": { "type": "string" },
+          "answer": { "type": "string", "minLength": 20 }
+        }
+      }
+    },
+    "scores": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": ["topic", "score", "points", "possiblePoints", "criticalPassed"],
+        "additionalProperties": false,
+        "properties": {
+          "topic": { "type": "string" },
+          "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "points": { "type": "integer", "minimum": 0, "maximum": 5 },
+          "possiblePoints": { "const": 5 },
+          "criticalPassed": { "type": "boolean" }
+        }
+      }
+    },
+    "totalScore": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "criticalPassed": { "type": "boolean" },
+    "passed": { "type": "boolean" }
+  }
+}

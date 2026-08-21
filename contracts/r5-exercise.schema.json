@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schemaVersion", "role", "commit", "commands", "result"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "r5-exercise-v1" },
+    "role": { "type": "string" },
+    "commit": { "type": "string" },
+    "commands": { "type": "array" },
+    "result": { "type": "string" }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "campaign-plan-v1",
+  "campaignId": "待R1确认",
+  "populationDefinition": "待R1确认",
+  "strata": [],
+  "seed": null,
+  "scannerVersion": "accesscheck-scanner-v1",
+  "axeVersion": "4.13.0",
+  "catalogVersion": "wcag-2.2-axe-4.13.0-v1"
+}

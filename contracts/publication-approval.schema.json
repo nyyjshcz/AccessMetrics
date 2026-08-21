@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "exportId",
+    "manifestHash",
+    "finalCandidate",
+    "buildAttestationHash",
+    "validationAttestationHash",
+    "fileAllowlistHash",
+    "privacyCheckHash",
+    "licenseDecision",
+    "decision",
+    "statementVersion",
+    "scope",
+    "approvedBy",
+    "approvedAt",
+    "approvalHash"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "publication-approval-v1" },
+    "exportId": { "type": "string" },
+    "manifestHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "finalCandidate": { "type": ["string", "null"] },
+    "buildAttestationHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "validationAttestationHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "fileAllowlistHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "privacyCheckHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "licenseDecision": { "enum": ["authorized_public", "private_only", "unknown"] },
+    "decision": { "enum": ["approved", "rejected"] },
+    "statementVersion": { "type": "string" },
+    "scope": { "type": "array", "items": { "type": "string" } },
+    "approvedBy": { "type": "string" },
+    "approvedAt": { "type": "string" },
+    "approvalHash": { "type": "string" }
+  }
+}

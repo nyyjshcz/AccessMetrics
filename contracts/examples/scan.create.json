@@ -1,0 +1,6 @@
+{
+  "jobId": "job_example",
+  "siteId": "site_example",
+  "status": "queued",
+  "statusUrl": "/api/scans/job_example"
+}

@@ -1,0 +1,31 @@
+services:
+  web:
+    build: .
+    environment:
+      APP_ENV: production
+      DATABASE_URL: /app/data/accesscheck.db
+      PRIVATE_EVIDENCE_ROOT: /app/private-inputs
+      PUBLIC_EXPORT_ROOT: /app/data/exports
+      APP_BASE_URL: http://localhost:3000
+    ports: ["3000:3000"]
+    volumes:
+      - accesscheck-data:/app/data
+      - accesscheck-private:/app/private-inputs
+      - accesscheck-exports:/app/data/exports
+    healthcheck:
+      test: ["CMD", "node", "scripts/healthcheck.mjs"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+  worker:
+    build: .
+    command: ["pnpm", "worker"]
+    environment:
+      APP_ENV: production
+      DATABASE_URL: /app/data/accesscheck.db
+    volumes:
+      - accesscheck-data:/app/data
+volumes:
+  accesscheck-data:
+  accesscheck-private:
+  accesscheck-exports:

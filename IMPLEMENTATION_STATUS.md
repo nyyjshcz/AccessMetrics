@@ -57,7 +57,7 @@ pnpm lint
 pnpm format:check
 pnpm test:integration     # 4 files, 14 tests
 pnpm test:scoring-parity  # 5 files, 22 tests
-pnpm test                 # 8 files, 34 tests
+pnpm test                 # 9 files, 36 tests
 pnpm test:analysis
 pnpm build                # Next production build
 pnpm test:e2e             # 3 browser tests（核心页面 axe、匿名权限、完整 fixture 扫描/审核/发布/导出/撤下流程）

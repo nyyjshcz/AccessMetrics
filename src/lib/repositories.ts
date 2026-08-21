@@ -134,8 +134,14 @@ export function createRun(job: any) {
   return run;
 }
 export function addDiscoveredPages(jobId: string, siteId: string, urls: string[]) {
-  transaction((db) =>
-    urls.forEach((url, index) => {
+  transaction((db) => {
+    const current = db
+      .prepare(
+        "SELECT COALESCE(MAX(discovery_order) + 1, 0) AS next_order FROM job_pages WHERE job_id=?",
+      )
+      .get(jobId) as { next_order: number };
+    let nextOrder = current.next_order;
+    urls.forEach((url) => {
       const existing = db
         .prepare("SELECT id FROM job_pages WHERE job_id=? AND normalized_url=?")
         .get(jobId, url) as { id: string } | undefined;
@@ -147,10 +153,10 @@ export function addDiscoveredPages(jobId: string, siteId: string, urls: string[]
       ).run(pageId, siteId, url, url, url, now(), now());
       db.prepare(
         "INSERT INTO job_pages(id,job_id,page_id,requested_url,normalized_url,discovery_order,status,created_at,updated_at) VALUES (?,?,?,?,?,?, 'discovered',?,?)",
-      ).run(jobPageId, jobId, pageId, url, url, index, now(), now());
+      ).run(jobPageId, jobId, pageId, url, url, nextOrder++, now(), now());
       db.prepare("UPDATE pages SET job_page_id=? WHERE id=?").run(jobPageId, pageId);
-    }),
-  );
+    });
+  });
 }
 export function finishJob(jobId: string, status: string, error?: unknown) {
   const code =

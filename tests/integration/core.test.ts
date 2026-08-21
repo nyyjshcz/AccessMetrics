@@ -50,6 +50,7 @@ describe("database and evidence chain", () => {
       respectRobots: true,
     });
     repositories.addDiscoveredPages(first.id, site.id, ["https://pages.example/a"]);
+    repositories.addDiscoveredPages(first.id, site.id, ["https://pages.example/b"]);
     repositories.addDiscoveredPages(second.id, site.id, ["https://pages.example/a"]);
     const rows = dbModule
       .getDb()
@@ -62,8 +63,8 @@ describe("database and evidence chain", () => {
       page_id: string;
       page_job_page_id: string;
     }>;
-    expect(rows).toHaveLength(2);
-    expect(new Set(rows.map((row) => row.page_id)).size).toBe(2);
+    expect(rows).toHaveLength(3);
+    expect(new Set(rows.map((row) => row.page_id)).size).toBe(3);
     expect(rows.every((row) => row.job_page_id === row.page_job_page_id)).toBe(true);
   });
 

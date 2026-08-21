@@ -42,6 +42,7 @@
     "catalog:check": "tsx scripts/check-wcag-catalog.ts",
     "analysis:setup": "tsx scripts/analysis-setup.ts",
     "analysis:run": "tsx scripts/analysis-run.ts",
+    "analysis:candidate": "tsx scripts/analysis-candidate.ts",
     "export:verify": "tsx scripts/export-verify.ts",
     "gates:index": "tsx scripts/gates-index.ts",
     "gates:seal": "tsx scripts/gates-seal.ts",

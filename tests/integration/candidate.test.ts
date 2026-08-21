@@ -26,7 +26,7 @@ function writeCandidateFixture() {
   );
   fs.writeFileSync(path.join(candidate, "model-decision-record.md"), "decision\n");
   fs.writeFileSync(path.join(candidate, "model-observations.md"), "observations\n");
-  const candidateData = {
+  const candidateData: Record<string, unknown> = {
     schemaVersion: "report-data-candidate-v1",
     artifactKind: "candidate",
     sourceExportId: "source-1",
@@ -72,7 +72,44 @@ function writeCandidateFixture() {
       path.join(candidate, name),
       `> REVIEW CANDIDATE — NOT FINAL\nreport-data SHA-256: ${candidateDataHash}\n`,
     );
-  return { root, source, review, candidate, output, localization };
+  const sourceReportDataPath = path.join(root, "source-report-data.json");
+  fs.writeFileSync(
+    sourceReportDataPath,
+    `${JSON.stringify({
+      schemaVersion: "report-data-v1",
+      exportId: "source-1",
+      manifestHash: candidateData.sourceManifestHash,
+      sourceExportId: "source-1",
+      sourceManifestHash: candidateData.sourceManifestHash,
+      studyFreezeId: candidateData.studyFreezeId,
+      populationDigest: candidateData.populationDigest,
+      outcomeDigest: "c".repeat(64),
+      reviewFreezeHash: candidateData.reviewFreezeHash,
+      modelDecisionHash: candidateData.modelDecisionHash,
+      modelObservationsHash: candidateData.modelObservationsHash,
+      r4EvidenceBundleHash: "d".repeat(64),
+      scanTimeLocalizationHash: "e".repeat(64),
+      reportLocalizationHash: "f".repeat(64),
+      generatedAt: "2026-01-01T00:00:00.000Z",
+      provenance: { analysisVersion: "accesscheck-analysis-v1", codeCommit: null, versions: [] },
+      ...Object.fromEntries(
+        [
+          "sampleSummary",
+          "pageStatusSummary",
+          "frameCoverageSummary",
+          "scores",
+          "severitySummary",
+          "commonRules",
+          "principleSummary",
+          "sensitivity",
+          "manualValidation",
+          "charts",
+          "limitations",
+        ].map((field) => [field, candidateData[field]]),
+      ),
+    })}\n`,
+  );
+  return { root, source, review, candidate, output, localization, sourceReportDataPath };
 }
 
 describe("candidate deliverables", () => {
@@ -147,6 +184,49 @@ describe("candidate deliverables", () => {
           { encoding: "utf8", stdio: "pipe" },
         ),
       ).toThrow();
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("derives candidate report-data without copying final identity fields", () => {
+    const fixture = writeCandidateFixture();
+    try {
+      const tsx = path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      const output = path.join(fixture.root, "report-data.candidate.json");
+      const result = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            tsx,
+            "scripts/analysis-candidate.ts",
+            "--source-report-data",
+            fixture.sourceReportDataPath,
+            "--source-export",
+            fixture.source,
+            "--review-freeze",
+            fixture.review,
+            "--model-decision",
+            path.join(fixture.candidate, "model-decision-record.md"),
+            "--model-observations",
+            path.join(fixture.candidate, "model-observations.md"),
+            "--created-from-commit",
+            "b".repeat(40),
+            "--report-localization-draft",
+            fixture.localization,
+            "--output",
+            output,
+          ],
+          { encoding: "utf8" },
+        ),
+      );
+      const generated = JSON.parse(fs.readFileSync(output, "utf8"));
+      expect(result.status).toBe("candidate_created");
+      expect(generated.schemaVersion).toBe("report-data-candidate-v1");
+      expect(generated.artifactKind).toBe("candidate");
+      expect(generated).not.toHaveProperty("exportId");
+      expect(generated).not.toHaveProperty("manifestHash");
+      expect(generated).not.toHaveProperty("outcomeDigest");
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

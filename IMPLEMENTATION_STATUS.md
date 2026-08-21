@@ -57,7 +57,7 @@ pnpm lint
 pnpm format:check
 pnpm test:integration     # 4 files, 14 tests
 pnpm test:scoring-parity  # 5 files, 22 tests
-pnpm test                 # 9 files, 36 tests
+pnpm test                 # 9 files, 37 tests
 pnpm test:analysis
 pnpm build                # Next production build
 pnpm test:e2e             # 3 browser tests（核心页面 axe、匿名权限、完整 fixture 扫描/审核/发布/导出/撤下流程）
@@ -70,7 +70,8 @@ pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部�
 本轮候选链局部质量门另外通过：
 
 ```text
-pnpm exec vitest run tests/integration/candidate.test.ts  # 1 file, 2 tests
+pnpm exec vitest run tests/integration/candidate.test.ts  # 1 file, 3 tests
+pnpm analysis:candidate  # source report-data -> candidate report-data，final 字段剥离与幂等写入通过
 pnpm deliverables:candidate  # 使用隔离临时 fixture：首次写入 + 幂等复用均通过
 pnpm report:generate -- --mode candidate  # 候选页眉及 source/review-freeze 绑定通过
 ```

@@ -37,6 +37,12 @@ pnpm deliverables:candidate -- --source-export <绝对目录> --review-freeze <�
 
 候选目录必须恰有 `report-data.candidate.json`、`model-decision-record.md`、`model-observations.md` 和两份候选报告；脚本会核对 source/review-freeze/localization/model/commit hash，排除 final 字段，按五个文件的字节和 SHA-256 生成可复用的 `candidateBundleId`，并原子写入只读 bundle。`pnpm deliverables:templates` 生成带条件式水印的成果接收 DOCX/PDF 模板，`pnpm backup:create -- --output <绝对目录>` 对私有证据使用 AES-256-GCM 加密，`pnpm project:status` 根据实际文件、gate receipt 和外部输入输出状态。
 
+候选 report-data 不手工拼接，使用已验证 source 分析、review-freeze 和两份模型材料生成（命令会剥离所有 final 身份字段，并以临时文件 + 重命名方式幂等写入）：
+
+```text
+pnpm analysis:candidate -- --source-report-data <绝对json> --source-export <绝对目录> --review-freeze <绝对文件或目录> --model-decision <绝对文件> --model-observations <绝对文件> --created-from-commit <完整commit SHA> --output <绝对json> [--report-localization-draft <绝对文件>]
+```
+
 正式研究样本、人工 verdict、R1–R5 receipt、生产服务器和域名不会由 AI 伪造。当前真实状态见 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) 和 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。
 
 ## 容量边界

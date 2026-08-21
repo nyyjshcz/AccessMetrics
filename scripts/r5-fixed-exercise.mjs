@@ -27,7 +27,11 @@ const checks = {
   },
   "backup-restore": () => {
     const backup = fs.readFileSync(path.join("scripts", "backup-restore.ts"), "utf8");
-    if (!backup.includes("integrity") || !backup.includes("sha256"))
+    if (
+      !backup.includes("BACKUP-MANIFEST") ||
+      !backup.includes("aes-256-gcm") ||
+      !backup.includes("sha256")
+    )
       throw new Error("backup integrity contract missing");
   },
   "publication-fail-closed": () => {
@@ -35,7 +39,7 @@ const checks = {
       path.join("src", "app", "api", "exports", "studies", "[exportId].zip", "route.ts"),
       "utf8",
     );
-    if (!route.includes("publication_status") || !route.includes("fullGateBundleHash"))
+    if (!route.includes("publication_status") || !route.includes("publication_gate_bundle_hash"))
       throw new Error("publication fail-closed contract missing");
   },
 };

@@ -144,6 +144,19 @@ if (!candidateRequiredFields.every((field) => candidateReportSchema.required?.in
 for (const forbidden of ["exportId", "manifestHash", "outcomeDigest", "r4EvidenceBundleHash"])
   if (candidateReportSchema.properties?.[forbidden])
     throw new Error(`candidate report-data schema illegally exposes final field: ${forbidden}`);
+for (const field of [
+  "frameCoverageSummary",
+  "scores",
+  "manualValidation",
+  "charts",
+  "limitations",
+]) {
+  const reference = candidateReportSchema.properties?.[field]?.["$ref"];
+  if (reference !== `report-data.schema.json#/$defs/${field}`)
+    throw new Error(`candidate report-data must share report-data $defs for ${field}`);
+  if (!reportDataSchema.$defs?.[field])
+    throw new Error(`report-data schema missing shared $defs.${field}`);
+}
 const candidateBundleSchema = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "contracts", "candidate-bundle.schema.json"), "utf8"),
 );

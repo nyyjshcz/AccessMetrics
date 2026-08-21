@@ -1,7 +1,7 @@
 # 实施状态
 
 - 当前状态：`WAITING_EXTERNAL_INPUT`
-- 当前自动化基线 commit：`0a2fa4e525d4c3a77182dfb65e9802188493f6e9`（`test: harden scan CLI and network boundary regressions`；未创建 release tag，未公网发布）。
+- 当前自动化基线 commit：`a73880653240133a756f42eb6085bbb006d0d664`（`security: harden auth rate limits and gate evidence`；未创建 release tag，未公网发布）。
 - 自动化实现：已完成计划步骤 1–17，以及步骤 18/19 所有不依赖真人或外部单位的代码、契约、脚手架、fixture、报告生成器、可复现分析管线和 fail-closed 校验。
 - 真实阻塞：R1–R5 真人确认、真实研究站点/许可/标准来源、生产服务器/域名/密钥/镜像与渲染器 digest。详见 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。
 
@@ -29,6 +29,9 @@
 - 本轮生产安全审计还补齐了显式 egress proxy：Crawler 的 robots 请求和 Chromium 请求共用代理策略，禁止代理绕过、QUIC、后台网络和 WebRTC 本地地址泄漏；扫描器把 401/403/其他 HTTP 错误保存为结构化失败；Worker 按固定 `SCAN_RETRY_COUNT=1` 重试并把配置快照写入 run；站点发现受最大深度和总时长限制，最终重定向必须保持同源。
 - 生产配置现在要求 Worker 使用隔离的 `scan-isolated` 内部网络和显式代理，代理策略拒绝私网、保留地址、文档示例网段、metadata、IPv4-mapped/ULA/link-local IPv6，并提供 `pnpm egress:check`；Caddy 未提供 `CADDY_SITE` 时 fail-closed，应用镜像在构建时安装固定 Playwright Chromium。
 - 本轮完成度复核又补齐了 `scan:page`/`scan:one-page` 的无副作用共享 CLI（每次命令只启动一次扫描）、下载型非 HTML 响应的 `NON_HTML` 结构化错误、robots deny/最大深度/总时长/三次确定性发现回归，以及混合图片 pass/violation、浏览器关闭后重启和 PDF 下载 fixture；egress proxy 的 IPv6 判定改为按地址段解析并拒绝所有 IPv4-mapped 形式。
+- 本轮安全与验收复核补齐了双角色 cookie 并存时的服务端 role 选择、错误角色 403/未登录 401 区分、生产 reviewer token 不得相同、Caddy 可信代理标记重写，以及只接受可信代理注入的 rate-limit 客户端地址。
+- R5 artifact 现在由服务端按 canonical 字节写一次并校验磁盘 hash；修订会使共同 bundle 和双方 finalize 失效，缺失/篡改/冲突均 fail-closed。gate receipt 改为完整 receipt 字节 hash，outbox 幂等写入并有双角色 fixture 验证。
+- `gates:verify`、`project:status` 和 `project:resume` 现在会核对 receipt artifact 当前 hash、数据库 current approved 记录、outbox=`written`、outbox 字节/目标路径/hash、R5 六项排序 bundle、共同 bundle hash、两份公共 artifact 集、前置门顺序及 R5 两份相同 40 位 bound commit；不会以文件存在代替数据库事实。
 
 ## 最近自动化质量门（2026-08-22）
 
@@ -49,13 +52,13 @@ pnpm contract:check
 pnpm typecheck
 pnpm lint
 pnpm format:check
-pnpm test:integration     # 3 files, 11 tests
-pnpm test:scoring-parity  # 4 files, 20 tests
-pnpm test                 # 7 files, 31 tests
+pnpm test:integration     # 3 files, 12 tests
+pnpm test:scoring-parity  # 5 files, 22 tests
+pnpm test                 # 8 files, 34 tests
 pnpm test:analysis
 pnpm build                # Next production build
 pnpm test:e2e             # 3 browser tests（核心页面 axe、匿名权限、完整 fixture 扫描/审核/发布/导出/撤下流程）
-pnpm test:all             # 上述依赖、静态检查、hygiene/handoff:check、egress policy、31 个 Vitest 测试、Python 分析、构建与 3 个 E2E 总门
+pnpm test:all             # 上述依赖、静态检查、hygiene/handoff:check、egress policy、34 个 Vitest 测试、Python 分析、构建与 3 个 E2E 总门
 pnpm project:status       # 输出 WAITING_EXTERNAL_INPUT，自动实现 ready
 pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部输入齐全
 ```

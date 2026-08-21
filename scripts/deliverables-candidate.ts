@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { canonicalize, sha256 } from "../src/lib/canonical";
+import { assertCandidateReportData } from "./report-data-contract";
 
 type CandidateFile = { path: string; bytes: number; sha256: string };
 type CandidateData = Record<string, unknown>;
@@ -134,6 +135,7 @@ if (candidateData.schemaVersion !== "report-data-candidate-v1")
   throw new Error("candidate report-data schemaVersion 必须是 report-data-candidate-v1");
 if (candidateData.artifactKind !== "candidate")
   throw new Error("candidate report-data artifactKind 必须是 candidate");
+assertCandidateReportData(candidateData);
 if (candidateData.sourceExportId !== sourceExportId)
   throw new Error("candidate report-data sourceExportId 未绑定 source manifest");
 if (candidateData.sourceManifestHash !== sourceManifestHash)

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Document, HeadingLevel, Packer, Paragraph, TextRun } from "docx";
 import { canonicalize, sha256 } from "../src/lib/canonical";
+import { assertCandidateReportData } from "./report-data-contract";
 
 type ReportData = {
   siteScores?: Record<string, { exact?: string; display?: number | null }>;
@@ -54,42 +55,6 @@ function assertReportData(data: ReportData) {
     throw new Error("report-data.scores 必须是对象");
   if (!data.manualValidation || typeof data.manualValidation !== "object")
     throw new Error("report-data.manualValidation 必须是对象");
-}
-
-function assertCandidateReportData(data: ReportData) {
-  if (data.schemaVersion !== "report-data-candidate-v1")
-    throw new Error("candidate report-data schemaVersion 必须是 report-data-candidate-v1");
-  if (data.artifactKind !== "candidate")
-    throw new Error("candidate report-data artifactKind 必须是 candidate");
-  for (const forbidden of ["exportId", "manifestHash", "outcomeDigest", "r4EvidenceBundleHash"])
-    if (forbidden in data) throw new Error(`candidate report-data 禁止 final 字段: ${forbidden}`);
-  const required = [
-    "sourceExportId",
-    "sourceManifestHash",
-    "studyFreezeId",
-    "populationDigest",
-    "reviewFreezeHash",
-    "reportLocalizationDraftHash",
-    "modelDecisionHash",
-    "modelObservationsHash",
-    "createdFromCommit",
-    "provenance",
-    "sampleSummary",
-    "pageStatusSummary",
-    "frameCoverageSummary",
-    "scores",
-    "severitySummary",
-    "commonRules",
-    "principleSummary",
-    "sensitivity",
-    "manualValidation",
-    "charts",
-    "limitations",
-  ];
-  const missing = required.filter((field) => !(field in data));
-  if (missing.length) throw new Error(`candidate report-data 缺少字段: ${missing.join(", ")}`);
-  if (!data.scores || typeof data.scores !== "object")
-    throw new Error("candidate report-data.scores 必须是对象");
 }
 
 function args() {

@@ -34,7 +34,7 @@
 - 成果 candidate/verify/release 链现在要求固定的 report-data、两份最终报告、图表/表格 hash、R1–R5 数据库绑定 evidence 和分别重算的 `r4EvidenceBundleHash`/`fullGateBundleHash`；缺任何输入均失败，不再把可选参数或文件存在当作完成证明。
 - R4 候选链已按计划收紧：`report-data.candidate.json` 使用独立 schema、禁止 `exportId/manifestHash/outcomeDigest/r4EvidenceBundleHash` 等 final 字段，并通过 `$defs` 与最终 report-data 共用分数、frame、人工样本、图表和局限定义；candidate bundle 固定绑定 source/review-freeze/localization/model/commit 以及五个候选文件的 bytes/SHA-256，candidateBundleId 对语义内容完整 hash，候选目录原子写入、只读、可幂等复用。
 - 候选契约校验不仅检查顶层字段，还在运行时锁定 frame、scores、manualValidation、charts、limitations 的字段集合、类型、范围和路径安全；生成器与 bundle 命令共用同一校验器，不能用“文件存在”绕过 schema。
-- 候选报告生成器现在显式输出 `REVIEW CANDIDATE — NOT FINAL`，只显示 source/review-freeze 身份；`pnpm deliverables:candidate` 会拒绝最终身份字段、最终 schema、缺失模型 hash、缺失候选水印或多余文件，并有 2 个 CLI 集成回归测试覆盖首次写入、幂等复用和 final 字段拒绝。
+- 候选报告生成器现在显式输出 `REVIEW CANDIDATE — NOT FINAL`，只显示 source/review-freeze 身份；`pnpm deliverables:candidate` 会拒绝最终身份字段、最终 schema、缺失模型 hash、缺失候选水印或多余文件，并有 3 个 CLI 集成回归测试覆盖首次写入、幂等复用、final 字段拒绝和 candidate report-data 生成。
 - `gates:verify`、`project:status` 和 `project:resume` 现在会核对 receipt artifact 当前 hash、数据库 current approved 记录、outbox=`written`、outbox 字节/目标路径/hash、R5 六项排序 bundle、共同 bundle hash、两份公共 artifact 集、前置门顺序及 R5 两份相同 40 位 bound commit；不会以文件存在代替数据库事实。
 
 ## 最近自动化质量门（2026-08-22）

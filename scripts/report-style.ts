@@ -15,12 +15,10 @@ export function loadReportStyle(root = process.cwd()): ReportStyle {
   const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
   if (
     raw.templateVersion !== "report-style-v1" ||
-    typeof raw.fontFamily !== "string" ||
-    !/^[A-Za-z0-9 ,"'_-]+$/.test(raw.fontFamily) ||
+    raw.fontFamily !== "Noto Sans CJK SC" ||
     raw.pageSize !== "A4" ||
     raw.language !== "zh-CN" ||
-    typeof raw.candidateHeader !== "string" ||
-    raw.candidateHeader.length === 0
+    raw.candidateHeader !== "REVIEW CANDIDATE — NOT FINAL"
   )
     throw new Error("docs/templates/report-style.json 不符合 report-style-v1");
   return raw as ReportStyle;

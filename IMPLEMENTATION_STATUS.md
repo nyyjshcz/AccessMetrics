@@ -1,7 +1,7 @@
 # 实施状态
 
 - 当前状态：`WAITING_EXTERNAL_INPUT`
-- 当前自动化基线 commit：`f7b73ba`（`fix: enforce formal study freeze chain`；未创建 release tag，未公网发布）。
+- 当前自动化基线 commit：本提交（`fix: complete lease recovery review and R5 contracts`；以 `git rev-parse HEAD` 获取完整 SHA；未创建 release tag，未公网发布）。
 - 自动化实现：已完成计划步骤 1–17，以及步骤 18/19 所有不依赖真人或外部单位的代码、契约、脚手架、fixture、报告生成器、可复现分析管线和 fail-closed 校验。
 - 真实阻塞：R1–R5 真人确认、真实研究站点/许可/标准来源、生产服务器/域名/密钥/镜像与渲染器 digest。详见 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。
 
@@ -10,7 +10,7 @@
 - 依赖基线与负面 fixture：Node 24.19.0、pnpm 11.19.0、Python 3.12.13、Next/Playwright/axe 精确版本检查。
 - 依赖预检会实际执行 `PYTHON_BIN`/系统 Python 并解析 `--version`；当前捆绑解释器为 Python 3.12.13，系统 Python 3.13.7 会按设计失败，不再信任伪造的 `PYTHON_VERSION`。
 - 依赖预检也会实际执行 pnpm（Windows 通过 `cmd.exe`，Unix 直接执行）并核对 11.19.0，不只检查 `package.json` 的声明。
-- SQLite 迁移 1–23：外键、WAL、job/page lease、恢复、幂等唯一键与索引、frame 覆盖、研究 campaign/freeze/export、人工 review/adjudication、门证据/outbox、发布 revision/CAS 字段、R5 双角色 artifact 会话、study export current 唯一约束、扫描时本地化 hash、frame 覆盖问题记录、axe 运行时证据快照，以及 R5 clean-clone exercise 草稿、revision artifact 路径和 artifact outbox；迁移 18–23 补齐按任务/运行追溯的页面身份、精确/展示分数字段、结果节点 frame 证据、评审当前版本唯一性、R5 不可覆盖证据和恢复队列、正式 attempt 的替补启用时间，并重建旧版 pages 表以移除站点级 URL 唯一约束。
+- SQLite 迁移 1–24：外键、WAL、job/page lease、恢复、幂等唯一键与索引、frame 覆盖、研究 campaign/freeze/export、人工 review/adjudication、门证据/outbox、发布 revision/CAS 字段、R5 双角色 artifact 会话、study export current 唯一约束、扫描时本地化 hash、frame 覆盖问题记录、axe 运行时证据快照，以及 R5 clean-clone exercise 草稿、revision artifact 路径、规范化 owner artifact/step/bundle 表和 artifact outbox；迁移 18–24 补齐按任务/运行追溯的页面身份、精确/展示分数字段、结果节点 frame 证据、评审当前版本唯一性、R5 不可覆盖证据和恢复队列、正式 attempt 的替补启用时间、任务/结果/R5 全部计划索引，并重建旧版 pages 表以移除站点级 URL 唯一约束。
 - URL 安全、robots、同站 BFS、页面深度/资源过滤、Playwright + 本地 axe 四类结果、同源/跨源 frame 尝试、节点清理和非 HTML 失败记录。
 - WCAG 2.2 方法目录、axe 4.13.0 完整规则目录生成器、中文目录、独立黄金快照、节点/规则严重程度来源和 `accesscheck-score-v1` TypeScript/Python 参考实现；多原则规则只计一次总体机会并分别归入原则分项。
 - axe 目录已冻结为 105 条规则并补齐 WCAG 条款、原则、等级、是否进入 A/AA 评分及未映射原因；运行时不再依赖不完整的手写规则子集。中文规则目录已生成 105 条，未人工核对时明确保持 `ai_draft`。
@@ -31,6 +31,8 @@
 - 本轮完成度复核又补齐了 `scan:page`/`scan:one-page` 的无副作用共享 CLI（每次命令只启动一次扫描）、下载型非 HTML 响应的 `NON_HTML` 结构化错误、robots deny/最大深度/总时长/三次确定性发现回归，以及混合图片 pass/violation、浏览器关闭后重启和 PDF 下载 fixture；egress proxy 的 IPv6 判定改为按地址段解析并拒绝所有 IPv4-mapped 形式。
 - 本轮安全与验收复核补齐了双角色 cookie 并存时的服务端 role 选择、错误角色 403/未登录 401 区分、生产 reviewer token 不得相同、Caddy 可信代理标记重写，以及只接受可信代理注入的 rate-limit 客户端地址。
 - R5 artifact 现在由服务端按 canonical 字节写入不可覆盖的 `*.r<revision>.json`，并通过 DB outbox 恢复/校验磁盘 hash；修订会使共同 bundle 和双方 finalize 失效，缺失/篡改/冲突均 fail-closed。gate receipt 改为完整 receipt 字节 hash，outbox 幂等写入并有双角色 fixture 验证。
+- R5 规范化表已与旧 session read-model 同步：`r5_owner_artifacts` 保存角色/版本/当前状态，`r5_exercise_steps` 保存固定命令结果，`r5_artifact_bundles` 保存六份 passed hash；R5 gate 只接受服务端按 `rcCommit` 找到的 ready bundle，不能由请求体自报 artifacts。页面 worker 增加 10 秒 heartbeat、租约拥有者 CAS、崩溃恢复、重试上限、取消时批量终止剩余页面和每页事务提交。
+- 正式抽样请求现在必须绑定并由服务端复核 `sourceManifestHash`；formal/ad-hoc 审核修订要求 `expectedRevision` 与 `supersedesReviewId`，裁决批准要求相同 `resolutionHash`/revision，旧版本不能静默覆盖。
 - 成果 candidate/verify/release 链现在要求固定的 report-data、两份最终报告、图表/表格 hash、R1–R5 数据库绑定 evidence 和分别重算的 `r4EvidenceBundleHash`/`fullGateBundleHash`；缺任何输入均失败，不再把可选参数或文件存在当作完成证明。
 - R4 候选链已按计划收紧：`report-data.candidate.json` 使用独立 schema、禁止 `exportId/manifestHash/outcomeDigest/r4EvidenceBundleHash` 等 final 字段，并通过 `$defs` 与最终 report-data 共用分数、frame、人工样本、图表和局限定义；candidate bundle 固定绑定 source/review-freeze/localization/model/commit 以及五个候选文件的 bytes/SHA-256，candidateBundleId 对语义内容完整 hash，候选目录原子写入、只读、可幂等复用。
 - 候选契约校验不仅检查顶层字段，还在运行时锁定 frame、scores、manualValidation、charts、limitations 的字段集合、类型、范围和路径安全；生成器与 bundle 命令共用同一校验器，不能用“文件存在”绕过 schema。
@@ -58,13 +60,13 @@ pnpm contract:check
 pnpm typecheck
 pnpm lint
 pnpm format:check
-pnpm test:integration     # 4 files, 15 tests
+pnpm test:integration     # 6 files, 18 tests
 pnpm test:scoring-parity  # 5 files, 22 tests
-pnpm test                 # 9 files, 37 tests
+pnpm test                 # 11 files, 40 tests
 pnpm test:analysis
 pnpm build                # Next production build
 pnpm test:e2e             # 3 browser tests（核心页面 axe、匿名权限、完整 fixture 扫描/审核/发布/导出/撤下流程）
-pnpm test:all             # 上述依赖、静态检查、hygiene/handoff:check、egress policy、38 个 Vitest 测试、Python 分析、构建与 3 个 E2E 总门
+pnpm test:all             # 上述依赖、静态检查、hygiene/handoff:check、egress policy、40 个 Vitest 测试、Python 分析、构建与 3 个 E2E 总门
 node scripts/r5-fixed-exercise.mjs <六个固定 exercise id>  # 六项固定 catalog action 均返回 passed
 pnpm project:status       # 输出 WAITING_EXTERNAL_INPUT，自动实现 ready
 pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部输入齐全

@@ -28,10 +28,25 @@ export async function POST(
       .prepare("SELECT * FROM manual_review_samples WHERE id=? AND batch_id=?")
       .get(sampleId, batchId);
     if (!sample) throw new AppError("NOT_FOUND", "抽样节点不存在", 404);
-    const body = await request.json();
+    const reviewRows = getDb()
+      .prepare(
+        "SELECT reviewer,verdict FROM manual_reviews WHERE sample_id=? AND review_context='formal' AND is_current=1 ORDER BY reviewer",
+      )
+      .all(sampleId) as Array<{ reviewer: string; verdict: string }>;
+    if (
+      reviewRows.length === 2 &&
+      reviewRows[0].verdict === reviewRows[1].verdict &&
+      reviewRows[0].verdict !== "uncertain"
+    )
+      throw new AppError("ADJUDICATION_NOT_REQUIRED", "双方结论一致的样本无需裁决", 409);
+    const body = await request.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body))
       throw new AppError("INVALID_INPUT", "裁决请求必须是对象", 422);
-    if (Object.keys(body).some((key) => !["adjudicatedVerdict", "resolutionNote"].includes(key)))
+    if (
+      Object.keys(body).some(
+        (key) => !["adjudicatedVerdict", "resolutionNote", "expectedRevision"].includes(key),
+      )
+    )
       throw new AppError("UNKNOWN_FIELD", "裁决请求包含未定义字段", 400);
     const verdict = String(body.adjudicatedVerdict ?? "");
     if (!["confirmed", "not_an_issue", "uncertain"].includes(verdict))
@@ -44,6 +59,14 @@ export async function POST(
         "SELECT id,revision FROM manual_review_adjudications WHERE sample_id=? ORDER BY revision DESC LIMIT 1",
       )
       .get(sampleId) as { id: string; revision: number } | undefined;
+    if (!Number.isInteger(body.expectedRevision))
+      throw new AppError("ADJUDICATION_REVISION_CONFLICT", "expectedRevision 必须是整数", 409);
+    if (body.expectedRevision !== (previous?.revision ?? 0))
+      throw new AppError(
+        "ADJUDICATION_REVISION_CONFLICT",
+        "裁决 revision 已变化，请刷新后重试",
+        409,
+      );
     const resolutionHash = sha256(canonicalize({ sampleId, verdict, resolutionNote }));
     const adjudicationId = id("adjudication");
     getDb().transaction(() => {

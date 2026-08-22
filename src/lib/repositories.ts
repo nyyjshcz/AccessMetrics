@@ -171,7 +171,7 @@ export function addDiscoveredPages(jobId: string, siteId: string, urls: string[]
     });
   });
 }
-export function finishJob(jobId: string, status: string, error?: unknown) {
+export function finishJob(jobId: string, status: string, error?: unknown, workerId?: string) {
   const code =
     error && typeof error === "object" && "code" in error
       ? String((error as any).code)
@@ -179,17 +179,32 @@ export function finishJob(jobId: string, status: string, error?: unknown) {
         ? "JOB_FAILED"
         : null;
   const message = error instanceof Error ? error.message : error ? String(error) : null;
-  getDb()
-    .prepare("UPDATE scan_jobs SET status=?,finished_at=?,error_message=? WHERE id=?")
-    .run(status, now(), message ? message.slice(0, 1000) : null, jobId);
-  if (code)
+  const changed = workerId
+    ? getDb()
+        .prepare(
+          "UPDATE scan_jobs SET status=?,finished_at=?,error_message=? WHERE id=? AND (worker_id=? OR status='cancelled')",
+        )
+        .run(status, now(), message ? message.slice(0, 1000) : null, jobId, workerId)
+    : getDb()
+        .prepare("UPDATE scan_jobs SET status=?,finished_at=?,error_message=? WHERE id=?")
+        .run(status, now(), message ? message.slice(0, 1000) : null, jobId);
+  if (code && changed.changes === 1)
     getDb().prepare("UPDATE scan_jobs SET error_code=? WHERE id=?").run(code.slice(0, 128), jobId);
 }
 export function finishRun(
   runId: string,
   status: string,
   counts: { pages: number; success: number; failed: number },
+  workerId?: string,
 ) {
+  if (workerId) {
+    getDb()
+      .prepare(
+        "UPDATE scan_runs SET status=?,finished_at=?,page_count=?,success_count=?,failed_count=? WHERE id=? AND EXISTS (SELECT 1 FROM scan_jobs j WHERE j.id=scan_runs.job_id AND (j.worker_id=? OR j.status='cancelled'))",
+      )
+      .run(status, now(), counts.pages, counts.success, counts.failed, runId, workerId);
+    return;
+  }
   getDb()
     .prepare(
       "UPDATE scan_runs SET status=?,finished_at=?,page_count=?,success_count=?,failed_count=? WHERE id=?",
@@ -222,30 +237,62 @@ export function leaseNextJob(workerId: string) {
 }
 export function recoverStaleJobs(maxAgeMs = 5 * 60 * 1000) {
   const threshold = new Date(Date.now() - maxAgeMs).toISOString();
-  return getDb()
-    .prepare(
-      "UPDATE scan_jobs SET status='queued',worker_id=NULL WHERE status='running' AND (heartbeat_at IS NULL OR heartbeat_at<?)",
-    )
-    .run(threshold).changes;
+  return transaction((db) => {
+    const stale = db
+      .prepare(
+        "SELECT id FROM scan_jobs WHERE status='running' AND (heartbeat_at IS NULL OR heartbeat_at<?) ORDER BY created_at",
+      )
+      .all(threshold) as Array<{ id: string }>;
+    let recovered = 0;
+    for (const job of stale) {
+      const changed = db
+        .prepare(
+          "UPDATE scan_jobs SET status='queued',worker_id=NULL,heartbeat_at=NULL WHERE id=? AND status='running' AND (heartbeat_at IS NULL OR heartbeat_at<?)",
+        )
+        .run(job.id, threshold);
+      if (changed.changes !== 1) continue;
+      db.prepare(
+        "UPDATE job_pages SET status='discovered',lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE job_id=? AND status IN ('leased','scanning') AND lease_expires_at IS NOT NULL AND lease_expires_at<?",
+      ).run(now(), job.id, now());
+      recovered++;
+    }
+    return recovered;
+  });
 }
 export function leaseNextPage(jobId: string, workerId: string) {
   return transaction((db) => {
     const page = db
       .prepare(
-        "SELECT jp.*,p.canonical_url FROM job_pages jp JOIN pages p ON p.id=jp.page_id WHERE jp.job_id=? AND (jp.status='discovered' OR (jp.status IN ('leased','scanning') AND jp.lease_expires_at IS NOT NULL AND jp.lease_expires_at<?)) ORDER BY jp.discovery_order LIMIT 1",
+        "SELECT jp.*,p.canonical_url FROM job_pages jp JOIN pages p ON p.id=jp.page_id JOIN scan_jobs j ON j.id=jp.job_id WHERE jp.job_id=? AND j.status='running' AND j.worker_id=? AND jp.attempts<? AND (jp.status='discovered' OR (jp.status IN ('leased','scanning') AND jp.lease_expires_at IS NOT NULL AND jp.lease_expires_at<?)) ORDER BY jp.discovery_order LIMIT 1",
       )
-      .get(jobId, new Date().toISOString()) as any;
+      .get(jobId, workerId, config.SCAN_RETRY_COUNT + 1, new Date().toISOString()) as any;
     if (!page) return null;
-    const leaseUntil = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+    const leaseUntil = new Date(Date.now() + 60 * 1000).toISOString();
     const changed = db
       .prepare(
-        "UPDATE job_pages SET status='scanning',lease_owner=?,lease_expires_at=?,updated_at=? WHERE job_id=? AND page_id=? AND (status='discovered' OR (status IN ('leased','scanning') AND lease_expires_at IS NOT NULL AND lease_expires_at<?))",
+        "UPDATE job_pages SET status='scanning',lease_owner=?,lease_expires_at=?,attempts=attempts+1,attempt_count=attempt_count+1,updated_at=? WHERE job_id=? AND page_id=? AND attempts<? AND EXISTS (SELECT 1 FROM scan_jobs WHERE id=? AND status='running' AND worker_id=?) AND (status='discovered' OR (status IN ('leased','scanning') AND lease_expires_at IS NOT NULL AND lease_expires_at<?))",
       )
-      .run(workerId, leaseUntil, now(), jobId, page.page_id, new Date().toISOString());
+      .run(
+        workerId,
+        leaseUntil,
+        now(),
+        jobId,
+        page.page_id,
+        config.SCAN_RETRY_COUNT + 1,
+        jobId,
+        workerId,
+        new Date().toISOString(),
+      );
     return changed.changes === 1 ? page : null;
   });
 }
-export function savePageResult(runId: string, pageId: string, result: any) {
+export function savePageResult(
+  runId: string,
+  pageId: string,
+  result: any,
+  workerId?: string,
+  attemptCount = 1,
+) {
   const db = getDb();
   const insert = db.prepare(
     "INSERT INTO rule_results(id,run_id,page_id,rule_id,result_type,impact,description,help,help_url,tags_json,node_count,raw_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -253,15 +300,36 @@ export function savePageResult(runId: string, pageId: string, result: any) {
   const nodeInsert = db.prepare(
     "INSERT INTO result_nodes(id,rule_result_id,ordinal,frame_path_json,frame_url,frame_origin_relation,target_json,html_sanitized,failure_summary,any_json,all_json,none_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
   );
-  transaction(() => {
+  transaction((tx) => {
+    const run = tx.prepare("SELECT job_id FROM scan_runs WHERE id=?").get(runId) as
+      | { job_id: string }
+      | undefined;
+    if (!run) throw new AppError("RUN_NOT_FOUND", "scan run 不存在", 404);
+    if (workerId) {
+      const lease = tx
+        .prepare(
+          "SELECT status,lease_owner,lease_expires_at FROM job_pages WHERE job_id=? AND page_id=?",
+        )
+        .get(run.job_id, pageId) as
+        | { status: string; lease_owner: string | null; lease_expires_at: string | null }
+        | undefined;
+      if (
+        !lease ||
+        lease.status !== "scanning" ||
+        lease.lease_owner !== workerId ||
+        !lease.lease_expires_at ||
+        lease.lease_expires_at <= new Date().toISOString()
+      )
+        throw new AppError("PAGE_LEASE_LOST", "页面租约已失效，拒绝写入结果", 409);
+    }
     // A lease-expiry retry reuses the same run/page identity.  Replace the
     // previous attempt atomically so a completed page can never accumulate
     // duplicate rule facts or fail on the result unique constraint.
-    db.prepare(
+    tx.prepare(
       "DELETE FROM result_nodes WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id=? AND page_id=?)",
     ).run(runId, pageId);
-    db.prepare("DELETE FROM rule_results WHERE run_id=? AND page_id=?").run(runId, pageId);
-    db.prepare(
+    tx.prepare("DELETE FROM rule_results WHERE run_id=? AND page_id=?").run(runId, pageId);
+    tx.prepare(
       "UPDATE pages SET run_id=?,requested_url=?,final_url=?,normalized_url=?,title=?,http_status=?,content_type=?,load_ms=?,scan_status='success',frame_total=?,same_origin_frame_total=?,cross_origin_frame_total=?,frame_tested_total=?,frame_skipped_total=?,frame_error_count=?,frame_coverage_status=?,frame_coverage_issues_json=?,axe_timestamp=?,axe_test_engine_json=?,axe_test_environment_json=?,axe_tool_options_json=? WHERE id=?",
     ).run(
       runId,
@@ -287,7 +355,7 @@ export function savePageResult(runId: string, pageId: string, result: any) {
       pageId,
     );
     if (result.testEnvironment?.userAgent) {
-      db.prepare(
+      tx.prepare(
         "UPDATE scan_runs SET user_agent=? WHERE id=? AND (user_agent IS NULL OR user_agent='')",
       ).run(String(result.testEnvironment.userAgent), runId);
     }
@@ -328,7 +396,7 @@ export function savePageResult(runId: string, pageId: string, result: any) {
           rule.nodes.length,
           JSON.stringify(rawForStorage),
         );
-        db.prepare(
+        tx.prepare(
           "UPDATE rule_results SET wcag_criteria_json=?,principles_json=?,wcag_level_json=?,scoring_eligible=?,created_at=? WHERE id=?",
         ).run(
           JSON.stringify(catalog.wcag),
@@ -370,7 +438,7 @@ export function savePageResult(runId: string, pageId: string, result: any) {
                     : effectiveImpact === "minor"
                       ? 1
                       : null;
-            db.prepare(
+            tx.prepare(
               "UPDATE result_nodes SET target_hash=?,impact=?,effective_impact=?,severity_weight=?,severity_source=?,html_excerpt=?,checks_json=?,created_at=? WHERE id=?",
             ).run(
               targetHash,
@@ -391,6 +459,23 @@ export function savePageResult(runId: string, pageId: string, result: any) {
             );
           });
       }
+    if (workerId) {
+      const changed = tx
+        .prepare(
+          "UPDATE job_pages SET status='completed',attempts=attempts+?,attempt_count=attempt_count+?,last_error=NULL,last_error_code=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE job_id=? AND page_id=? AND status='scanning' AND lease_owner=? AND lease_expires_at>?",
+        )
+        .run(
+          Math.max(0, attemptCount - 1),
+          Math.max(0, attemptCount - 1),
+          now(),
+          run.job_id,
+          pageId,
+          workerId,
+          new Date().toISOString(),
+        );
+      if (changed.changes !== 1)
+        throw new AppError("PAGE_LEASE_LOST", "页面租约在提交时失效，拒绝完成结果", 409);
+    }
   });
 }
 
@@ -406,15 +491,60 @@ function sanitizeFrameUrl(value: unknown) {
   }
 }
 
-export function savePageFailure(runId: string, pageId: string, error: unknown) {
+export function savePageFailure(
+  runId: string,
+  pageId: string,
+  error: unknown,
+  workerId?: string,
+  attemptCount = 1,
+) {
   const value = error instanceof Error ? error.message : String(error);
   const code =
     error && typeof error === "object" && "code" in error
       ? String((error as any).code)
       : "SCAN_FAILED";
-  getDb()
-    .prepare(
+  transaction((db) => {
+    const run = db.prepare("SELECT job_id FROM scan_runs WHERE id=?").get(runId) as
+      | { job_id: string }
+      | undefined;
+    if (!run) throw new AppError("RUN_NOT_FOUND", "scan run 不存在", 404);
+    if (workerId) {
+      const changed = db
+        .prepare(
+          "UPDATE job_pages SET status='failed',attempts=attempts+?,attempt_count=attempt_count+?,last_error=?,last_error_code=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE job_id=? AND page_id=? AND status='scanning' AND lease_owner=? AND lease_expires_at>?",
+        )
+        .run(
+          Math.max(0, attemptCount - 1),
+          Math.max(0, attemptCount - 1),
+          value.slice(0, 1000),
+          code.slice(0, 128),
+          now(),
+          run.job_id,
+          pageId,
+          workerId,
+          new Date().toISOString(),
+        );
+      if (changed.changes !== 1)
+        throw new AppError("PAGE_LEASE_LOST", "页面租约已失效，拒绝写入失败终态", 409);
+    }
+    db.prepare(
       "UPDATE pages SET run_id=?,scan_status='failed',error_code=?,error_message=? WHERE id=?",
-    )
-    .run(runId, code, value.slice(0, 1000), pageId);
+    ).run(runId, code, value.slice(0, 1000), pageId);
+  });
+}
+
+export function markExhaustedPages(runId: string, jobId: string) {
+  const limit = config.SCAN_RETRY_COUNT + 1;
+  return transaction((db) => {
+    const timestamp = now();
+    const changed = db
+      .prepare(
+        "UPDATE job_pages SET status='failed',last_error='page lease exceeded retry limit',last_error_code='RETRY_EXHAUSTED',lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE job_id=? AND status IN ('discovered','leased','scanning') AND attempts>=?",
+      )
+      .run(timestamp, jobId, limit);
+    db.prepare(
+      "UPDATE pages SET run_id=?,scan_status='failed',error_code='RETRY_EXHAUSTED',error_message='page lease exceeded retry limit' WHERE job_page_id IN (SELECT id FROM job_pages WHERE job_id=? AND status='failed' AND last_error_code='RETRY_EXHAUSTED') AND (run_id IS NULL OR run_id=?)",
+    ).run(runId, jobId, runId);
+    return changed.changes;
+  });
 }

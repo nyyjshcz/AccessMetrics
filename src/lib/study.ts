@@ -477,7 +477,11 @@ export function freezeCampaign(campaignId: string) {
   };
 }
 
-export function createManualReviewBatch(freezeId: string, sourceExportId: string) {
+export function createManualReviewBatch(
+  freezeId: string,
+  sourceExportId: string,
+  expectedSourceManifestHash?: string,
+) {
   const source = getDb()
     .prepare("SELECT * FROM study_exports WHERE id=? AND kind='study_source' AND status='verified'")
     .get(sourceExportId) as any;
@@ -492,6 +496,17 @@ export function createManualReviewBatch(freezeId: string, sourceExportId: string
     throw new AppError("SOURCE_MISSING", "study_source 目录不存在", 409);
   const sourceManifestPath = path.join(source.storage_relpath, "manifest.json");
   const sourceManifestHash = source.manifest_hash;
+  if (
+    expectedSourceManifestHash !== undefined &&
+    (typeof expectedSourceManifestHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(expectedSourceManifestHash) ||
+      expectedSourceManifestHash !== sourceManifestHash)
+  )
+    throw new AppError(
+      "SOURCE_MANIFEST_MISMATCH",
+      "请求的 sourceManifestHash 与 source 不一致",
+      409,
+    );
   if (!sourceManifestHash || !fs.existsSync(sourceManifestPath))
     throw new AppError("SOURCE_MANIFEST_MISSING", "study_source manifest 缺失", 409);
   if (sha256(fs.readFileSync(sourceManifestPath)) !== sourceManifestHash)

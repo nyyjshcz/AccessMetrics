@@ -98,11 +98,27 @@ paths:
   /api/admin/scans/{jobId}/cancel:
     post:
       responses:
-        "200": { description: cancelled }
+        "202": { description: cancelled }
   /api/admin/review-freezes:
     post:
       responses:
         "201": { description: verified review freeze }
+  /api/admin/review-batches:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [studyFreezeId, sourceExportId, sourceManifestHash]
+              additionalProperties: false
+              properties:
+                studyFreezeId: { type: string }
+                sourceExportId: { type: string }
+                sourceManifestHash: { type: string, pattern: "^[a-f0-9]{64}$" }
+      responses:
+        "201": { description: deterministic server-side review sample }
   /api/admin/study-freezes/{freezeId}/finalize:
     post:
       responses:
@@ -123,6 +139,35 @@ paths:
     get:
       responses:
         "200": { description: next role-bound sample }
+  /api/reviewer/nodes/{nodeId}/reviews:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [verdict, note]
+              additionalProperties: false
+              properties:
+                verdict: { type: string, enum: [confirmed, not_an_issue, uncertain] }
+                note: { type: string, maxLength: 2000 }
+                supersedesReviewId: { type: string }
+                expectedRevision: { type: integer, minimum: 1 }
+      responses:
+        "201": { description: role-bound review revision }
+  /api/reviewer/review-batches/{batchId}/samples/{sampleId}/reviews:
+    post:
+      responses:
+        "201": { description: role-bound formal review revision }
+  /api/reviewer/review-batches/{batchId}/samples/{sampleId}/adjudications:
+    post:
+      responses:
+        "201": { description: role-bound adjudication draft }
+  /api/reviewer/adjudications/{id}/approve:
+    post:
+      responses:
+        "200": { description: cross-role approval of the exact resolution hash }
   /api/reviewer/r5/status:
     get:
       responses:

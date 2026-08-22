@@ -27,10 +27,14 @@ export async function POST(
       .prepare("SELECT * FROM manual_review_samples WHERE id=? AND batch_id=?")
       .get(sampleId, batchId) as any;
     if (!sample) throw new AppError("NOT_FOUND", "抽样节点不存在", 404);
-    const body = await request.json();
+    const body = await request.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body))
       throw new AppError("INVALID_INPUT", "审核请求必须是对象", 422);
-    if (Object.keys(body).some((key) => !["verdict", "note"].includes(key)))
+    if (
+      Object.keys(body).some(
+        (key) => !["verdict", "note", "supersedesReviewId", "expectedRevision"].includes(key),
+      )
+    )
       throw new AppError("UNKNOWN_FIELD", "审核请求包含未定义字段", 400);
     const verdict = String(body.verdict ?? "");
     if (!["confirmed", "not_an_issue", "uncertain"].includes(verdict))
@@ -43,11 +47,28 @@ export async function POST(
         "SELECT id,revision FROM manual_reviews WHERE sample_id=? AND reviewer=? AND review_context='formal' AND is_current=1",
       )
       .get(sampleId, reviewer) as any;
+    const suppliedRevision = body.expectedRevision;
+    const suppliedSupersedes = body.supersedesReviewId;
+    if (previous) {
+      if (!Number.isInteger(suppliedRevision) || suppliedRevision !== previous.revision)
+        throw new AppError("REVIEW_REVISION_CONFLICT", "审核 revision 已变化，请刷新后重试", 409);
+      if (suppliedSupersedes !== previous.id)
+        throw new AppError("REVIEW_REVISION_CONFLICT", "supersedesReviewId 必须指向当前审核", 409);
+    } else if (suppliedRevision !== undefined || suppliedSupersedes !== undefined) {
+      throw new AppError("REVIEW_REVISION_CONFLICT", "首次审核不能提交修订字段", 409);
+    }
     const reviewId = id("review");
     getDb().transaction(() => {
       if (previous) invalidateStudyReviewChain(getDb(), batchId);
-      if (previous)
-        getDb().prepare("UPDATE manual_reviews SET is_current=0 WHERE id=?").run(previous.id);
+      if (previous) {
+        const retired = getDb()
+          .prepare(
+            "UPDATE manual_reviews SET is_current=0 WHERE id=? AND is_current=1 AND revision=?",
+          )
+          .run(previous.id, previous.revision);
+        if (!retired.changes)
+          throw new AppError("REVIEW_REVISION_CONFLICT", "审核已被其他请求修订", 409);
+      }
       getDb()
         .prepare(
           "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,supersedes_review_id,is_current,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",

@@ -12,6 +12,7 @@ for (const route of [
   "/api/reviewer/login",
   "/api/reviewer/session",
   "/api/admin/scans/{jobId}/cancel",
+  "/api/admin/review-batches",
   "/api/admin/review-freezes",
   "/api/admin/study-freezes/{freezeId}/finalize",
   "/api/gates/evidence",
@@ -19,6 +20,10 @@ for (const route of [
   "/api/reviewer/r5/exercises",
   "/api/reviewer/r5/understanding-checks",
   "/api/reviewer/r5/handoffs",
+  "/api/reviewer/nodes/{nodeId}/reviews",
+  "/api/reviewer/review-batches/{batchId}/samples/{sampleId}/reviews",
+  "/api/reviewer/review-batches/{batchId}/samples/{sampleId}/adjudications",
+  "/api/reviewer/adjudications/{id}/approve",
 ])
   if (!contract.includes(route)) throw new Error(`missing contract route ${route}`);
 const schema = JSON.parse(

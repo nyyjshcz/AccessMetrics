@@ -15,7 +15,7 @@
 
 ## 运行与数据边界
 
-数据库启动时执行幂等迁移（当前为 1–23），Worker 使用 lease/heartbeat 领取任务；重启会恢复可恢复任务，取消和失败会保留状态事实。正式导出、逐节点结果、人工审核、R1–R5 证据和密钥都放在 Git 外的只读/私有目录，`backup:create` 与 `backup:restore` 会校验数据库、加密私有证据和 manifest 的 hash。
+数据库启动时执行幂等迁移（当前为 1–24），Worker 使用 lease/heartbeat 领取任务；重启会恢复可恢复任务，取消和失败会保留状态事实。正式导出、逐节点结果、人工审核、R1–R5 证据和密钥都放在 Git 外的只读/私有目录，`backup:create` 与 `backup:restore` 会校验数据库、加密私有证据和 manifest 的 hash。
 
 R5 不能上传任意命令或客户端自报分数：服务端先校验 R1–R4 索引，再在私有根下建立绑定 `rcCommit` 的 clean clone，只执行固定 exercise catalog，并保存 tree/environment/index/catalog hash、stdout/stderr hash 和 revision。理解检查由服务端评分；handoff 和 finalize 需要对应 reviewer 二次认证。R5 artifact 使用不可覆盖的 revision 文件和 outbox 恢复机制。
 

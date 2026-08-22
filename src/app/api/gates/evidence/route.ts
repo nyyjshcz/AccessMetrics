@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { csrfMatches, requireRole, reviewerReauthMatches } from "@/lib/auth";
 import { migrate } from "@/lib/db";
 import { deriveGateArtifacts, submitGateEvidence } from "@/lib/study";
+import { r5GateArtifacts } from "@/lib/r5";
 import { AppError, errorEnvelope } from "@/lib/errors";
 export async function POST(request: Request) {
   try {
@@ -45,14 +46,18 @@ export async function POST(request: Request) {
       throw new AppError("INVALID_INPUT", "boundCommit 无效", 422);
     if (!body.gateId || !["R1", "R2", "R3", "R4", "R5"].includes(body.gateId))
       throw new AppError("INVALID_GATE", "gateId 无效", 422);
+    if (body.gateId === "R5" && typeof body.boundCommit !== "string")
+      throw new AppError("R5_BUNDLE_REQUIRED", "R5 必须明确绑定 rcCommit", 409);
     const role = reviewerRole === "computer_reviewer" ? "computer_lead" : "math_lead";
+    const artifacts =
+      body.gateId === "R5" ? r5GateArtifacts(body.boundCommit) : deriveGateArtifacts(body.gateId);
     const result = submitGateEvidence({
       gateId: body.gateId,
       campaignId: body.campaignId,
       decision: body.decision,
       statementVersion: body.statementVersion ?? "human-gate-v1",
       boundCommit: body.boundCommit,
-      artifacts: deriveGateArtifacts(body.gateId),
+      artifacts,
       note: body.note,
       role,
     });

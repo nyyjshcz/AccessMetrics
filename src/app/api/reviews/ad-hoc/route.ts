@@ -9,10 +9,16 @@ export async function POST(request: Request) {
     const session = await requireRole("computer_reviewer", "math_reviewer");
     if (!csrfMatches(session, request.headers.get("x-csrf-token")))
       throw new AppError("CSRF_INVALID", "CSRF token 无效", 403);
-    const body = await request.json();
+    const body = await request.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body))
       throw new AppError("INVALID_INPUT", "审核请求必须是对象", 422);
-    const allowed = new Set(["resultNodeId", "verdict", "note"]);
+    const allowed = new Set([
+      "resultNodeId",
+      "verdict",
+      "note",
+      "supersedesReviewId",
+      "expectedRevision",
+    ]);
     if (Object.keys(body).some((key) => !allowed.has(key)))
       throw new AppError("UNKNOWN_FIELD", "ad-hoc 审核只能提交节点、verdict 和 note", 400);
     const resultNodeId = String(body.resultNodeId ?? "");
@@ -36,11 +42,26 @@ export async function POST(request: Request) {
         "SELECT id,revision FROM manual_reviews WHERE result_node_id=? AND reviewer=? AND review_context=? AND is_current=1",
       )
       .get(resultNodeId, reviewer, context) as any;
+    if (previous) {
+      if (!Number.isInteger(body.expectedRevision) || body.expectedRevision !== previous.revision)
+        throw new AppError("REVIEW_REVISION_CONFLICT", "审核 revision 已变化，请刷新后重试", 409);
+      if (body.supersedesReviewId !== previous.id)
+        throw new AppError("REVIEW_REVISION_CONFLICT", "supersedesReviewId 必须指向当前审核", 409);
+    } else if (body.expectedRevision !== undefined || body.supersedesReviewId !== undefined) {
+      throw new AppError("REVIEW_REVISION_CONFLICT", "首次审核不能提交修订字段", 409);
+    }
     const revision = previous ? previous.revision + 1 : 1;
     const inserted = id("review");
     getDb().transaction(() => {
-      if (previous)
-        getDb().prepare("UPDATE manual_reviews SET is_current=0 WHERE id=?").run(previous.id);
+      if (previous) {
+        const retired = getDb()
+          .prepare(
+            "UPDATE manual_reviews SET is_current=0 WHERE id=? AND is_current=1 AND revision=?",
+          )
+          .run(previous.id, previous.revision);
+        if (!retired.changes)
+          throw new AppError("REVIEW_REVISION_CONFLICT", "审核已被其他请求修订", 409);
+      }
       getDb()
         .prepare(
           "INSERT INTO manual_reviews(id,result_node_id,review_context,reviewer,verdict,note,revision,supersedes_review_id,is_current,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",

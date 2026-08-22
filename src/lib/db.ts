@@ -62,6 +62,7 @@ export function migrate() {
     migration021,
     migration022,
     migration023,
+    migration024,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -740,6 +741,107 @@ function migration023(db: Database.Database) {
     (row) => row.name === "replacement_activated_at",
   );
   if (!present) db.exec("ALTER TABLE study_run_attempts ADD COLUMN replacement_activated_at TEXT");
+}
+
+function migration024(db: Database.Database) {
+  // The R5 session table remains as a compatibility/read-model for the first
+  // implementation, while these normalized tables are the durable contract
+  // used by the gate, outbox recovery and database checks.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS r5_artifact_outbox (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES r5_sessions(id) ON DELETE RESTRICT,
+      kind TEXT NOT NULL CHECK(kind IN ('exercise','understanding','handoff')),
+      target_relpath TEXT NOT NULL UNIQUE,
+      artifact_json TEXT NOT NULL,
+      expected_file_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      written_at TEXT
+    );
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_job_pages_job_status_discovery
+      ON job_pages(job_id,status,discovery_order);
+    CREATE INDEX IF NOT EXISTS idx_rule_results_page_type_rule
+      ON rule_results(page_id,result_type,rule_id);
+    CREATE INDEX IF NOT EXISTS idx_study_export_runs_export_ordinal
+      ON study_export_runs(export_id,ordinal);
+    CREATE TABLE IF NOT EXISTS r5_owner_artifacts (
+      id TEXT PRIMARY KEY,
+      artifact_type TEXT NOT NULL CHECK(artifact_type IN ('exercise','understanding','handoff')),
+      role TEXT NOT NULL CHECK(role IN ('computer_lead','math_lead')),
+      bound_rc_commit TEXT NOT NULL,
+      bound_tree_hash TEXT,
+      r1_r4_index_hash TEXT NOT NULL,
+      catalog_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('draft','passed','rejected','invalidated')),
+      payload_json TEXT NOT NULL,
+      artifact_hash TEXT,
+      revision INTEGER NOT NULL,
+      supersedes_artifact_id TEXT REFERENCES r5_owner_artifacts(id) ON DELETE RESTRICT,
+      is_current INTEGER NOT NULL DEFAULT 1 CHECK(is_current IN (0,1)),
+      created_at TEXT NOT NULL,
+      finalized_at TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_r5_owner_artifacts_revision
+      ON r5_owner_artifacts(artifact_type,role,revision);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_r5_owner_artifacts_current_unique
+      ON r5_owner_artifacts(artifact_type,role) WHERE is_current=1;
+    CREATE TABLE IF NOT EXISTS r5_exercise_steps (
+      artifact_id TEXT NOT NULL REFERENCES r5_owner_artifacts(id) ON DELETE RESTRICT,
+      step_id TEXT NOT NULL,
+      command_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('pending','passed','failed')),
+      exit_code INTEGER,
+      output_sha256 TEXT,
+      stdout_sha256 TEXT,
+      stderr_sha256 TEXT,
+      observation TEXT,
+      completed_at TEXT,
+      PRIMARY KEY(artifact_id,step_id)
+    );
+    CREATE TABLE IF NOT EXISTS r5_artifact_bundles (
+      id TEXT PRIMARY KEY,
+      rc_commit TEXT NOT NULL,
+      r1_r4_index_hash TEXT NOT NULL,
+      computer_exercise_hash TEXT NOT NULL,
+      computer_understanding_hash TEXT NOT NULL,
+      computer_handoff_hash TEXT NOT NULL,
+      math_exercise_hash TEXT NOT NULL,
+      math_understanding_hash TEXT NOT NULL,
+      math_handoff_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('ready','consumed','invalidated')),
+      bundle_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_r5_owner_artifacts_role_type_current_status
+      ON r5_owner_artifacts(role,artifact_type,is_current,status);
+    CREATE INDEX IF NOT EXISTS idx_r5_exercise_steps_artifact_status
+      ON r5_exercise_steps(artifact_id,status);
+    CREATE INDEX IF NOT EXISTS idx_r5_artifact_bundles_commit_status
+      ON r5_artifact_bundles(rc_commit,status);
+    CREATE INDEX IF NOT EXISTS idx_r5_artifact_outbox_status_only
+      ON r5_artifact_outbox(status);
+  `);
+  const addColumn = (column: string, definition: string) => {
+    const present = (db.prepare("PRAGMA table_info(r5_artifact_outbox)").all() as any[]).some(
+      (row) => row.name === column,
+    );
+    if (!present) db.exec(`ALTER TABLE r5_artifact_outbox ADD COLUMN ${column} ${definition}`);
+  };
+  addColumn("artifact_kind", "TEXT");
+  addColumn("artifact_id", "TEXT");
+  addColumn("canonical_json", "TEXT");
+  db.exec(`
+    UPDATE r5_artifact_outbox
+    SET artifact_kind=CASE WHEN kind IN ('exercise','understanding','handoff') THEN 'owner_artifact' ELSE 'bundle' END,
+        artifact_id=COALESCE(artifact_id,session_id),
+        canonical_json=COALESCE(canonical_json,artifact_json)
+    WHERE artifact_kind IS NULL OR canonical_json IS NULL;
+  `);
 }
 
 export type Db = Database.Database;

@@ -17,6 +17,7 @@ import {
   finishRun,
   savePageResult,
   savePageFailure,
+  markExhaustedPages,
 } from "../lib/repositories";
 import { discoverSite } from "../lib/crawler";
 import { scanPage, closeScanner } from "../lib/scan-page";
@@ -58,9 +59,6 @@ async function processJob(job: any) {
   await validateTargetUrl(entryUrl);
   const urls = await discoverSite(entryUrl, JSON.parse(job.options_json));
   addDiscoveredPages(job.id, job.site_id, urls);
-  let success = 0;
-  let failed = 0;
-  let pageCount = 0;
   const workerId = `worker-${process.pid}`;
   while (true) {
     const liveStatus = (
@@ -71,53 +69,56 @@ async function processJob(job: any) {
     if (liveStatus === "cancelled") break;
     const page = leaseNextPage(job.id, workerId);
     if (!page) break;
-    pageCount++;
-    getDb()
-      .prepare("UPDATE scan_jobs SET heartbeat_at=? WHERE id=? AND status='running'")
-      .run(new Date().toISOString(), job.id);
+    const heartbeat = () =>
+      getDb()
+        .prepare(
+          "UPDATE scan_jobs SET heartbeat_at=? WHERE id=? AND status='running' AND worker_id=?",
+        )
+        .run(new Date().toISOString(), job.id, workerId);
+    heartbeat();
+    const heartbeatTimer = setInterval(heartbeat, 10_000);
+    heartbeatTimer.unref?.();
     let completed = false;
+    let leaseLost = false;
     let lastError: unknown;
     let attemptsUsed = 0;
-    for (let attempt = 0; attempt <= config.SCAN_RETRY_COUNT; attempt++) {
-      attemptsUsed = attempt + 1;
-      try {
-        const target = await validateTargetUrl(page.canonical_url);
-        const result = await scanPage(canonicalizeUrl(target.toString()), config.SCAN_TIMEOUT_MS);
-        savePageResult(run.id, page.page_id, result);
-        completed = true;
-        break;
-      } catch (error) {
-        lastError = error;
-        if (attempt < config.SCAN_RETRY_COUNT)
-          await new Promise((resolve) => setTimeout(resolve, Math.min(1000, config.SCAN_DELAY_MS)));
+    try {
+      for (let attempt = 0; attempt <= config.SCAN_RETRY_COUNT; attempt++) {
+        attemptsUsed = attempt + 1;
+        try {
+          const target = await validateTargetUrl(page.canonical_url);
+          const result = await scanPage(canonicalizeUrl(target.toString()), config.SCAN_TIMEOUT_MS);
+          savePageResult(run.id, page.page_id, result, workerId, attemptsUsed);
+          completed = true;
+          break;
+        } catch (error) {
+          lastError = error;
+          if ((error as { code?: string })?.code === "PAGE_LEASE_LOST") {
+            leaseLost = true;
+            break;
+          }
+          if (attempt < config.SCAN_RETRY_COUNT)
+            await new Promise((resolve) =>
+              setTimeout(resolve, Math.min(1000, config.SCAN_DELAY_MS)),
+            );
+        }
       }
-    }
-    if (completed) {
-      success++;
-      getDb()
-        .prepare(
-          "UPDATE job_pages SET status='completed',attempts=attempts+?,attempt_count=attempt_count+?,updated_at=? WHERE job_id=? AND page_id=?",
-        )
-        .run(attemptsUsed, attemptsUsed, new Date().toISOString(), job.id, page.page_id);
-    } else {
-      failed++;
-      savePageFailure(run.id, page.page_id, lastError);
-      getDb()
-        .prepare(
-          "UPDATE job_pages SET status='failed',attempts=attempts+?,attempt_count=attempt_count+?,last_error=?,updated_at=? WHERE job_id=? AND page_id=?",
-        )
-        .run(
-          attemptsUsed,
-          attemptsUsed,
-          String(lastError),
-          new Date().toISOString(),
-          job.id,
-          page.page_id,
+      if (leaseLost) {
+        logger.warn(
+          { jobId: job.id, runId: run.id, pageId: page.page_id },
+          "page lease lost; retrying",
         );
-      logger.warn(
-        { jobId: job.id, runId: run.id, url: page.canonical_url, error: String(lastError) },
-        "page scan failed",
-      );
+        continue;
+      }
+      if (!completed) {
+        savePageFailure(run.id, page.page_id, lastError, workerId, attemptsUsed);
+        logger.warn(
+          { jobId: job.id, runId: run.id, url: page.canonical_url, error: String(lastError) },
+          "page scan failed",
+        );
+      }
+    } finally {
+      clearInterval(heartbeatTimer);
     }
   }
   const cancelled =
@@ -126,30 +127,50 @@ async function processJob(job: any) {
         | { status: string }
         | undefined
     )?.status === "cancelled";
+  const ownership = getDb()
+    .prepare("SELECT status,worker_id FROM scan_jobs WHERE id=?")
+    .get(job.id) as { status: string; worker_id: string | null } | undefined;
+  if (ownership && !cancelled && ownership.worker_id !== workerId) {
+    logger.warn(
+      { jobId: job.id, runId: run.id },
+      "job lease lost; leaving terminal state to current worker",
+    );
+    return run.id;
+  }
+  markExhaustedPages(run.id, job.id);
+  const persistedCounts = getDb()
+    .prepare(
+      "SELECT COUNT(*) AS pages,SUM(CASE WHEN scan_status='success' THEN 1 ELSE 0 END) AS success,SUM(CASE WHEN scan_status='failed' THEN 1 ELSE 0 END) AS failed FROM pages WHERE run_id=?",
+    )
+    .get(run.id) as { pages: number; success: number | null; failed: number | null };
+  const storedPageCount = Number(persistedCounts.pages ?? 0);
+  const storedSuccess = Number(persistedCounts.success ?? 0);
+  const storedFailed = Number(persistedCounts.failed ?? 0);
   finishRun(
     run.id,
     cancelled
       ? "cancelled"
-      : failed === pageCount && pageCount > 0
+      : storedFailed === storedPageCount && storedPageCount > 0
         ? "failed"
-        : failed > 0
+        : storedFailed > 0
           ? "completed_with_errors"
           : "completed",
     {
-      pages: pageCount,
-      success,
-      failed,
+      pages: storedPageCount,
+      success: storedSuccess,
+      failed: storedFailed,
     },
+    workerId,
   );
   if (job.study_campaign_id) {
-    const terminalStatus = failed > 0 && success === 0 ? "failed" : "completed";
+    const terminalStatus = storedFailed > 0 && storedSuccess === 0 ? "failed" : "completed";
     getDb()
       .prepare(
         "UPDATE study_run_attempts SET terminal_status=?,usability_decision=?,completed_at=? WHERE campaign_id=? AND slot=? AND replacement_rank=? AND attempt_no=?",
       )
       .run(
         terminalStatus,
-        success > 0 ? "included" : "excluded",
+        storedSuccess > 0 ? "included" : "excluded",
         new Date().toISOString(),
         job.study_campaign_id,
         job.study_slot,
@@ -157,8 +178,14 @@ async function processJob(job: any) {
         job.study_attempt_no,
       );
   }
-  if (success > 0) persistRunScores(run.id);
-  if (!cancelled) finishJob(job.id, failed > 0 && success === 0 ? "failed" : "completed");
+  if (storedSuccess > 0) persistRunScores(run.id);
+  if (!cancelled)
+    finishJob(
+      job.id,
+      storedFailed > 0 && storedSuccess === 0 ? "failed" : "completed",
+      undefined,
+      workerId,
+    );
   return run.id;
 }
 
@@ -181,7 +208,7 @@ async function main() {
       const runId = await processJob(getJob(job.id));
       logger.info({ jobId: job.id, runId }, "scan job finished");
     } catch (error) {
-      finishJob(job.id, "failed", error);
+      finishJob(job.id, "failed", error, `worker-${process.pid}`);
       if (job.study_campaign_id) {
         getDb()
           .prepare(

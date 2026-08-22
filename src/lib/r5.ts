@@ -241,16 +241,40 @@ function bundlePath() {
   return path.join(config.privateEvidenceRoot, "gates", "R5", "r5-artifact-bundle.json");
 }
 
+function canonicalBundlePath(bundleHash: string) {
+  return path.join(config.privateEvidenceRoot, "gates", "R5", "bundles", `${bundleHash}.json`);
+}
+
 function invalidateBundle(boundCommit: string) {
   const target = bundlePath();
+  let bundleHashes: string[] = [];
+  try {
+    bundleHashes = (
+      getDb()
+        .prepare(
+          "SELECT bundle_hash FROM r5_artifact_bundles WHERE rc_commit=? AND status<>'invalidated'",
+        )
+        .all(boundCommit) as Array<{ bundle_hash: string }>
+    ).map((row) => row.bundle_hash);
+  } catch {
+    // Compatibility databases before migration 024 have no normalized bundle table.
+  }
+  for (const hash of bundleHashes) {
+    const file = canonicalBundlePath(hash);
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+  }
   if (fs.existsSync(target)) fs.unlinkSync(target);
-  transaction((db) =>
-    db
-      .prepare(
-        "UPDATE r5_sessions SET status='started',finalized_at=NULL,updated_at=? WHERE bound_commit=?",
-      )
-      .run(now(), boundCommit),
-  );
+  transaction((db) => {
+    db.prepare(
+      "UPDATE r5_sessions SET status='started',finalized_at=NULL,updated_at=? WHERE bound_commit=?",
+    ).run(now(), boundCommit);
+    db.prepare(
+      "UPDATE r5_artifact_bundles SET status='invalidated' WHERE rc_commit=? AND status<>'invalidated'",
+    ).run(boundCommit);
+    db.prepare(
+      "UPDATE human_gate_evidence SET is_current=0 WHERE gate_id='R5' AND bound_commit=? AND is_current=1",
+    ).run(boundCommit);
+  });
 }
 
 function sessionFor(role: Role, boundCommit: string) {
@@ -302,6 +326,99 @@ function safePrivateRelative(relativePath: string) {
   )
     throw new AppError("R5_PATH_INVALID", "R5 artifact 路径不安全", 500);
   return privateChild(...normalized.split("/"));
+}
+
+function normalizedOwnerMetadata(
+  session: any,
+  kind: "exercise" | "understanding" | "handoff",
+  value: any,
+) {
+  const indexHash = value?.r1R4IndexHash ?? session.exercise_index_hash;
+  const catalogHash =
+    value?.exerciseCatalogHash ??
+    value?.handoffCatalogHash ??
+    value?.questionSetHash ??
+    session.exercise_catalog_hash;
+  if (
+    typeof indexHash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(indexHash) ||
+    typeof catalogHash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(catalogHash)
+  )
+    return null;
+  return {
+    indexHash,
+    catalogHash,
+    boundTreeHash:
+      typeof (value?.boundTreeHash ?? session.exercise_bound_tree_hash) === "string"
+        ? (value?.boundTreeHash ?? session.exercise_bound_tree_hash)
+        : null,
+  };
+}
+
+function persistNormalizedOwnerArtifact(
+  db: any,
+  session: any,
+  kind: "exercise" | "understanding" | "handoff",
+  value: any,
+  bytes: string,
+  hash: string,
+  revision: number,
+) {
+  const metadata = normalizedOwnerMetadata(session, kind, value);
+  if (!metadata) return null;
+  const previous = db
+    .prepare(
+      "SELECT id FROM r5_owner_artifacts WHERE artifact_type=? AND role=? AND is_current=1 ORDER BY revision DESC LIMIT 1",
+    )
+    .get(kind, session.role) as { id: string } | undefined;
+  if (previous)
+    db.prepare("UPDATE r5_owner_artifacts SET is_current=0,status='invalidated' WHERE id=?").run(
+      previous.id,
+    );
+  const artifactId = id("r5-owner-artifact");
+  db.prepare(
+    "INSERT INTO r5_owner_artifacts(id,artifact_type,role,bound_rc_commit,bound_tree_hash,r1_r4_index_hash,catalog_hash,status,payload_json,artifact_hash,revision,supersedes_artifact_id,is_current,created_at,finalized_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+  ).run(
+    artifactId,
+    kind,
+    session.role,
+    session.bound_commit,
+    metadata.boundTreeHash,
+    metadata.indexHash,
+    metadata.catalogHash,
+    "draft",
+    bytes,
+    hash,
+    revision,
+    previous?.id ?? null,
+    1,
+    now(),
+    null,
+  );
+  if (kind === "exercise" && Array.isArray(value?.steps)) {
+    for (const step of value.steps) {
+      if (!step || typeof step !== "object") continue;
+      const stdoutHash = typeof step.stdoutSha256 === "string" ? step.stdoutSha256 : null;
+      const stderrHash = typeof step.stderrSha256 === "string" ? step.stderrSha256 : null;
+      const outputHash = stdoutHash && stderrHash ? sha256(`${stdoutHash}:${stderrHash}`) : null;
+      db.prepare(
+        "INSERT INTO r5_exercise_steps(artifact_id,step_id,command_id,status,exit_code,output_sha256,stdout_sha256,stderr_sha256,observation,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+      ).run(
+        artifactId,
+        String(step.id),
+        String(step.commandId ?? ""),
+        step.passed === true ? "passed" : "failed",
+        Number.isInteger(step.exitCode) ? step.exitCode : null,
+        outputHash,
+        stdoutHash,
+        stderrHash,
+        typeof step.observation === "string" ? step.observation : null,
+        now(),
+      );
+    }
+  }
+  return artifactId;
 }
 
 function recoverR5Artifacts() {
@@ -358,10 +475,12 @@ function writeArtifact(
   const revision = r5ArtifactRevision(session, kind);
   const filename = `${kind}.r${revision}.json`;
   const aliasFilename = `${kind}.json`;
-  const directory = path.join(config.privateEvidenceRoot, "r5", session.role, session.id);
+  const directory = path.join(config.privateEvidenceRoot, "gates", "R5", "artifacts", session.role);
+  const legacyDirectory = path.join(config.privateEvidenceRoot, "r5", session.role, session.id);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const target = path.join(directory, filename);
-  const alias = path.join(directory, aliasFilename);
+  fs.mkdirSync(legacyDirectory, { recursive: true, mode: 0o700 });
+  const target = path.join(directory, `${session.id}.${filename}`);
+  const alias = path.join(legacyDirectory, aliasFilename);
   const column = `${kind}_json`;
   const hashColumn = `${kind}_hash`;
   const pathColumn = artifactPathColumn(kind);
@@ -400,13 +519,35 @@ function writeArtifact(
   const relativePath = path.relative(config.privateEvidenceRoot, target).replaceAll("\\", "/");
   const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });
+  let normalizedArtifactId: string | null = null;
   transaction((db) => {
     db.prepare(
       `UPDATE r5_sessions SET ${column}=?,${hashColumn}=?,${pathColumn}=?,updated_at=? WHERE id=?`,
     ).run(bytes, hash, relativePath, now(), session.id);
+    normalizedArtifactId = persistNormalizedOwnerArtifact(
+      db,
+      session,
+      kind,
+      value,
+      bytes,
+      hash,
+      revision,
+    );
     db.prepare(
-      "INSERT INTO r5_artifact_outbox(id,session_id,kind,target_relpath,artifact_json,expected_file_hash,status,created_at) VALUES (?,?,?,?,?,?,?,?)",
-    ).run(id("r5-outbox"), session.id, kind, relativePath, bytes, hash, "pending", now());
+      "INSERT INTO r5_artifact_outbox(id,session_id,kind,target_relpath,artifact_json,expected_file_hash,status,created_at,artifact_kind,artifact_id,canonical_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+    ).run(
+      id("r5-outbox"),
+      session.id,
+      kind,
+      relativePath,
+      bytes,
+      hash,
+      "pending",
+      now(),
+      "owner_artifact",
+      normalizedArtifactId ?? session.id,
+      bytes,
+    );
   });
   try {
     fs.renameSync(temporary, target);
@@ -432,6 +573,20 @@ function parseJsonObject(body: unknown): Record<string, unknown> {
   if (!body || typeof body !== "object" || Array.isArray(body))
     throw new AppError("INVALID_INPUT", "R5 body 必须是对象", 422);
   return body as Record<string, unknown>;
+}
+
+function markNormalizedArtifactPassed(
+  session: any,
+  kind: "exercise" | "understanding" | "handoff",
+  hash: string,
+) {
+  transaction((db) =>
+    db
+      .prepare(
+        "UPDATE r5_owner_artifacts SET status='passed',finalized_at=? WHERE role=? AND artifact_type=? AND artifact_hash=? AND is_current=1",
+      )
+      .run(now(), session.role, kind, hash),
+  );
 }
 
 function r5Session(idValue: unknown, role: Role) {
@@ -695,6 +850,7 @@ export function finalizeExercise(roleName: string, body: unknown) {
     allCriticalStepsPassed: true,
   };
   const stored = writeArtifact(session, "exercise", artifact);
+  markNormalizedArtifactPassed(session, "exercise", stored.sha256);
   const revision = session.exercise_revision + 1;
   transaction((db) =>
     db
@@ -746,6 +902,7 @@ export function submitExercise(roleName: string, body: unknown) {
     result: input.result,
   };
   const stored = writeArtifact(session, "exercise", artifact);
+  markNormalizedArtifactPassed(session, "exercise", stored.sha256);
   transaction((db) =>
     db
       .prepare(
@@ -876,6 +1033,7 @@ export function finalizeUnderstanding(roleName: string, body: unknown) {
   if (session.understanding_status !== "ready" || !draft?.passed)
     throw new AppError("R5_UNDERSTANDING_FAILED", "理解检查未达到服务端固定评分门槛", 409);
   const stored = writeArtifact(session, "understanding", draft);
+  markNormalizedArtifactPassed(session, "understanding", stored.sha256);
   const revision = session.understanding_revision + 1;
   transaction((db) =>
     db
@@ -957,6 +1115,7 @@ export function createHandoff(roleName: string, body: unknown) {
     confirmed: true,
   };
   const stored = writeArtifact(session, "handoff", artifact);
+  markNormalizedArtifactPassed(session, "handoff", stored.sha256);
   transaction((db) =>
     db
       .prepare("UPDATE r5_sessions SET handoff_revision=handoff_revision+1,updated_at=? WHERE id=?")
@@ -1027,6 +1186,7 @@ export function submitUnderstanding(roleName: string, body: unknown) {
     passed,
   };
   const stored = writeArtifact(session, "understanding", artifact);
+  markNormalizedArtifactPassed(session, "understanding", stored.sha256);
   transaction((db) =>
     db
       .prepare(
@@ -1082,6 +1242,7 @@ export function submitHandoff(roleName: string, body: unknown) {
     confirmed: true,
   };
   const stored = writeArtifact(session, "handoff", artifact);
+  markNormalizedArtifactPassed(session, "handoff", stored.sha256);
   transaction((db) =>
     db
       .prepare("UPDATE r5_sessions SET handoff_revision=handoff_revision+1,updated_at=? WHERE id=?")
@@ -1129,12 +1290,91 @@ function buildBundle(boundCommit: string) {
   };
   ensureRoot();
   const directory = path.join(config.privateEvidenceRoot, "gates", "R5");
+  const bundlesDirectory = path.join(directory, "bundles");
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const target = bundlePath();
+  fs.mkdirSync(bundlesDirectory, { recursive: true, mode: 0o700 });
+  const target = canonicalBundlePath(bundle.bundleHash);
+  const alias = bundlePath();
   const bytes = `${canonicalize(bundle)}\n`;
   if (fs.existsSync(target) && fs.readFileSync(target, "utf8") !== bytes)
     throw new AppError("R5_BUNDLE_CONFLICT", "R5 common bundle 已存在且内容不同", 409);
-  if (!fs.existsSync(target)) fs.writeFileSync(target, bytes, { mode: 0o600 });
+  if (fs.existsSync(alias) && fs.readFileSync(alias, "utf8") !== bytes)
+    throw new AppError("R5_BUNDLE_CONFLICT", "R5 common bundle alias 已存在且内容不同", 409);
+  const metadata = sessions.every(
+    (session) =>
+      typeof session.exercise_index_hash === "string" &&
+      /^[a-f0-9]{64}$/.test(session.exercise_index_hash),
+  )
+    ? sessions.map((session) => ({
+        role: session.role as Role,
+        exercise: session.exercise_hash as string,
+        understanding: session.understanding_hash as string,
+        handoff: session.handoff_hash as string,
+        indexHash: session.exercise_index_hash as string,
+      }))
+    : [];
+  let bundleOutboxId: string | null = null;
+  if (metadata.length === 2 && metadata.every((item) => Object.values(item).every(Boolean))) {
+    const computer = metadata.find((item) => item.role === "computer_lead")!;
+    const math = metadata.find((item) => item.role === "math_lead")!;
+    const bundleId = id("r5-bundle");
+    const rel = path.relative(config.privateEvidenceRoot, target).replaceAll("\\", "/");
+    transaction((db) => {
+      const existing = db
+        .prepare("SELECT id FROM r5_artifact_bundles WHERE bundle_hash=?")
+        .get(bundle.bundleHash) as { id: string } | undefined;
+      if (!existing) {
+        db.prepare(
+          "INSERT INTO r5_artifact_bundles(id,rc_commit,r1_r4_index_hash,computer_exercise_hash,computer_understanding_hash,computer_handoff_hash,math_exercise_hash,math_understanding_hash,math_handoff_hash,status,bundle_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        ).run(
+          bundleId,
+          boundCommit,
+          computer.indexHash,
+          computer.exercise,
+          computer.understanding,
+          computer.handoff,
+          math.exercise,
+          math.understanding,
+          math.handoff,
+          "ready",
+          bundle.bundleHash,
+          now(),
+        );
+        bundleOutboxId = id("r5-outbox");
+        // The legacy `kind` column has a restrictive check; artifact_kind is
+        // the authoritative normalized discriminator and remains `bundle`.
+        db.prepare(
+          "INSERT INTO r5_artifact_outbox(id,session_id,kind,target_relpath,artifact_json,expected_file_hash,status,created_at,artifact_kind,artifact_id,canonical_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        ).run(
+          bundleOutboxId,
+          sessions[0].id,
+          "handoff",
+          rel,
+          bytes,
+          sha256(bytes),
+          "pending",
+          now(),
+          "bundle",
+          bundleId,
+          bytes,
+        );
+      }
+    });
+  }
+  if (!fs.existsSync(target)) {
+    const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });
+    fs.renameSync(temporary, target);
+  }
+  if (!fs.existsSync(alias)) fs.writeFileSync(alias, bytes, { mode: 0o600 });
+  if (bundleOutboxId)
+    transaction((db) =>
+      db
+        .prepare(
+          "UPDATE r5_artifact_outbox SET status='written',written_at=?,attempt_count=attempt_count+1 WHERE id=?",
+        )
+        .run(now(), bundleOutboxId),
+    );
   return bundle;
 }
 
@@ -1194,6 +1434,18 @@ export function r5Status(roleName: string) {
       "SELECT id,bound_commit,status,exercise_status,exercise_revision,understanding_status,understanding_revision,handoff_revision,exercise_hash,understanding_hash,handoff_hash,created_at,updated_at,finalized_at FROM r5_sessions WHERE role=? ORDER BY updated_at DESC",
     )
     .all(role) as any[];
+  const peers = getDb()
+    .prepare(
+      "SELECT role,bound_commit,status,exercise_status,understanding_status,handoff_revision FROM r5_sessions WHERE role<>? ORDER BY updated_at DESC",
+    )
+    .all(role) as any[];
+  const bundle = getDb()
+    .prepare(
+      "SELECT rc_commit,bundle_hash,status,created_at FROM r5_artifact_bundles WHERE status='ready' ORDER BY created_at DESC LIMIT 1",
+    )
+    .get() as
+    | { rc_commit: string; bundle_hash: string; status: string; created_at: string }
+    | undefined;
   return {
     role,
     sessions: rows.map((row) => ({
@@ -1202,5 +1454,85 @@ export function r5Status(roleName: string) {
       hasUnderstanding: Boolean(row.understanding_hash),
       hasHandoff: Boolean(row.handoff_hash),
     })),
+    otherRoleSessions: peers.map((row) => ({
+      role: row.role,
+      boundCommit: row.bound_commit,
+      status: row.status,
+      exerciseStatus: row.exercise_status,
+      understandingStatus: row.understanding_status,
+      handoffRevision: row.handoff_revision,
+    })),
+    artifactBundle: bundle
+      ? {
+          boundCommit: bundle.rc_commit,
+          bundleHash: bundle.bundle_hash,
+          status: bundle.status,
+          createdAt: bundle.created_at,
+        }
+      : null,
   };
+}
+
+/**
+ * R5 gate evidence is derived from the one server-created ready bundle.  The
+ * caller supplies only the rcCommit; it cannot choose artifact paths or hashes.
+ */
+export function r5GateArtifacts(boundCommit: string) {
+  const commit = fullCommit(boundCommit);
+  const bundle = getDb()
+    .prepare(
+      "SELECT * FROM r5_artifact_bundles WHERE rc_commit=? AND status='ready' ORDER BY created_at DESC LIMIT 1",
+    )
+    .get(commit) as any;
+  if (!bundle)
+    throw new AppError("R5_BUNDLE_REQUIRED", "没有绑定该 rcCommit 的 ready R5 bundle", 409);
+  const expected = [
+    ["computer_lead", "exercise", bundle.computer_exercise_hash],
+    ["computer_lead", "understanding", bundle.computer_understanding_hash],
+    ["computer_lead", "handoff", bundle.computer_handoff_hash],
+    ["math_lead", "exercise", bundle.math_exercise_hash],
+    ["math_lead", "understanding", bundle.math_understanding_hash],
+    ["math_lead", "handoff", bundle.math_handoff_hash],
+  ] as const;
+  for (const [role, kind, hash] of expected) {
+    const artifact = getDb()
+      .prepare(
+        "SELECT artifact_hash,status,is_current FROM r5_owner_artifacts WHERE role=? AND artifact_type=? AND artifact_hash=? AND status='passed' AND is_current=1",
+      )
+      .get(role, kind, hash) as { artifact_hash: string } | undefined;
+    if (!artifact)
+      throw new AppError("R5_ARTIFACT_INVALID", `${role}/${kind} R5 artifact 不再有效`, 409);
+    const session = getDb()
+      .prepare("SELECT * FROM r5_sessions WHERE role=? AND bound_commit=? AND status='finalized'")
+      .get(role, commit) as any;
+    const artifactPath = session?.[`${kind}_artifact_path`] as string | null | undefined;
+    if (!artifactPath)
+      throw new AppError("R5_ARTIFACT_INVALID", `${role}/${kind} artifact path 缺失`, 409);
+    const file = safePrivateRelative(artifactPath);
+    if (!fs.existsSync(file) || sha256(fs.readFileSync(file)) !== hash)
+      throw new AppError("R5_ARTIFACT_TAMPERED", `${role}/${kind} artifact 文件 hash 不匹配`, 409);
+  }
+  const bundleFile = canonicalBundlePath(bundle.bundle_hash);
+  let parsedBundle: any;
+  try {
+    parsedBundle = JSON.parse(fs.readFileSync(bundleFile, "utf8"));
+  } catch {
+    parsedBundle = null;
+  }
+  if (
+    !parsedBundle ||
+    parsedBundle.bundleHash !== bundle.bundle_hash ||
+    sha256(
+      canonicalize({
+        schemaVersion: parsedBundle.schemaVersion,
+        artifactHashes: parsedBundle.artifactHashes,
+        status: parsedBundle.status,
+      }),
+    ) !== bundle.bundle_hash
+  )
+    throw new AppError("R5_BUNDLE_INVALID", "R5 bundle 文件缺失或 hash 不匹配", 409);
+  return expected.map(([role, kind, hash]) => ({
+    logicalId: `R5/${role}/${kind}`,
+    sha256: hash,
+  }));
 }

@@ -61,6 +61,7 @@ export function migrate() {
     migration020,
     migration021,
     migration022,
+    migration023,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -732,6 +733,13 @@ function migration022(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_r5_artifact_outbox_status
       ON r5_artifact_outbox(status,created_at);
   `);
+}
+
+function migration023(db: Database.Database) {
+  const present = (db.prepare("PRAGMA table_info(study_run_attempts)").all() as any[]).some(
+    (row) => row.name === "replacement_activated_at",
+  );
+  if (!present) db.exec("ALTER TABLE study_run_attempts ADD COLUMN replacement_activated_at TEXT");
 }
 
 export type Db = Database.Database;

@@ -3,6 +3,7 @@ import { csrfMatches, requireRole } from "@/lib/auth";
 import { getDb, migrate } from "@/lib/db";
 import { id } from "@/lib/ids";
 import { AppError, errorEnvelope } from "@/lib/errors";
+import { invalidateStudyReviewChain } from "@/lib/study";
 
 export async function POST(
   request: Request,
@@ -44,6 +45,7 @@ export async function POST(
       .get(sampleId, reviewer) as any;
     const reviewId = id("review");
     getDb().transaction(() => {
+      if (previous) invalidateStudyReviewChain(getDb(), batchId);
       if (previous)
         getDb().prepare("UPDATE manual_reviews SET is_current=0 WHERE id=?").run(previous.id);
       getDb()

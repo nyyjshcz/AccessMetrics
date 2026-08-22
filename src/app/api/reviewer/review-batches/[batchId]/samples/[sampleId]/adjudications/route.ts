@@ -4,6 +4,7 @@ import { getDb, migrate } from "@/lib/db";
 import { id } from "@/lib/ids";
 import { canonicalize, sha256 } from "@/lib/canonical";
 import { AppError, errorEnvelope } from "@/lib/errors";
+import { invalidateStudyReviewChain } from "@/lib/study";
 
 export async function POST(
   request: Request,
@@ -45,23 +46,26 @@ export async function POST(
       .get(sampleId) as { id: string; revision: number } | undefined;
     const resolutionHash = sha256(canonicalize({ sampleId, verdict, resolutionNote }));
     const adjudicationId = id("adjudication");
-    getDb()
-      .prepare(
-        "INSERT INTO manual_review_adjudications(id,sample_id,adjudicated_verdict,resolution_note,resolution_hash,revision,supersedes_adjudication_id,status,proposed_by,proposed_at,is_current) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-      )
-      .run(
-        adjudicationId,
-        sampleId,
-        verdict,
-        resolutionNote,
-        resolutionHash,
-        previous ? previous.revision + 1 : 1,
-        previous?.id ?? null,
-        "proposed",
-        session.user.role,
-        new Date().toISOString(),
-        0,
-      );
+    getDb().transaction(() => {
+      if (previous) invalidateStudyReviewChain(getDb(), batchId);
+      getDb()
+        .prepare(
+          "INSERT INTO manual_review_adjudications(id,sample_id,adjudicated_verdict,resolution_note,resolution_hash,revision,supersedes_adjudication_id,status,proposed_by,proposed_at,is_current) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        )
+        .run(
+          adjudicationId,
+          sampleId,
+          verdict,
+          resolutionNote,
+          resolutionHash,
+          previous ? previous.revision + 1 : 1,
+          previous?.id ?? null,
+          "proposed",
+          session.user.role,
+          new Date().toISOString(),
+          0,
+        );
+    })();
     return NextResponse.json(
       { adjudicationId, status: "proposed", resolutionHash },
       { status: 201 },

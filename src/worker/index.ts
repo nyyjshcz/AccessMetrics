@@ -32,23 +32,27 @@ async function processJob(job: any) {
       )
       .get(job.study_campaign_id, job.study_slot, job.study_replacement_rank, job.study_attempt_no);
     if (!existing)
-      getDb()
-        .prepare(
-          "INSERT INTO study_run_attempts(id,campaign_id,slot,candidate_id,replacement_rank,attempt_no,run_id,trigger,terminal_status,usability_decision,started_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        )
-        .run(
-          `attempt_${run.id}`,
-          job.study_campaign_id,
-          job.study_slot,
-          job.study_candidate_id,
-          job.study_replacement_rank,
-          job.study_attempt_no,
-          run.id,
-          "study-run",
-          "running",
-          "pending",
-          new Date().toISOString(),
-        );
+      (() => {
+        const startedAt = new Date().toISOString();
+        getDb()
+          .prepare(
+            "INSERT INTO study_run_attempts(id,campaign_id,slot,candidate_id,replacement_rank,attempt_no,run_id,trigger,terminal_status,usability_decision,started_at,replacement_activated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+          )
+          .run(
+            `attempt_${run.id}`,
+            job.study_campaign_id,
+            job.study_slot,
+            job.study_candidate_id,
+            job.study_replacement_rank,
+            job.study_attempt_no,
+            run.id,
+            "study-run",
+            "running",
+            "pending",
+            startedAt,
+            job.study_replacement_rank > 0 ? startedAt : null,
+          );
+      })();
   }
   const entryUrl = job.submitted_url ?? job.origin;
   await validateTargetUrl(entryUrl);
@@ -178,6 +182,20 @@ async function main() {
       logger.info({ jobId: job.id, runId }, "scan job finished");
     } catch (error) {
       finishJob(job.id, "failed", error);
+      if (job.study_campaign_id) {
+        getDb()
+          .prepare(
+            "UPDATE study_run_attempts SET terminal_status='failed',usability_decision='excluded',decision_reason_code=?,completed_at=? WHERE campaign_id=? AND slot=? AND replacement_rank=? AND attempt_no=? AND terminal_status='running'",
+          )
+          .run(
+            "worker_error",
+            new Date().toISOString(),
+            job.study_campaign_id,
+            job.study_slot,
+            job.study_replacement_rank,
+            job.study_attempt_no,
+          );
+      }
       const failedRun = getDb()
         .prepare("SELECT id FROM scan_runs WHERE job_id=? ORDER BY started_at DESC LIMIT 1")
         .get(job.id) as { id: string } | undefined;

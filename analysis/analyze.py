@@ -368,7 +368,19 @@ def analyze_export(root: Path) -> dict[str, Any]:
             "ranking": sorted(scenario_values, key=lambda site: (-scenario_values[site], site)),
             "rank": rank_scores(scenario_values),
         }
-    population_digest = sha256(canonical(sorted(population_items, key=lambda item: canonical(item))))
+    computed_population_digest = sha256(canonical(sorted(population_items, key=lambda item: canonical(item))))
+    manifest_population_digest = manifest.get("populationDigest")
+    if manifest_population_digest is not None and (
+        not isinstance(manifest_population_digest, str)
+        or len(manifest_population_digest) != 64
+        or any(character not in "0123456789abcdef" for character in manifest_population_digest)
+    ):
+        raise ValueError("manifest populationDigest is not a SHA-256")
+    # Formal study exports carry the server-side population digest, which is
+    # computed from stable result-node identities before export IDs/timestamps
+    # exist. The report must preserve that frozen identity instead of replacing
+    # it with an approximate digest reconstructed from rendered scan JSON.
+    population_digest = manifest_population_digest or computed_population_digest
     metadata = {
         "exportId": manifest.get("exportId"),
         "sourceExportId": manifest.get("sourceExportId") or manifest.get("exportId"),

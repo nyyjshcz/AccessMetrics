@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { verifyApprovedGate } from "./gate-utils";
+import { getDb, migrate } from "../src/lib/db";
+import { verifyReviewFreezeAfterR3 } from "../src/lib/study";
 
 const root = process.cwd();
 const externalPath = path.join(root, "EXTERNAL_INPUTS.md");
@@ -68,9 +70,31 @@ if (missing.length > 0) {
     process.exitCode = 1;
     process.exit();
   }
+  migrate();
+  const awaiting = awaitingReviewFreezeIds().map((freezeId) => {
+    try {
+      return { freezeId, result: verifyReviewFreezeAfterR3(freezeId) };
+    } catch (error) {
+      return { freezeId, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
   const status = fs
     .readFileSync(statusPath, "utf8")
     .replace(/当前状态：`[^`]+`/, "当前状态：`READY_FOR_FORMAL_VALIDATION`");
   fs.writeFileSync(statusPath, status);
-  console.log("外部输入已齐全，可以继续正式验证。");
+  console.log(
+    JSON.stringify({ message: "外部输入已齐全，可以继续正式验证。", reviewFreezes: awaiting }),
+  );
+}
+
+function awaitingReviewFreezeIds() {
+  // Importing the database directly here keeps review-freeze promotion tied to
+  // the same gate-order check as the rest of project:resume.
+  return (
+    getDb()
+      .prepare(
+        "SELECT DISTINCT study_freeze_id FROM review_freezes WHERE status='awaiting_r3' AND is_current=1",
+      )
+      .all() as Array<{ study_freeze_id: string }>
+  ).map((row) => row.study_freeze_id);
 }

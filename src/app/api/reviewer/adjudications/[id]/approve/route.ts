@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { csrfMatches, requireRole } from "@/lib/auth";
 import { getDb, migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
+import { invalidateStudyReviewChain } from "@/lib/study";
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   try {
@@ -24,6 +25,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         .prepare("SELECT sample_id FROM manual_review_adjudications WHERE id=?")
         .get(id) as { sample_id: string } | undefined;
       if (!current) return 0;
+      const batch = db
+        .prepare(
+          "SELECT mrs.batch_id FROM manual_review_samples mrs WHERE mrs.id=(SELECT sample_id FROM manual_review_adjudications WHERE id=?)",
+        )
+        .get(id) as { batch_id: string } | undefined;
+      if (batch) invalidateStudyReviewChain(db, batch.batch_id);
       db.prepare(
         "UPDATE manual_review_adjudications SET is_current=0 WHERE sample_id=? AND id<>? AND is_current=1",
       ).run(current.sample_id, id);

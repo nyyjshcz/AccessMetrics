@@ -378,7 +378,7 @@ function makeMarkdown(
   const banner =
     mode === "candidate"
       ? "> REVIEW CANDIDATE — NOT FINAL\n\n"
-      : "> 最终报告，由通过 R4/R5 门的冻结结构化数据生成。\n\n";
+      : "> 最终报告，由通过 R4 门并绑定冻结证据的结构化数据生成。\n\n";
   const scoreRows = renderSiteScoreRows(siteScores, rank);
   const principleRows = renderPrincipleRows(principleSummary);
   const categoryRows = renderCategoryRows(categories);
@@ -409,7 +409,7 @@ function makeMarkdown(
   const conclusion =
     mode === "candidate"
       ? "本候选版只供 R4 人工核对，不是最终成果，不得写入 final export；所有结论仍以绑定的冻结证据为准。"
-      : "本节仅由通过 R4/R5 门的真实冻结数据生成；执行 AI 不代填单位、姓名、日期或接收状态。";
+      : "本节仅由通过 R4 门的真实冻结数据生成；R5 负责后续接手与交付确认，执行 AI 不代填单位、姓名、日期或接收状态。";
   return `# ${title}\n\n${banner}## 摘要\n\n${summaryText}\n\n${table(
     ["指标", "值"],
     [

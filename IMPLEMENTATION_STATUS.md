@@ -89,6 +89,8 @@ pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部�
 
 本轮 R5 outbox/path 收敛后的完整质量门再次通过：迁移 1–25、integration 6 files/19 tests、scoring 5 files/22 tests、全量 11 files/41 tests、Python 分析、Next build、3 个 Playwright E2E；新增测试确认 outbox 仅含计划字段、固定 artifact 路径和跨 commit 归档行为。
 
+在此基础上新增计划 CLI 参数分隔符回归测试后，完整质量门再次通过：迁移 1–25、integration 7 files/20 tests、scoring 5 files/22 tests、全量 11 files/42 tests、Python 分析、Next build、3 个 Playwright E2E；新增测试确认原样传入 `pnpm ... -- --参数` 会进入真实业务门，而不是被误判为缺少参数。
+
 本轮候选链局部质量门另外通过：
 
 ```text

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { loadReportStyle } from "../../scripts/report-style";
 
 describe("plan CLI argument separators", () => {
   it("accepts pnpm's -- separator before deliverables flags", () => {
@@ -32,6 +33,21 @@ describe("plan CLI argument separators", () => {
           { encoding: "utf8", stdio: "pipe" },
         ),
       ).toThrowError(/R4 candidate 未通过真人确认/);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed for an invalid report style template", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "accesscheck-report-style-"));
+    try {
+      const styleDirectory = path.join(root, "docs", "templates");
+      fs.mkdirSync(styleDirectory, { recursive: true });
+      fs.writeFileSync(
+        path.join(styleDirectory, "report-style.json"),
+        JSON.stringify({ templateVersion: "wrong-version" }),
+      );
+      expect(() => loadReportStyle(root)).toThrow(/report-style-v1/);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

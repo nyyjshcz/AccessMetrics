@@ -27,11 +27,31 @@ type ReportData = {
 
 type JsonRecord = Record<string, unknown>;
 
-const REPORT_DOCUMENT_LANGUAGE = {
-  value: "zh-CN",
-  eastAsia: "zh-CN",
-  bidirectional: "zh-CN",
-} as const;
+type ReportStyle = {
+  templateVersion: "report-style-v1";
+  fontFamily: string;
+  pageSize: "A4";
+  language: "zh-CN";
+  candidateHeader: string;
+};
+
+function loadReportStyle(): ReportStyle {
+  const file = path.join(process.cwd(), "docs", "templates", "report-style.json");
+  if (!fs.existsSync(file)) throw new Error("缺少 docs/templates/report-style.json");
+  const raw = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+  const style = asRecord(raw);
+  if (
+    style.templateVersion !== "report-style-v1" ||
+    typeof style.fontFamily !== "string" ||
+    !/^[A-Za-z0-9 ,"'_-]+$/.test(style.fontFamily) ||
+    style.pageSize !== "A4" ||
+    style.language !== "zh-CN" ||
+    typeof style.candidateHeader !== "string" ||
+    style.candidateHeader.length === 0
+  )
+    throw new Error("docs/templates/report-style.json 不符合 report-style-v1");
+  return style as ReportStyle;
+}
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
@@ -343,6 +363,7 @@ function makeMarkdown(
   mode: ReportMode,
   data: ReportData,
   reportDataHash: string,
+  style: ReportStyle,
 ) {
   const title =
     kind === "research"
@@ -383,7 +404,7 @@ function makeMarkdown(
       : `- source export-id：\`${String(data.sourceExportId ?? "MISSING")}\`\n- source manifest SHA-256：\`${String(data.sourceManifestHash ?? "MISSING")}\`\n- review-freeze SHA-256：\`${String(data.reviewFreezeHash ?? "MISSING")}\``;
   const banner =
     mode === "candidate"
-      ? "> REVIEW CANDIDATE — NOT FINAL\n\n"
+      ? `> ${style.candidateHeader}\n\n`
       : "> 最终报告，由通过 R4 门并绑定冻结证据的结构化数据生成。\n\n";
   const scoreRows = renderSiteScoreRows(siteScores, rank);
   const principleRows = renderPrincipleRows(principleSummary);
@@ -489,6 +510,7 @@ async function main() {
     throw new Error("kind 必须是 research 或 federation");
   const mode = options.mode ?? "candidate";
   if (mode !== "candidate" && mode !== "final") throw new Error("mode 必须是 candidate 或 final");
+  const reportStyle = loadReportStyle();
   if (!fs.existsSync(options.input)) throw new Error("report-data 文件不存在");
   const data = JSON.parse(fs.readFileSync(options.input, "utf8")) as ReportData;
   if (!data || typeof data !== "object" || Array.isArray(data))
@@ -507,7 +529,7 @@ async function main() {
   fs.mkdirSync(output, { recursive: true });
   const copiedCharts = copyChartAssets(data, options.input, output);
   const markdownPath = path.join(output, `${options.kind}-report.md`);
-  const markdown = makeMarkdown(options.kind, mode, data, reportDataHash);
+  const markdown = makeMarkdown(options.kind, mode, data, reportDataHash, reportStyle);
   fs.writeFileSync(markdownPath, markdown);
   const manifest: {
     schemaVersion: string;
@@ -530,7 +552,19 @@ async function main() {
       styles: {
         default: {
           document: {
-            run: { language: REPORT_DOCUMENT_LANGUAGE },
+            run: {
+              font: {
+                ascii: reportStyle.fontFamily,
+                cs: reportStyle.fontFamily,
+                eastAsia: reportStyle.fontFamily,
+                hAnsi: reportStyle.fontFamily,
+              },
+              language: {
+                value: reportStyle.language,
+                eastAsia: reportStyle.language,
+                bidirectional: reportStyle.language,
+              },
+            },
           },
         },
       },

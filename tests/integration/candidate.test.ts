@@ -295,6 +295,9 @@ describe("candidate deliverables", () => {
       );
       const reportRoot = path.join(outputRoot, "candidate", "research");
       const markdown = fs.readFileSync(path.join(reportRoot, "research-report.md"), "utf8");
+      const reportStyle = JSON.parse(
+        fs.readFileSync(path.join(process.cwd(), "docs/templates/report-style.json"), "utf8"),
+      ) as { candidateHeader: string };
       for (const heading of [
         "## 1. 研究背景与问题",
         "## 5. axe 严重程度、WCAG 映射和评分公式",
@@ -303,7 +306,7 @@ describe("candidate deliverables", () => {
         "## 15. 附录：版本、配置和复现方法",
       ])
         expect(markdown).toContain(heading);
-      expect(markdown).toContain("> REVIEW CANDIDATE — NOT FINAL");
+      expect(markdown).toContain(`> ${reportStyle.candidateHeader}`);
       const docxPath = path.join(reportRoot, "research-report.docx");
       expect(fs.statSync(docxPath).size).toBeGreaterThan(1000);
       const docxArchive = unzipSync(fs.readFileSync(docxPath));

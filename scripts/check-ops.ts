@@ -20,6 +20,9 @@ const required = [
 const missing = required.filter((file) => !fs.existsSync(file));
 const dockerfile = fs.existsSync("Dockerfile") ? fs.readFileSync("Dockerfile", "utf8") : "";
 const caddyfile = fs.existsSync("Caddyfile") ? fs.readFileSync("Caddyfile", "utf8") : "";
+const configFile = fs.existsSync("src/lib/config.ts")
+  ? fs.readFileSync("src/lib/config.ts", "utf8")
+  : "";
 const productionCompose = fs.existsSync("compose.prod.yaml")
   ? fs.readFileSync("compose.prod.yaml", "utf8")
   : "";
@@ -69,6 +72,14 @@ if (
   !caddyfile.includes("header_up X-AccessCheck-Trusted-Proxy caddy")
 )
   errors.push("Caddy must strip and rewrite the trusted proxy marker");
+if (
+  !configFile.includes('if (config.APP_ENV === "production")') ||
+  !configFile.includes("assertPrivateEvidenceRoot();") ||
+  !configFile.includes("fs.constants.R_OK | fs.constants.W_OK")
+)
+  errors.push(
+    "production Web must fail closed before serving without a readable/writable private root",
+  );
 const localWorkerPrivateMount =
   /worker:[\s\S]*?PRIVATE_EVIDENCE_ROOT|worker:[\s\S]*?private-evidence/i.test(
     fs.existsSync("compose.yaml") ? fs.readFileSync("compose.yaml", "utf8") : "",

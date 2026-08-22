@@ -59,6 +59,11 @@ export function assertPrivateEvidenceRoot() {
   if (!stat.isDirectory()) throw new Error("PRIVATE_EVIDENCE_ROOT is not a directory");
   if (process.platform !== "win32" && (stat.mode & 0o077) !== 0)
     throw new Error("PRIVATE_EVIDENCE_ROOT permissions must be 0700");
+  try {
+    fs.accessSync(config.privateEvidenceRoot, fs.constants.R_OK | fs.constants.W_OK);
+  } catch {
+    throw new Error("PRIVATE_EVIDENCE_ROOT must be readable and writable");
+  }
 }
 
 export function assertProductionSecrets() {
@@ -81,6 +86,17 @@ export function assertProductionSecrets() {
 export function assertProductionProxy() {
   if (config.APP_ENV === "production" && !config.EGRESS_PROXY_URL)
     throw new Error("production EGRESS_PROXY_URL is missing");
+}
+
+// Refuse to load the server-side application in production when the private
+// evidence root, required secrets, or egress proxy is not ready. The worker
+// calls the same assertions explicitly; keeping this guard at module load
+// also prevents the Web process from accepting a first request and only then
+// discovering a deployment misconfiguration through the health endpoint.
+if (config.APP_ENV === "production") {
+  assertPrivateEvidenceRoot();
+  assertProductionSecrets();
+  assertProductionProxy();
 }
 
 export type AppConfig = typeof config;

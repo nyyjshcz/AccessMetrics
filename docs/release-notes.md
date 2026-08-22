@@ -11,7 +11,7 @@
 
 ## 验证
 
-以 `docs/validation-log.md` 为准。最近一次 `pnpm test:all` 已通过 integration 7、scoring 16、全量 Vitest 23、Python/notebook、构建和 3 个 E2E 测试，并包含仓库发布卫生门。
+以 `docs/validation-log.md` 为准。最近一次 `pnpm test:all` 已通过 integration 7 个文件/20 个测试、scoring 5 个文件/22 个测试、全量 Vitest 12 个文件/43 个测试、Python/notebook、构建和 3 个 E2E 测试，并包含仓库发布卫生门。
 
 ## 正式研究数据
 

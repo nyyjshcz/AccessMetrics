@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://accesscheck-lishui.local/contracts/external-delivery-attestation.schema.json",
+  "title": "External delivery attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "status",
+    "deliveryId",
+    "deliveryMode",
+    "releaseTag",
+    "finalCandidate",
+    "deliveredAt",
+    "deliveredBy",
+    "recipient",
+    "artifacts",
+    "attestationHash"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "external-delivery-attestation-v1" },
+    "status": { "const": "accepted" },
+    "deliveryId": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "deliveryMode": {
+      "enum": ["public_web", "github_release", "recipient_submission", "local_handoff"]
+    },
+    "releaseTag": { "type": "string", "pattern": "^[A-Za-z0-9._/-]+$" },
+    "finalCandidate": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "deliveredAt": { "type": "string", "format": "date-time" },
+    "deliveredBy": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "recipient": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "publicationUrl": { "type": "string", "format": "uri", "maxLength": 2048 },
+    "githubReleaseUrl": { "type": "string", "format": "uri", "maxLength": 2048 },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^[^/].*$" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        }
+      }
+    },
+    "attestationHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

@@ -14,7 +14,7 @@
 
 ### 本地与 Docker 启动
 
-本地启动顺序是 `pnpm install` → `pnpm db:migrate` → `pnpm dev`，另开终端运行 `pnpm worker`。Docker 本地形态使用 `compose.yaml`（或兼容的 `docker-compose.yml`）：先准备 `.env.local`，再执行 `docker compose up --build`；首次启动后检查 Web 健康端点、Worker 日志和迁移状态。生产形态使用 `compose.prod.yaml` 与 `Caddyfile`，必须先替换真实域名、密钥和固定镜像 digest。没有 Docker、服务器或域名时，只能运行静态配置检查，不能声称已部署。
+本地启动顺序是 `pnpm install` → `pnpm db:migrate` → `pnpm dev`，另开终端运行 `pnpm worker`。Docker 本地形态使用 `compose.yaml`（或兼容的 `docker-compose.yml`）：先准备 `.env.local`，再执行 `docker compose up --build`；它会同时启动 Web、Worker 和 egress-proxy，Worker 只加入隔离网络并通过显式代理出站。首次启动后检查 Web 健康端点、Worker 日志和迁移状态。生产形态使用 `compose.prod.yaml` 与 `Caddyfile`，必须先替换真实域名、密钥和固定镜像 digest。没有 Docker、服务器或域名时，只能运行静态配置检查，不能声称已部署。
 
 ### 管理、迁移、Web/Worker 和安全边界
 
@@ -39,7 +39,7 @@
 
 ### 外部输入与自动评分限制
 
-真实研究协议、丽水样本、正式网站许可/标准快照、R1–R5 receipt、生产服务器/域名/密钥、固定代理/渲染器镜像等列在 `EXTERNAL_INPUTS.md`。缺少它们时先完成所有本地代码、测试、模板和脚手架，状态保持 `WAITING_EXTERNAL_INPUT`；输入齐全后运行 `pnpm project:resume` 幂等续跑。自动评分只表示已定义规则下的可重复筛查结果，不能替代人工 verdict、完整人工审计或合规认证。
+真实研究协议、丽水样本、正式网站许可/标准快照、R1–R5 receipt、生产服务器/域名/密钥、固定代理/渲染器镜像等列在 `EXTERNAL_INPUTS.md`。缺少它们时先完成所有本地代码、测试、模板和脚手架，状态保持 `WAITING_EXTERNAL_INPUT`；输入齐全后运行 `pnpm project:resume` 幂等续跑。`project:status` 只在研究门已通过且 Git 外 `private-inputs/external-delivery/attestation.json` 通过 schema/canonical hash 校验后才会显示 `EXTERNAL_DELIVERY_COMPLETE`，不会把文件存在当成真实交付。自动评分只表示已定义规则下的可重复筛查结果，不能替代人工 verdict、完整人工审计或合规认证。
 
 ## 本地启动
 

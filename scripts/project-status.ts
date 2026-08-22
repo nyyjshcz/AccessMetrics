@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { verifyApprovedGate } from "./gate-utils";
+import { verifyExternalDeliveryAttestation } from "./external-delivery";
 
 const root = process.cwd();
 const external = fs.readFileSync(path.join(root, "EXTERNAL_INPUTS.md"), "utf8");
@@ -13,6 +14,7 @@ const required = [
   "src/lib/score.ts",
   "src/worker/index.ts",
   "contracts/api.openapi.yaml",
+  "contracts/external-delivery-attestation.schema.json",
   "tests/e2e/home.spec.ts",
   "analysis/reference_score.py",
   "Dockerfile",
@@ -20,6 +22,11 @@ const required = [
   "scripts/check-repository-hygiene.ts",
   "scripts/check-egress-proxy.mjs",
   "scripts/scan-page-cli.ts",
+  "scripts/import-sample-frame.ts",
+  "scripts/run-formal-study.ts",
+  "scripts/build-deliverables.ts",
+  "scripts/resume-project.ts",
+  "scripts/external-delivery.ts",
   "tools/egress-proxy/proxy.mjs",
   "compose.prod.yaml",
   "Caddyfile",
@@ -76,12 +83,17 @@ const indexValid =
   typeof attestationIndex.throughGate === "string" &&
   typeof attestationIndex.r5Status === "string";
 const automatedReady = missing.length === 0 && qualityArtifacts.length === 4 && indexValid;
+const deliveryAttestation = verifyExternalDeliveryAttestation(root);
+const researchComplete =
+  attestationIndex?.throughGate === "R5" && attestationIndex?.r5Status === "passed";
 const state = !automatedReady
   ? "IMPLEMENTING"
   : pending.length > 0 || missingEvidence.length > 0
     ? "WAITING_EXTERNAL_INPUT"
-    : attestationIndex?.throughGate === "R5" && attestationIndex?.r5Status === "passed"
-      ? "RESEARCH_COMPLETE"
+    : researchComplete
+      ? deliveryAttestation.passed
+        ? "EXTERNAL_DELIVERY_COMPLETE"
+        : "RESEARCH_COMPLETE"
       : "AUTOMATED_IMPLEMENTATION_COMPLETE";
 
 console.log(
@@ -102,6 +114,11 @@ console.log(
             fullGateBundleHash: attestationIndex.fullGateBundleHash,
           }
         : null,
+      externalDelivery: {
+        path: deliveryAttestation.path,
+        passed: deliveryAttestation.passed,
+        reason: deliveryAttestation.passed ? undefined : deliveryAttestation.reason,
+      },
       checkedAt: new Date().toISOString(),
       qualityCommands: [
         "pnpm dependency:preflight",

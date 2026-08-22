@@ -7,6 +7,6 @@
 - [ ] R2/R3：两位 reviewer 对服务端固定抽样节点独立复核、对分歧裁决，并冻结 review set/adjudication hash。
 - [ ] R4：两位负责人核对中文目录、模型/敏感性、报告候选、数字追溯、frame 覆盖和局限，提交 candidateBundle 绑定的 receipt。
 - [ ] R5：两位负责人 checkout 准确 rcCommit，分别完成端到端练习、理解检查和 A–E 接手确认；由服务端生成共同 artifact bundle 和 receipts。
-- [ ] 生产部署：服务器、域名/DNS、TLS、镜像仓库、固定 Playwright/渲染器/代理 digest、密钥和接收单位信息。
+- [ ] 生产部署与外部验证环境：服务器、域名/DNS、TLS、镜像仓库、固定 Playwright/渲染器/代理 digest、密钥和接收单位信息；当前桌面未安装 Docker Compose、LibreOffice 或 Poppler，需在具备这些工具的环境补跑 Compose smoke 和逐页视觉 QA，不能把静态检查当作实际通过。
 
 收到真实输入后，在仓库根目录运行 `pnpm project:resume`。命令会先验证自动化产物和外部 evidence 的 hash；未齐全时继续返回 `WAITING_EXTERNAL_INPUT`，不会重做或覆盖正式数据。口令、token、签章和签署件只放 Git 外的私有根目录。

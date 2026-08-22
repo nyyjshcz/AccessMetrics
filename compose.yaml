@@ -12,6 +12,7 @@ services:
       - accesscheck-exports:/var/lib/accesscheck/public-exports
     ports:
       - "3000:3000"
+    networks: [app]
     command: ["node", "standalone/server.js"]
     healthcheck:
       test: ["CMD", "node", "scripts/healthcheck.mjs"]
@@ -23,10 +24,27 @@ services:
     environment:
       APP_ENV: development
       DATABASE_URL: /var/lib/accesscheck/data/accesscheck.db
+      HTTP_PROXY: http://egress-proxy:8080
+      HTTPS_PROXY: http://egress-proxy:8080
+      NO_PROXY: localhost,127.0.0.1,egress-proxy
+      EGRESS_PROXY_URL: http://egress-proxy:8080
     volumes:
       - accesscheck-data:/var/lib/accesscheck/data
     command: ["pnpm", "worker"]
+    networks: [scan-isolated]
+    depends_on: [egress-proxy]
+  egress-proxy:
+    build:
+      context: ./tools/egress-proxy
+    read_only: true
+    networks: [scan-isolated, external-egress]
+    expose: [8080]
 volumes:
   accesscheck-data:
   accesscheck-private:
   accesscheck-exports:
+networks:
+  app:
+  scan-isolated:
+    internal: true
+  external-egress:

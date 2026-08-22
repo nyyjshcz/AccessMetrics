@@ -65,4 +65,10 @@
 
 | 2026-08-22 | README 文档补齐后的完整总门 | AI | 待负责人 | 当前工作区自动化基线（未发布） | `pnpm test:all`（integration 7 files/22 tests、scoring 5 files/22 tests、全量 12 files/44 tests、Python 分析、Next build、E2E 3 passed） | 通过；文档变更未引入代码、构建或端到端回归；依赖预检基线时间戳已恢复为固定值 | R1–R5、真实研究站点/许可/标准、生产服务器/域名/密钥/镜像与 LibreOffice/Poppler 仍需外部输入 |
 
+| 2026-08-22 | 本地 Compose egress 隔离静态门复核 | AI | 待负责人 | 当前工作区自动化基线（未发布） | `pnpm ops:check`；复核 `compose.yaml`/`docker-compose.yml` 的 egress-proxy、scan-isolated、显式 `EGRESS_PROXY_URL` 和 Worker 不加入 `external-egress` | 通过；两个本地 Compose 形态均具备 Web/Worker/egress-proxy 三服务和隔离网络；当前无 Docker，未宣称实际 Compose smoke 通过 | Docker Compose 实际启动、真实代理/Playwright/渲染器 digest、R1–R5 和生产输入仍需外部提供 |
+
+| 2026-08-22 | 项目状态终态枚举与外部交付证明复核 | AI | 待负责人 | 当前工作区自动化基线（未发布） | `pnpm exec vitest run tests/integration/project-status.test.ts`（3 passed）；`pnpm project:status` | 通过；状态机保留 `IMPLEMENTING/WAITING_EXTERNAL_INPUT/AUTOMATED_IMPLEMENTATION_COMPLETE/RESEARCH_COMPLETE`，新增的 `EXTERNAL_DELIVERY_COMPLETE` 只接受 Git 外 schema-valid、canonical-hash 外部证明；当前证明缺失时按设计不升级状态 | R1–R5、真实研究/交付和生产环境仍需外部提供 |
+
+| 2026-08-22 | Compose 隔离、兼容入口与终态校验后的完整总门 | AI | 待负责人 | 当前工作区自动化基线（未发布） | `pnpm test:all`（integration 8 files/25 tests、scoring 5 files/22 tests、全量 13 files/47 tests、Python 分析、Next build、E2E 3 passed） | 通过；本地 Compose 三服务隔离静态门、计划命名兼容入口、外部交付证明 schema/hash 和状态机均无回归；依赖预检基线时间戳已恢复 | Docker Compose 实际启动、真实代理/渲染器 digest、R1–R5、正式研究与交付仍需外部输入 |
+
 真人确认只能由对应 reviewer 会话提交；AI 不得把本表预填行改成“本人已复核”。

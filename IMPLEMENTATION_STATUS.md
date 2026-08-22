@@ -51,6 +51,8 @@
 - 打印 HTML/PDF 渲染器现在复用同一份报告样式模板，输出 `lang=zh-CN`、A4 页面和模板字体；DOCX 与正式打印 PDF 不再各自维护一套语言/页面样式常量。
 - README 已按计划第 17 步补齐可执行运行清单：系统效果、前置环境、本地/Docker 启动、管理口令、迁移、Web/Worker、egress 与隔离网络、测试/扫描/发布/导出、Jupyter、备份恢复、域名/DNS/HTTPS/Caddy、CSRF/Origin/限速/安全头/Cookie、升级规则、自动评分边界、外部输入/R1–R5/`project:resume` 和依赖重新冻结规则；仍明确 Docker、真实站点、渲染器和公网部署必须有外部输入。
 - 本次按计划逐项复核了步骤 1–19 的自动化命令、交付物和质量证据；`release:* --help`/`publication:preflight --help` 均可启动，`pnpm project:resume` 在缺少 R1–R5 真人证据时按设计以退出码 2 保持等待，未生成伪造正式成果。
+- 计划复核发现并修正本地 Compose 的网络缺口：`compose.yaml` 和兼容的 `docker-compose.yml` 现在都启动 egress-proxy，Worker 仅加入 `scan-isolated`、设置显式 `EGRESS_PROXY_URL`，并由 `ops:check` 静态拒绝 Worker 直连 `external-egress`；当前环境没有 Docker，因此尚未宣称 Compose 实际启动通过。
+- `project:status` 已补齐计划规定的 `EXTERNAL_DELIVERY_COMPLETE` 状态，但只有 R5/研究门通过后，且 Git 外 `private-inputs/external-delivery/attestation.json` 满足严格 schema 和 canonical `attestationHash` 才能进入；当前证明缺失，仍为 `WAITING_EXTERNAL_INPUT`。
 - 正式抽样请求现在必须绑定并由服务端复核 `sourceManifestHash`；formal/ad-hoc 审核修订要求 `expectedRevision` 与 `supersedesReviewId`，裁决批准要求相同 `resolutionHash`/revision，旧版本不能静默覆盖。
 - 成果 candidate/verify/release 链现在要求固定的 report-data、两份最终报告、图表/表格 hash、R1–R5 数据库绑定 evidence 和分别重算的 `r4EvidenceBundleHash`/`fullGateBundleHash`；缺任何输入均失败，不再把可选参数或文件存在当作完成证明。
 - R4 候选链已按计划收紧：`report-data.candidate.json` 使用独立 schema、禁止 `exportId/manifestHash/outcomeDigest/r4EvidenceBundleHash` 等 final 字段，并通过 `$defs` 与最终 report-data 共用分数、frame、人工样本、图表和局限定义；candidate bundle 固定绑定 source/review-freeze/localization/model/commit 以及五个候选文件的 bytes/SHA-256，candidateBundleId 对语义内容完整 hash，候选目录原子写入、只读、可幂等复用。
@@ -104,6 +106,8 @@ pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部�
 随后新增非法样式模板的直接契约测试，完整质量门再次通过：全量 Vitest 12 个文件/44 个测试；模板校验、分析、构建和 3 个 E2E 均通过。
 
 样式模板的字体与候选水印进一步锁定为计划规定的精确值，局部 6 tests 与完整质量门再次通过；未改变 12 个文件/44 个测试的总门数量。
+
+本轮补齐本地 Compose 的 egress-proxy/隔离网络、计划命名的兼容脚本入口和 `EXTERNAL_DELIVERY_COMPLETE` 状态校验后，完整质量门再次通过：integration 8 个文件/25 个测试、scoring 5 个文件/22 个测试、全量 Vitest 13 个文件/47 个测试、Python 分析、Next build、3 个 Playwright E2E；外部交付证明缺失时状态仍保持 `WAITING_EXTERNAL_INPUT`。
 
 本轮候选链局部质量门另外通过：
 

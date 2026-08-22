@@ -97,6 +97,18 @@ for (const [name, compose] of [
 ] as const) {
   if (/web:[\s\S]*?command:\s*\[[^\]]*next\s+start/i.test(compose))
     warnings.push(`${name} compose must start the standalone server directly`);
+  const worker =
+    compose.match(/worker:[\s\S]*?(?=\n\s{2}\w[\w-]*:|\nnetworks:|\nvolumes:|$)/)?.[0] ?? "";
+  const web = compose.match(/web:[\s\S]*?(?=\n\s{2}\w[\w-]*:|\nnetworks:|\nvolumes:|$)/)?.[0] ?? "";
+  if (!web.includes("APP_ENV: development"))
+    errors.push(`${name} compose web must use development APP_ENV`);
+  if (!compose.includes("egress-proxy:")) errors.push(`${name} compose must include egress-proxy`);
+  if (!worker.includes("networks: [scan-isolated]"))
+    errors.push(`${name} compose worker must use scan-isolated`);
+  if (!worker.includes("EGRESS_PROXY_URL: http://egress-proxy:8080"))
+    errors.push(`${name} compose worker must use explicit egress proxy`);
+  if (worker.includes("external-egress"))
+    errors.push(`${name} compose worker must not join external-egress`);
 }
 console.log(
   JSON.stringify(

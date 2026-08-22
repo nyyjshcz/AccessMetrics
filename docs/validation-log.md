@@ -61,4 +61,8 @@
 
 | 2026-08-22 | 同一 report-data 打印 PDF 与 DOCX QA 分离复核 | AI | 待负责人 | 当前自动化基线（未发布） | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`、候选报告/图表/DOCX 结构测试 4 passed；渲染器命令在缺少 LibreOffice/Poppler 时按设计 fail-closed | 通过；正式 PDF 由打印 HTML/Playwright 生成，DOCX 转 PDF/逐页 PNG 只进入 `.qa-render`，manifest 只绑定正式打印 PDF；无法视觉复核时不会报告“通过” | 当前环境无 LibreOffice/Poppler，正式研究数据/R4/R5/生产渲染器 digest 仍需外部输入 |
 
+| 2026-08-22 | 计划第 17 步 README 运行清单复核 | AI | 待负责人 | 当前工作区自动化基线（未发布） | README 与计划第 17 步逐项比对 | 通过；新增系统效果、前置环境、本地/Docker 启动、迁移、Web/Worker 隔离、测试/扫描/发布/导出、Jupyter、备份恢复、上线检查、CSRF/限速/安全头/Cookie、升级、自动评分限制及外部输入续跑说明 | Docker、真实站点/许可/标准、生产服务器/域名/密钥/镜像与 LibreOffice/Poppler 仍需外部输入 |
+
+| 2026-08-22 | README 文档补齐后的完整总门 | AI | 待负责人 | 当前工作区自动化基线（未发布） | `pnpm test:all`（integration 7 files/22 tests、scoring 5 files/22 tests、全量 12 files/44 tests、Python 分析、Next build、E2E 3 passed） | 通过；文档变更未引入代码、构建或端到端回归；依赖预检基线时间戳已恢复为固定值 | R1–R5、真实研究站点/许可/标准、生产服务器/域名/密钥/镜像与 LibreOffice/Poppler 仍需外部输入 |
+
 真人确认只能由对应 reviewer 会话提交；AI 不得把本表预填行改成“本人已复核”。

@@ -2,6 +2,45 @@
 
 这是一个可追溯的网页无障碍自动扫描与研究资料生成系统：URL 安全校验 → 同站页面发现 → Playwright/axe 扫描 → WCAG 目录解析 → 四原则评分 → SQLite 记录 → HTML/PDF/CSV/JSON 导出 → 研究抽样、人工复核和发布门。
 
+## 系统效果与计划运行清单
+
+完成自动化实施后，使用者可以从管理端提交允许的公共 HTTP(S) 网站，看到扫描进度、页面和节点证据、严重度、四原则分数、问题筛选和可追溯报告；研究链还能从冻结的数据生成抽样、人工复核、统计图表、HTML/PDF/CSV/JSON 和研究 ZIP。自动评分是筛查和比较工具，不等于人工审计、官方 WCAG 合规认证或总体准确率。
+
+### 前置环境
+
+- Node.js `24.19.0`、pnpm `11.19.0`、Python `3.12.13`；`pnpm dependency:preflight` 会执行真实解释器并核对固定基线。
+- 复制 `.env.example` 为 `.env.local`，由负责人提供管理、reviewer、CSRF、会话和加密备份密钥；密钥不进入 Git。
+- 若要运行容器形态，需要 Docker Compose；正式 PDF/DOCX 视觉 QA 还需要固定版本的 LibreOffice、Poppler 和渲染器镜像。当前仓库没有把缺失工具伪装成通过。
+
+### 本地与 Docker 启动
+
+本地启动顺序是 `pnpm install` → `pnpm db:migrate` → `pnpm dev`，另开终端运行 `pnpm worker`。Docker 本地形态使用 `compose.yaml`（或兼容的 `docker-compose.yml`）：先准备 `.env.local`，再执行 `docker compose up --build`；首次启动后检查 Web 健康端点、Worker 日志和迁移状态。生产形态使用 `compose.prod.yaml` 与 `Caddyfile`，必须先替换真实域名、密钥和固定镜像 digest。没有 Docker、服务器或域名时，只能运行静态配置检查，不能声称已部署。
+
+### 管理、迁移、Web/Worker 和安全边界
+
+- 管理口令由 `SCAN_ADMIN_TOKEN` 设置；`COMPUTER_REVIEW_TOKEN`、`MATH_REVIEW_TOKEN` 只授予对应 reviewer，不能互换。
+- 数据库升级只通过幂等 `pnpm db:migrate`；升级前备份，升级后运行 `pnpm db:check` 和完整质量门。禁止手改生产库、跳过迁移或回滚到不匹配的代码/迁移组合。
+- Web 负责会话、权限、CSRF/Origin、幂等键和已授权 DTO；Worker 只领取 lease 任务并写入结果。生产 Worker 使用非 root、sandbox/seccomp、`scan-isolated` 内部网络和显式 `EGRESS_PROXY_URL`，不能直连公网或绕过代理。
+- 安全头、生产 Cookie、CSRF、Origin、SSRF、限速和发布 CAS 是 fail-closed 约束；不要为调试关闭这些检查。`pnpm egress:check`、`pnpm ops:check` 和自动化测试验证这些边界。
+
+### 测试、扫描、发布与导出
+
+- 完整质量门：`pnpm test:all`；浏览器流程：`pnpm test:e2e`；状态查询：`pnpm project:status`。
+- 单站点扫描：`pnpm scan:site -- https://example.org --max-pages 10`。只允许计划中的公共站点，私网、环回、凭据 URL、代理绕过和未授权目标必须失败。
+- 研究扫描和正式发布必须经过 R1–R5 receipt、冻结的 source export、报告数据和 manifest/hash 校验；使用 `pnpm deliverables:candidate`、`pnpm deliverables:build`、`pnpm deliverables:render`、`pnpm deliverables:verify`。任何缺失真人门或正式输入都会保持 `WAITING_EXTERNAL_INPUT`。
+- 导出必须来自结构化数据库数据并原子写入；`export:verify`、`gates:verify` 和报告验证脚本检查固定列、canonical JSON、字节/hash、权限和敏感字段。正式 PDF 只能来自同一 `report-data-v1` 的打印 HTML；DOCX 转换结果只放入 `.qa-render` 做视觉 QA。
+
+### Jupyter、备份恢复、上线检查与升级
+
+- 分析 notebook 位于 `analysis/notebooks/accesscheck_analysis.ipynb`，入口说明见 `notebooks/README.md`。正式数据到位后用冻结的 study source 运行，不从网页实时取数；`pnpm test:analysis` 会验证 Python 参考实现和 notebook 代码单元。
+- 备份：`pnpm backup:create -- --output <绝对目录>`；恢复到独立目录后运行 `pnpm backup:restore <备份目录> <新目标目录>`、设置 `DATABASE_URL`、执行 `pnpm db:check` 和 `pnpm gates:verify`。数据库、加密私有证据和 manifest 的记录数/hash 必须一致。
+- 公网上线前逐项确认服务器、域名、DNS、HTTPS 证书、Caddy 反向代理、生产 Cookie、CSRF/Origin、限速、安全头、日志轮转、健康检查、备份恢复和镜像 digest；这些是外部动作，不由 AI 伪造。
+- 升级规则：先冻结并记录依赖、迁移和镜像 digest，备份并在独立环境运行 `pnpm test:all`；确认迁移可重复、导出/hash 不变后再发布。依赖变更必须重新运行预检、测试和冻结流程，不能只改版本字符串。
+
+### 外部输入与自动评分限制
+
+真实研究协议、丽水样本、正式网站许可/标准快照、R1–R5 receipt、生产服务器/域名/密钥、固定代理/渲染器镜像等列在 `EXTERNAL_INPUTS.md`。缺少它们时先完成所有本地代码、测试、模板和脚手架，状态保持 `WAITING_EXTERNAL_INPUT`；输入齐全后运行 `pnpm project:resume` 幂等续跑。自动评分只表示已定义规则下的可重复筛查结果，不能替代人工 verdict、完整人工审计或合规认证。
+
 ## 本地启动
 
 1. 使用计划锁定的 Node 24.19.0、pnpm 11.19.0、Python 3.12.13。依赖预检会实际执行 `PYTHON_BIN`（未设置时使用系统 `python`/`python3`）读取版本，不接受只设置版本字符串的方式。

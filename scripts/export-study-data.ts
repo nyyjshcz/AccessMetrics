@@ -3,6 +3,7 @@ import { createStudyExport } from "../src/lib/study-export";
 
 const args: Record<string, string> = {};
 for (let index = 2; index < process.argv.length; index++) {
+  if (process.argv[index] === "--") continue;
   if (!process.argv[index].startsWith("--")) continue;
   args[process.argv[index].slice(2)] = process.argv[index + 1] ?? "";
   index++;

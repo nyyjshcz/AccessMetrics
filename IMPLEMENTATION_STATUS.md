@@ -44,6 +44,8 @@
 - 在上述审计后的闭环复跑中，又补齐扫描任务的开始/结束/耗时/当前页面字段、研究总分排名与 10 档直方图数据、PDF 页眉页脚和 A4 打印边距；最终 `pnpm test:all` 覆盖这些改动并通过。
 - 本轮又补齐成果报告链：研究/应用候选与最终报告均输出计划要求的 15 个章节、数字/版本/hash 追溯、图表及相邻数据表；DOCX 使用标题和表格结构；最终成果临时目录原子落盘；候选/最终验证器拒绝缺章节、缺三件套、数字未追溯、manifest/hash 不一致或无法提取 PDF 文本的产物；渲染器生成逐页 PNG 和明确的 `WAITING_HUMAN_REVIEW` QA 记录。
 - 成果渲染进一步收敛为同一 report-data 对应的 Markdown/打印 HTML 生成正式 PDF，DOCX→PDF/PNG 仅作为独立视觉 QA 证据；DOCX 图表带替代文字、标题和真实超链接，正式 PDF 的 hash 写回报告 manifest。
+- README 已补齐成果链的可执行参数和边界：`deliverables:build` 原子生成两份报告，`deliverables:render` 以同一 report-data 生成正式打印 PDF、把 DOCX 转换结果隔离到 `.qa-render/`，缺少 LibreOffice/Poppler 时 fail-closed，`document-render-qa.json` 的视觉状态仍必须等待人工逐页复核。
+- 成果/研究导出 CLI 已统一忽略 pnpm 传入的参数分隔符 `--`；计划中可复制的 `pnpm ... -- --参数` 现在会真实读取参数，缺少固定渲染器仍在参数解析后 fail-closed。
 - 本次按计划逐项复核了步骤 1–19 的自动化命令、交付物和质量证据；`release:* --help`/`publication:preflight --help` 均可启动，`pnpm project:resume` 在缺少 R1–R5 真人证据时按设计以退出码 2 保持等待，未生成伪造正式成果。
 - 正式抽样请求现在必须绑定并由服务端复核 `sourceManifestHash`；formal/ad-hoc 审核修订要求 `expectedRevision` 与 `supersedesReviewId`，裁决批准要求相同 `resolutionHash`/revision，旧版本不能静默覆盖。
 - 成果 candidate/verify/release 链现在要求固定的 report-data、两份最终报告、图表/表格 hash、R1–R5 数据库绑定 evidence 和分别重算的 `r4EvidenceBundleHash`/`fullGateBundleHash`；缺任何输入均失败，不再把可选参数或文件存在当作完成证明。

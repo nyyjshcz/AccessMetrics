@@ -43,6 +43,16 @@ pnpm deliverables:candidate -- --source-export <绝对目录> --review-freeze <�
 pnpm analysis:candidate -- --source-report-data <绝对json> --source-export <绝对目录> --review-freeze <绝对文件或目录> --model-decision <绝对文件> --model-observations <绝对文件> --created-from-commit <完整commit SHA> --output <绝对json> [--report-localization-draft <绝对文件>]
 ```
 
+R4 通过后，成果命令必须按同一份正式 `report-data-v1` 和同一个 final export 运行；不能把候选文件改名冒充最终成果。构建器会先在临时目录生成研究型和应用型两份 Markdown/DOCX，再通过原子改名写入 final 目录；目标目录已有不同字节时拒绝覆盖：
+
+```text
+pnpm deliverables:build -- --export-id <final-export-id> --report-data <绝对report-data.json> --output-root <绝对成果目录> --evidence-root <绝对私有证据根>
+pnpm deliverables:render -- --input-dir <绝对成果目录/final> --output-dir <绝对成果目录/final> --qa-log <绝对路径/document-render-qa.json>
+pnpm deliverables:verify -- --final-export-path <绝对最终导出目录> --expected-manifest-sha256 <manifest-sha256> --report-data <绝对report-data.json> --reports-root <绝对成果目录/final> --gate-evidence-path <绝对私有gates目录> --expected-r4-evidence-bundle-sha256 <r4-sha256> --expected-full-gate-bundle-sha256 <full-sha256> --publication-db <绝对SQLite文件>
+```
+
+`deliverables:render` 对 Markdown 使用同一份报告数据生成打印 HTML，再用固定 Playwright 版本生成正式 PDF，并把正式 PDF 的 SHA-256 写回报告 manifest；DOCX 则单独转到 `.qa-render/` 生成 QA PDF 和逐页 PNG，不把 DOCX 转换结果冒充正式 PDF。缺少 LibreOffice 或 Poppler 时命令必须失败；生成成功也只代表结构化渲染完成，`document-render-qa.json` 会保持 `visualReviewStatus=WAITING_HUMAN_REVIEW`，逐页空页、乱码、溢出、阅读顺序和 PDF/UA 不能由 AI 自动声称通过。
+
 正式研究样本、人工 verdict、R1–R5 receipt、生产服务器和域名不会由 AI 伪造。当前真实状态见 [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) 和 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。
 
 ## 容量边界

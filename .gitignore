@@ -4,7 +4,7 @@ node_modules/
 data/*.db
 data/*.db-*
 data/e2e-private/
-reports/
+/reports/
 artifacts/
 playwright-report/
 test-results/

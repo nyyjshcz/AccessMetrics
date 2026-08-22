@@ -23,6 +23,10 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
   const [pagination, setPagination] = useState({ page: 1, pageSize: 20, total: 0, totalPages: 0 });
   const [impact, setImpact] = useState("");
   const [principle, setPrinciple] = useState("");
+  const [resultType, setResultType] = useState("violation");
+  const [ruleId, setRuleId] = useState("");
+  const [reviewVerdict, setReviewVerdict] = useState("");
+  const [sort, setSort] = useState("impact_desc");
   const [page, setPage] = useState(1);
   const [error, setError] = useState("");
 
@@ -32,9 +36,11 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
 
   useEffect(() => {
     if (!runId) return;
-    const query = new URLSearchParams({ page: String(page), pageSize: "20" });
+    const query = new URLSearchParams({ page: String(page), pageSize: "20", resultType, sort });
     if (impact) query.set("impact", impact);
     if (principle) query.set("principle", principle);
+    if (ruleId) query.set("ruleId", ruleId);
+    if (reviewVerdict) query.set("reviewVerdict", reviewVerdict);
     fetch(`/api/runs/${runId}/issues?${query}`)
       .then(async (response) => {
         const value = await response.json();
@@ -49,7 +55,7 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : "问题列表读取失败"),
       );
-  }, [runId, page, impact, principle]);
+  }, [runId, page, impact, principle, resultType, ruleId, reviewVerdict, sort]);
 
   if (error) return <p className="error">{error}</p>;
   return (
@@ -72,6 +78,61 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
               <option value="serious">serious</option>
               <option value="moderate">moderate</option>
               <option value="minor">minor</option>
+            </select>
+          </label>
+          <label>
+            结果类型
+            <select
+              value={resultType}
+              onChange={(event) => {
+                setResultType(event.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="violation">violation</option>
+              <option value="incomplete">incomplete（人工检查）</option>
+              <option value="pass">pass</option>
+            </select>
+          </label>
+          <label>
+            规则 ID
+            <input
+              value={ruleId}
+              onChange={(event) => {
+                setRuleId(event.target.value);
+                setPage(1);
+              }}
+              placeholder="例如 image-alt"
+            />
+          </label>
+          <label>
+            人工状态
+            <select
+              value={reviewVerdict}
+              onChange={(event) => {
+                setReviewVerdict(event.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="">全部</option>
+              <option value="confirmed">confirmed</option>
+              <option value="not_an_issue">not_an_issue</option>
+              <option value="uncertain">uncertain</option>
+              <option value="unreviewed">unreviewed</option>
+            </select>
+          </label>
+          <label>
+            排序
+            <select
+              value={sort}
+              onChange={(event) => {
+                setSort(event.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="impact_desc">影响排序</option>
+              <option value="page_asc">页面</option>
+              <option value="rule_asc">规则</option>
             </select>
           </label>
           <label>

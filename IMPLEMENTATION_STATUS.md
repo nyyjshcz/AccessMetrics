@@ -39,6 +39,7 @@
 - 研究导出现在先写私有证据根下的隔离临时目录，校验 UTF-8 BOM/CRLF、固定列、CSV 外键、study.json runSet、manifest 条件约束和 payload hash 后才原子改名；校验失败只清理临时目录，不会留下可被当作正式导出的半成品。`export:verify` 同样检查 payload 完整清单、source/final 条件字段和研究绑定。
 - study_final 的报告中文目录、模型决策和模型观察文件必须从私有 R4 证据按冻结 SHA-256 精确找到并复制，工作区 `ai_draft` 文件不能冒充 human-reviewed；study source 明确拒绝 final/R4 材料。研究 sites CSV 同时保留站点类别，分析输出增加均值/中位数/四分位数、类别描述、Cohen kappa 和三套权重的 Spearman 排名相关，并在 provenance.calculationKeys 记录来源与筛选键。
 - HTML/PDF 报告共享 `AuthorizedRunReportDto` 和 `renderRunReportHtml`；PDF 只把授权后的自包含 HTML 通过 Playwright `page.setContent()` 打印，不访问扫描站点或 `file://` 报告 URL。
+- 本轮界面闭环已接入真实数据：首页显示已发布站点/成功页面/最近扫描统计，扫描任务页支持取消与错误状态，结果页展示页面状态和 coverage，问题页支持结果类型/规则/人工状态/影响/原则/排序筛选，报告页展示四原则、主要问题和边界，研究页展示版本/类别筛选后的数据表，reviewer 页按角色加载样本并提交正式复核；报告接口与 HTML/PDF 共用主要问题 DTO。
 - 正式抽样请求现在必须绑定并由服务端复核 `sourceManifestHash`；formal/ad-hoc 审核修订要求 `expectedRevision` 与 `supersedesReviewId`，裁决批准要求相同 `resolutionHash`/revision，旧版本不能静默覆盖。
 - 成果 candidate/verify/release 链现在要求固定的 report-data、两份最终报告、图表/表格 hash、R1–R5 数据库绑定 evidence 和分别重算的 `r4EvidenceBundleHash`/`fullGateBundleHash`；缺任何输入均失败，不再把可选参数或文件存在当作完成证明。
 - R4 候选链已按计划收紧：`report-data.candidate.json` 使用独立 schema、禁止 `exportId/manifestHash/outcomeDigest/r4EvidenceBundleHash` 等 final 字段，并通过 `$defs` 与最终 report-data 共用分数、frame、人工样本、图表和局限定义；candidate bundle 固定绑定 source/review-freeze/localization/model/commit 以及五个候选文件的 bytes/SHA-256，candidateBundleId 对语义内容完整 hash，候选目录原子写入、只读、可幂等复用。

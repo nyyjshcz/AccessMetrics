@@ -5,10 +5,13 @@ export default function NewScanPage() {
   const [url, setUrl] = useState("");
   const [maxPages, setMaxPages] = useState(10);
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const router = useRouter();
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (submitting) return;
     setError("");
+    setSubmitting(true);
     const r = await fetch("/api/scans", {
       method: "POST",
       headers: {
@@ -21,6 +24,7 @@ export default function NewScanPage() {
     const d = await r.json();
     if (!r.ok) {
       setError(d.error?.message ?? "创建失败");
+      setSubmitting(false);
       return;
     }
     router.push(`/admin/scans/${d.jobId}`);
@@ -51,7 +55,9 @@ export default function NewScanPage() {
           onChange={(e) => setMaxPages(Number(e.target.value))}
         />
         {error && <p className="error">{error}</p>}
-        <button type="submit">创建扫描任务</button>
+        <button type="submit" disabled={submitting}>
+          {submitting ? "正在创建…" : "创建扫描任务"}
+        </button>
       </form>
     </section>
   );

@@ -1,5 +1,29 @@
 import Link from "next/link";
+import { getDb, migrate } from "@/lib/db";
+export const dynamic = "force-dynamic";
 export default function HomePage() {
+  migrate();
+  const publishedSites = Number(
+    (
+      getDb()
+        .prepare("SELECT COUNT(DISTINCT site_id) count FROM scan_runs WHERE published=1")
+        .get() as { count: number }
+    ).count,
+  );
+  const successfulPages = Number(
+    (
+      getDb()
+        .prepare(
+          "SELECT COUNT(*) count FROM pages p JOIN scan_runs r ON r.id=p.run_id WHERE r.published=1 AND p.scan_status='completed'",
+        )
+        .get() as { count: number }
+    ).count,
+  );
+  const latest = (
+    getDb().prepare("SELECT MAX(published_at) value FROM scan_runs WHERE published=1").get() as {
+      value: string | null;
+    }
+  ).value;
   return (
     <>
       <section className="card">
@@ -15,6 +39,13 @@ export default function HomePage() {
         <p>
           <span className="pill">评分模型 accesscheck-score-v1</span>{" "}
           <span className="pill">WCAG 2.2 映射</span> <span className="pill">可追溯导出</span>
+        </p>
+        <p>
+          已发布站点：{publishedSites}；成功页面：{successfulPages}；最近更新时间：
+          {latest ?? "暂无"}
+        </p>
+        <p>
+          <Link href="/research">进入研究总览</Link>
         </p>
         <Link href="/admin/login">
           <button style={{ width: "auto", paddingInline: 24 }}>进入管理端</button>

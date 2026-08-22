@@ -41,4 +41,6 @@
 
 | 2026-08-22 | 研究导出原子性、R4 hash 绑定、分析统计与 PDF 隔离打印复核 | AI | 待负责人 | 工作区当前自动化基线（未发布） | `pnpm contract:check`、`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm test:integration`、`pnpm test:analysis`、`pnpm test:e2e` | 通过；study export 临时目录校验后原子改名，`export:verify` 检查 payload 完整性及 source/final 条件，R4 材料按私有证据 hash 精确绑定，分析输出含分布/类别/kappa/Spearman，PDF 使用共享 DTO + `page.setContent()` | R1–R5、真实研究站点/许可/标准、生产服务器/域名/密钥/镜像与文档渲染器 digest 仍需外部输入；正式 final/视觉 QA 不能伪造 |
 
+| 2026-08-22 | 计划第 13 步界面/API 闭环复核 | AI | 待负责人 | 当前自动化基线（未发布） | `pnpm lint`、`pnpm typecheck`、`pnpm test:e2e`（3 passed）、`pnpm test:all`（integration 6 files/19 tests、scoring 5 files/22 tests、全量 11 files/41 tests、Python 分析、Next build、E2E 3 passed） | 通过；首页、扫描进度/取消、结果页 coverage、问题多维筛选、HTML/PDF 报告主要问题、研究数据表、角色绑定 reviewer 复核流程均接入真实接口；修复排序选项导致的可访问标签歧义，报告页补齐主要问题 API 查询 | R1–R5 真人 receipt、真实研究站点/许可/标准、生产服务器/域名/密钥/镜像与渲染器 digest 仍需外部输入；未宣称公网部署或正式研究完成 |
+
 真人确认只能由对应 reviewer 会话提交；AI 不得把本表预填行改成“本人已复核”。

@@ -1,46 +1,121 @@
-import { getDb, migrate } from "@/lib/db";
-export const dynamic = "force-dynamic";
+"use client";
+
+import { useCallback, useEffect, useState } from "react";
+
+type Version = { scannerVersion: string; axeVersion: string; modelVersion: string };
+
 export default function ResearchPage() {
-  migrate();
-  const campaigns = getDb()
-    .prepare(
-      "SELECT id,status,target_site_count,created_at FROM study_campaigns ORDER BY created_at DESC",
-    )
-    .all() as any[];
+  const [value, setValue] = useState<any>();
+  const [versions, setVersions] = useState<Version[]>([]);
+  const [selected, setSelected] = useState<Version | null>(null);
+  const [category, setCategory] = useState("");
+  const [error, setError] = useState("");
+  const load = useCallback(async (version: Version | null = null, nextCategory = "") => {
+    const query = new URLSearchParams();
+    if (version) {
+      query.set("scannerVersion", version.scannerVersion);
+      query.set("axeVersion", version.axeVersion);
+      query.set("modelVersion", version.modelVersion);
+    }
+    if (nextCategory) query.set("category", nextCategory);
+    const response = await fetch(`/api/research/summary?${query}`);
+    const data = await response.json();
+    if (!response.ok) {
+      setError(data.error?.message ?? "研究汇总读取失败");
+      const options = data.error?.details?.options;
+      if (Array.isArray(options)) setVersions(options);
+      return;
+    }
+    setValue(data);
+    setVersions(data.options ?? []);
+    setSelected(data.baseline ?? version);
+    setError("");
+  }, []);
+  useEffect(() => {
+    void Promise.resolve()
+      .then(() => load(null))
+      .catch(() => setError("研究汇总读取失败"));
+  }, [load]);
+  const categories = [
+    ...new Set((value?.items ?? []).map((item: any) => item.category).filter(Boolean)),
+  ] as string[];
   return (
     <section>
       <div className="card">
         <h1>研究总览</h1>
         <p className="muted">
-          正式研究需要 R1–R5 真人确认。此页面只显示数据库中真实存在的
-          campaign/freeze/export，不生成假样本、假排名或假结论。
+          只比较同一 scanner、axe
+          和评分模型版本的已发布结果。没有真实发布数据时不生成假样本、假排名或假结论。
         </p>
         <p className="muted" role="note">
-          本项目仅评价 axe-core 能够自动判断的网页无障碍检查项。分数不等同于完整人工审计、官方 WCAG
-          合规认证或“符合 WCAG 的百分比”。需要人工判断的项目会单独列出。
+          本项目仅评价 axe-core 能够自动判断的网页无障碍检查项，不等同于完整人工审计或官方合规认证。
         </p>
+        <label htmlFor="version">版本基线</label>
+        <select
+          id="version"
+          value={selected ? JSON.stringify(selected) : ""}
+          onChange={(event) => {
+            const next =
+              versions.find((item) => JSON.stringify(item) === event.target.value) ?? null;
+            setSelected(next);
+            load(next).catch(() => setError("研究汇总读取失败"));
+          }}
+        >
+          <option value="">请选择版本（仅一个版本时自动选择）</option>
+          {versions.map((version) => (
+            <option key={JSON.stringify(version)} value={JSON.stringify(version)}>
+              {version.scannerVersion} / axe {version.axeVersion} / {version.modelVersion}
+            </option>
+          ))}
+        </select>
+        <label htmlFor="category">网站类别</label>
+        <select
+          id="category"
+          value={category}
+          onChange={(event) => {
+            setCategory(event.target.value);
+            load(selected, event.target.value).catch(() => setError("研究汇总读取失败"));
+          }}
+        >
+          <option value="">全部类别</option>
+          {categories.map((item) => (
+            <option key={item} value={item}>
+              {item}
+            </option>
+          ))}
+        </select>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
       </div>
       <div className="card" style={{ marginTop: 16 }}>
-        <h2>Campaign</h2>
-        {campaigns.length === 0 ? (
-          <p>尚未登记正式 campaign。请先完成研究协议、样本框和 R1。</p>
+        <h2>网站结果数据表</h2>
+        {!value?.baseline ? (
+          <p>请选择版本基线；未发布或版本不完整的数据不会进入研究汇总。</p>
         ) : (
           <table>
+            <caption className="sr-only">已发布网站研究汇总</caption>
             <thead>
               <tr>
-                <th>ID</th>
-                <th>状态</th>
-                <th>目标站点</th>
-                <th>创建时间</th>
+                <th scope="col">网站</th>
+                <th scope="col">类别</th>
+                <th scope="col">来源</th>
+                <th scope="col">run</th>
               </tr>
             </thead>
             <tbody>
-              {campaigns.map((campaign) => (
-                <tr key={campaign.id}>
-                  <td>{campaign.id}</td>
-                  <td>{campaign.status}</td>
-                  <td>{campaign.target_site_count}</td>
-                  <td>{campaign.created_at}</td>
+              {value.items.map((item: any) => (
+                <tr key={item.runId}>
+                  <td>{item.name}</td>
+                  <td>{item.category ?? "未分类"}</td>
+                  <td>
+                    <code>{item.origin}</code>
+                  </td>
+                  <td>
+                    <a href={`/scans/${item.runId}`}>{item.runId}</a>
+                  </td>
                 </tr>
               ))}
             </tbody>

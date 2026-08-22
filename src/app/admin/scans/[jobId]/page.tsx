@@ -4,6 +4,7 @@ export default function JobPage({ params }: { params: Promise<{ jobId: string }>
   const [jobId, setJobId] = useState("");
   const [data, setData] = useState<any>();
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
   useEffect(() => {
     params.then((p) => setJobId(p.jobId));
   }, [params]);
@@ -23,6 +24,16 @@ export default function JobPage({ params }: { params: Promise<{ jobId: string }>
     load();
     return () => clearTimeout(timer);
   }, [jobId]);
+  async function cancel() {
+    const csrf = document.cookie.match(/(?:^|; )accesscheck_csrf=([^;]+)/)?.[1] ?? "";
+    const response = await fetch(`/api/admin/scans/${jobId}/cancel`, {
+      method: "POST",
+      headers: { "x-csrf-token": csrf },
+    });
+    const value = await response.json();
+    if (!response.ok) setError(value.error?.message ?? "取消失败");
+    else setMessage("已请求取消任务，已完成页面会保留。");
+  }
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p>正在读取任务…</p>;
   return (
@@ -33,6 +44,14 @@ export default function JobPage({ params }: { params: Promise<{ jobId: string }>
           <span className="pill">{data.job.status}</span> {data.job.origin}
         </p>
         <p className="muted">任务 ID：{data.job.id}</p>
+        {!["completed", "completed_with_errors", "failed", "cancelled"].includes(
+          data.job.status,
+        ) && (
+          <button type="button" className="secondary" onClick={cancel}>
+            取消任务
+          </button>
+        )}
+        {message && <p role="status">{message}</p>}
       </div>
       <div className="card" style={{ marginTop: 16 }}>
         <h2>页面处理进度</h2>

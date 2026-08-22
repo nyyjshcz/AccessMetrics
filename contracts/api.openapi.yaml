@@ -188,10 +188,10 @@ paths:
                 exerciseCatalogHash: { type: string, pattern: "^[a-f0-9]{64}$" }
       responses:
         "201": { description: server-created clean-clone exercise draft }
-  /api/reviewer/r5/exercises/{exerciseId}/steps/{stepId}/run:
+  /api/reviewer/r5/exercises/{id}/steps/{stepId}/run:
     post:
       parameters:
-        - { name: exerciseId, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
         - { name: stepId, in: path, required: true, schema: { type: string } }
       requestBody:
         required: true
@@ -206,10 +206,10 @@ paths:
                 observation: { type: string, minLength: 1, maxLength: 1000 }
       responses:
         "200": { description: fixed catalog command result with output hashes }
-  /api/reviewer/r5/exercises/{exerciseId}/finalize:
+  /api/reviewer/r5/exercises/{id}/finalize:
     post:
       parameters:
-        - { name: exerciseId, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
         required: true
         content:
@@ -237,10 +237,10 @@ paths:
                 answers: { type: array, minItems: 6, maxItems: 6 }
       responses:
         "201": { description: server-scored understanding draft }
-  /api/reviewer/r5/understanding-checks/{sessionId}/finalize:
+  /api/reviewer/r5/understanding-checks/{id}/finalize:
     post:
       parameters:
-        - { name: sessionId, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         "201": { description: immutable passed understanding artifact }
   /api/reviewer/r5/handoffs:
@@ -260,3 +260,131 @@ paths:
     get:
       responses:
         "200": { description: non-sensitive build provenance }
+  /api/admin/logout:
+    post:
+      responses:
+        "200": { description: admin session cleared }
+  /api/admin/scans:
+    post:
+      responses:
+        "202": { description: admin scan queued }
+  /api/admin/scans/{jobId}:
+    get:
+      responses:
+        "200": { description: admin scan job status }
+  /api/admin/publication-preflight:
+    post:
+      responses:
+        "200": { description: publication privacy preflight }
+  /api/admin/runs/{runId}/publish:
+    post:
+      responses:
+        "200": { description: run published }
+  /api/admin/runs/{runId}/recalculate:
+    post:
+      responses:
+        "200": { description: run score recalculated }
+  /api/admin/runs/{runId}/unpublish:
+    post:
+      responses:
+        "200": { description: run unpublished }
+  /api/admin/study-campaigns:
+    post:
+      responses:
+        "201": { description: study campaign created }
+  /api/admin/study-campaigns/{campaignId}:
+    get:
+      responses:
+        "200": { description: study campaign status }
+  /api/admin/study-campaigns/{campaignId}/run:
+    post:
+      responses:
+        "202": { description: canonical campaign attempt queued }
+  /api/admin/study-freezes:
+    post:
+      responses:
+        "201": { description: study freeze created }
+  /api/admin/study-exports:
+    post:
+      responses:
+        "201": { description: study export created or reused }
+  /api/admin/study-exports/{exportId}:
+    get:
+      responses:
+        "200": { description: study export status }
+  /api/admin/study-exports/{exportId}/download:
+    get:
+      responses:
+        "200": { description: protected study export download }
+  /api/admin/study-exports/{exportId}/publication-approvals:
+    post:
+      responses:
+        "201": { description: publication approval recorded }
+  /api/admin/study-exports/{exportId}/publication-preflight:
+    post:
+      responses:
+        "200": { description: publication preflight report }
+  /api/admin/study-exports/{exportId}/publish:
+    post:
+      responses:
+        "200": { description: study export published }
+  /api/admin/study-exports/{exportId}/release-abort:
+    post:
+      responses:
+        "200": { description: release validation aborted }
+  /api/admin/study-exports/{exportId}/release-readiness:
+    get:
+      responses:
+        "200": { description: release readiness status }
+  /api/admin/study-exports/{exportId}/unpublish:
+    post:
+      responses:
+        "200": { description: study export unpublished }
+  /api/auth/login:
+    post:
+      responses:
+        "200": { description: authenticated session }
+  /api/auth/logout:
+    post:
+      responses:
+        "200": { description: session cleared }
+  /api/auth/session:
+    get:
+      responses:
+        "200": { description: current authentication session }
+  /api/exports/studies/{exportId}.zip:
+    get:
+      responses:
+        "200": { description: protected study ZIP download }
+  /api/publication/preflight:
+    post:
+      responses:
+        "200": { description: publication privacy preflight }
+  /api/reports/{runId}/html:
+    get:
+      responses:
+        "200": { description: HTML report }
+  /api/reports/{runId}/pdf:
+    get:
+      responses:
+        "200": { description: PDF report }
+  /api/research/summary:
+    get:
+      responses:
+        "200": { description: published research summary }
+  /api/reviewer/gates/{gateId}/evidence:
+    post:
+      responses:
+        "201": { description: role-bound gate evidence }
+  /api/reviewer/logout:
+    post:
+      responses:
+        "200": { description: reviewer session cleared }
+  /api/reviews/ad-hoc:
+    post:
+      responses:
+        "201": { description: ad-hoc review revision }
+  /api/reviews/status:
+    get:
+      responses:
+        "200": { description: review progress status }

@@ -1,6 +1,32 @@
 import fs from "node:fs";
 import path from "node:path";
 const contract = fs.readFileSync(path.join(process.cwd(), "contracts", "api.openapi.yaml"), "utf8");
+function routeFiles(directory: string): string[] {
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) return routeFiles(absolute);
+    return entry.isFile() && entry.name === "route.ts" ? [absolute] : [];
+  });
+}
+
+function sourceRoutePath(file: string) {
+  const relative = path
+    .relative(path.join(process.cwd(), "src", "app"), file)
+    .replaceAll("\\", "/")
+    .replace(/\/route\.ts$/, "");
+  return `/${relative.replace(/\[([^\]]+)\]/g, "{$1}")}`;
+}
+
+const normalizePath = (value: string) => value.replace(/\{[^}]+\}/g, "{}");
+const documentedPaths = new Set(
+  [...contract.matchAll(/^  (\/api\/[^:]+):$/gm)].map((match) => normalizePath(match[1])),
+);
+const undocumentedRoutes = routeFiles(path.join(process.cwd(), "src", "app", "api"))
+  .map(sourceRoutePath)
+  .filter((route) => !documentedPaths.has(normalizePath(route)))
+  .sort();
+if (undocumentedRoutes.length)
+  throw new Error(`OpenAPI 缺少源码路由: ${undocumentedRoutes.join(", ")}`);
 for (const route of [
   "/api/health",
   "/api/scans",

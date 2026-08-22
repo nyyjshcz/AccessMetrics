@@ -10,7 +10,8 @@
     "scores",
     "totalScore",
     "criticalPassed",
-    "passed"
+    "passed",
+    "artifactHash"
   ],
   "additionalProperties": false,
   "properties": {
@@ -51,6 +52,7 @@
     },
     "totalScore": { "type": "integer", "minimum": 0, "maximum": 100 },
     "criticalPassed": { "type": "boolean" },
-    "passed": { "type": "boolean" }
+    "passed": { "type": "boolean" },
+    "artifactHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
   }
 }

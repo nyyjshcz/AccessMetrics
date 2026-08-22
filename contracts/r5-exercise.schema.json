@@ -10,7 +10,8 @@
     "exerciseCatalogHash",
     "environmentHash",
     "steps",
-    "allCriticalStepsPassed"
+    "allCriticalStepsPassed",
+    "artifactHash"
   ],
   "additionalProperties": false,
   "properties": {
@@ -50,6 +51,7 @@
         }
       }
     },
-    "allCriticalStepsPassed": { "const": true }
+    "allCriticalStepsPassed": { "const": true },
+    "artifactHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
   }
 }

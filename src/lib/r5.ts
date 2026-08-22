@@ -356,6 +356,63 @@ function normalizedOwnerMetadata(
   };
 }
 
+/**
+ * R5 has two deliberately different hashes:
+ *
+ * - `artifactHash` is the semantic identity of an artifact. It is calculated
+ *   from canonical JSON after removing the self-referential field.
+ * - the outbox `expected_file_hash` is the SHA-256 of the complete on-disk
+ *   bytes, including `artifactHash` and the trailing newline.
+ *
+ * Keeping these separate lets the bundle bind the meaning of an artifact
+ * while the outbox still detects byte-level tampering or an incomplete rename.
+ */
+function artifactWithoutHash(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new AppError("R5_ARTIFACT_INVALID", "R5 artifact 必须是 JSON 对象", 409);
+  const copy = { ...(value as Record<string, unknown>) };
+  delete copy.artifactHash;
+  return copy;
+}
+
+function artifactSemanticBytes(value: unknown) {
+  return `${canonicalize(artifactWithoutHash(value))}\n`;
+}
+
+function artifactFileBytes(value: unknown, artifactHash: string) {
+  return `${canonicalize({ ...artifactWithoutHash(value), artifactHash })}\n`;
+}
+
+function inspectStoredArtifact(file: string, expectedHash?: string) {
+  const bytes = fs.readFileSync(file);
+  let parsed: Record<string, unknown>;
+  try {
+    const value: unknown = JSON.parse(bytes.toString("utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("not object");
+    parsed = value as Record<string, unknown>;
+  } catch {
+    throw new AppError(
+      "R5_ARTIFACT_TAMPERED",
+      `${path.basename(file)} 不是有效 artifact JSON`,
+      409,
+    );
+  }
+  const embedded = parsed.artifactHash;
+  if (typeof embedded !== "string" || !/^[a-f0-9]{64}$/.test(embedded))
+    throw new AppError("R5_ARTIFACT_TAMPERED", `${path.basename(file)} 缺少合法 artifactHash`, 409);
+  const semanticHash = sha256(artifactSemanticBytes(parsed));
+  const canonicalBytes = artifactFileBytes(parsed, embedded);
+  if (semanticHash !== embedded || bytes.toString("utf8") !== canonicalBytes)
+    throw new AppError(
+      "R5_ARTIFACT_TAMPERED",
+      `${path.basename(file)} canonical bytes/hash 不一致`,
+      409,
+    );
+  if (expectedHash !== undefined && embedded !== expectedHash)
+    throw new AppError("R5_ARTIFACT_TAMPERED", `${path.basename(file)} artifactHash 不匹配`, 409);
+  return { value: parsed, artifactHash: embedded, fileHash: sha256(bytes), bytes };
+}
+
 function persistNormalizedOwnerArtifact(
   db: any,
   session: any,
@@ -426,7 +483,7 @@ function recoverR5Artifacts() {
   try {
     rows = getDb()
       .prepare(
-        "SELECT id,target_relpath,canonical_json,expected_file_hash,status FROM r5_artifact_outbox WHERE status='pending' ORDER BY created_at",
+        "SELECT id,artifact_kind,target_relpath,canonical_json,expected_file_hash,status FROM r5_artifact_outbox WHERE status='pending' ORDER BY created_at",
       )
       .all() as any[];
   } catch {
@@ -439,10 +496,12 @@ function recoverR5Artifacts() {
       if (fs.existsSync(target)) {
         if (sha256(fs.readFileSync(target)) !== row.expected_file_hash)
           throw new Error("pending artifact bytes differ from expected hash");
+        if (row.artifact_kind === "owner_artifact") inspectStoredArtifact(target);
       } else {
         const temporary = `${target}.recover-${process.pid}-${Date.now()}`;
         fs.writeFileSync(temporary, row.canonical_json, { mode: 0o600, flag: "wx" });
         fs.renameSync(temporary, target);
+        if (row.artifact_kind === "owner_artifact") inspectStoredArtifact(target);
       }
       transaction((db) =>
         db
@@ -470,8 +529,9 @@ function writeArtifact(
   value: unknown,
 ) {
   ensureRoot();
-  const bytes = `${canonicalize(value)}\n`;
-  const hash = sha256(bytes);
+  const artifactHash = sha256(artifactSemanticBytes(value));
+  const bytes = artifactFileBytes(value, artifactHash);
+  const fileHash = sha256(bytes);
   const revision = r5ArtifactRevision(session, kind);
   const filename = `${kind}.r${revision}.json`;
   const aliasFilename = `${kind}.json`;
@@ -490,23 +550,20 @@ function writeArtifact(
   const pathColumn = artifactPathColumn(kind);
   const previousHash = session[hashColumn] as string | null | undefined;
   if (previousHash) {
-    if (previousHash === hash) {
+    if (previousHash === artifactHash) {
       const previousPath = session[pathColumn] as string | null | undefined;
       const currentTarget = previousPath ? safePrivateRelative(previousPath) : target;
       const currentFilename = path.basename(currentTarget);
-      if (!fs.existsSync(currentTarget) || sha256(fs.readFileSync(currentTarget)) !== previousHash)
-        throw new AppError(
-          "R5_ARTIFACT_TAMPERED",
-          `${currentFilename} 文件缺失或 hash 不一致`,
-          409,
-        );
-      if (fs.existsSync(alias) && sha256(fs.readFileSync(alias)) !== previousHash)
-        throw new AppError("R5_ARTIFACT_TAMPERED", `${aliasFilename} 文件已被外部修改`, 409);
+      if (!fs.existsSync(currentTarget))
+        throw new AppError("R5_ARTIFACT_TAMPERED", `${currentFilename} 文件缺失`, 409);
+      inspectStoredArtifact(currentTarget, previousHash);
+      if (fs.existsSync(alias)) inspectStoredArtifact(alias, previousHash);
       return {
         logicalId: path
           .relative(path.join(config.privateEvidenceRoot, "gates", "R5"), currentTarget)
           .replaceAll("\\", "/"),
-        sha256: hash,
+        artifactHash: previousHash,
+        sha256: sha256(fs.readFileSync(currentTarget)),
       };
     }
     // A changed artifact is a revision. It invalidates any common bundle and
@@ -515,8 +572,8 @@ function writeArtifact(
   }
   let archived: { sessionId: string; archive: string; relative: string } | null = null;
   if (fs.existsSync(target)) {
-    const onDiskHash = sha256(fs.readFileSync(target));
-    if (onDiskHash !== hash) {
+    const onDisk = inspectStoredArtifact(target);
+    if (onDisk.artifactHash !== artifactHash) {
       const previous = getDb()
         .prepare(
           `SELECT id,bound_commit,${pathColumn} AS artifact_path,${hashColumn} AS artifact_hash
@@ -529,7 +586,7 @@ function writeArtifact(
         ) as
         | { id: string; bound_commit: string; artifact_path: string; artifact_hash: string }
         | undefined;
-      if (!previous || previous.artifact_hash !== onDiskHash)
+      if (!previous || previous.artifact_hash !== onDisk.artifactHash)
         throw new AppError("R5_ARTIFACT_TAMPERED", `${filename} 文件已被外部修改`, 409);
       const archive = privateChild(
         "gates",
@@ -540,8 +597,7 @@ function writeArtifact(
         filename,
       );
       fs.mkdirSync(path.dirname(archive), { recursive: true, mode: 0o700 });
-      if (fs.existsSync(archive) && sha256(fs.readFileSync(archive)) !== onDiskHash)
-        throw new AppError("R5_ARTIFACT_TAMPERED", `${filename} 历史归档已被外部修改`, 409);
+      if (fs.existsSync(archive)) inspectStoredArtifact(archive, onDisk.artifactHash);
       if (!fs.existsSync(archive)) fs.renameSync(target, archive);
       else fs.unlinkSync(target);
       archived = {
@@ -551,8 +607,7 @@ function writeArtifact(
       };
     }
   }
-  if (fs.existsSync(alias) && previousHash && sha256(fs.readFileSync(alias)) !== previousHash)
-    throw new AppError("R5_ARTIFACT_TAMPERED", `${aliasFilename} 文件已被外部修改`, 409);
+  if (fs.existsSync(alias) && previousHash) inspectStoredArtifact(alias, previousHash);
   const relativePath = path.relative(config.privateEvidenceRoot, target).replaceAll("\\", "/");
   const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });
@@ -568,14 +623,14 @@ function writeArtifact(
         );
       db.prepare(
         `UPDATE r5_sessions SET ${column}=?,${hashColumn}=?,${pathColumn}=?,updated_at=? WHERE id=?`,
-      ).run(bytes, hash, relativePath, now(), session.id);
+      ).run(bytes, artifactHash, relativePath, now(), session.id);
       normalizedArtifactId = persistNormalizedOwnerArtifact(
         db,
         session,
         kind,
         value,
         bytes,
-        hash,
+        artifactHash,
         revision,
       );
       db.prepare(
@@ -586,7 +641,7 @@ function writeArtifact(
         normalizedArtifactId ?? session.id,
         relativePath,
         bytes,
-        hash,
+        fileHash,
         "pending",
         now(),
       );
@@ -615,7 +670,11 @@ function writeArtifact(
       503,
     );
   }
-  return { logicalId: `gates/R5/artifacts/${session.role}/${filename}`, sha256: hash };
+  return {
+    logicalId: `gates/R5/artifacts/${session.role}/${filename}`,
+    artifactHash,
+    sha256: fileHash,
+  };
 }
 
 function parseJsonObject(body: unknown): Record<string, unknown> {
@@ -852,8 +911,9 @@ export function finalizeExercise(roleName: string, body: unknown) {
     session.exercise_artifact_path
   ) {
     const file = safePrivateRelative(session.exercise_artifact_path);
-    if (!fs.existsSync(file) || sha256(fs.readFileSync(file)) !== session.exercise_hash)
-      throw new AppError("R5_ARTIFACT_TAMPERED", "exercise artifact 缺失或 hash 不一致", 409);
+    if (!fs.existsSync(file))
+      throw new AppError("R5_ARTIFACT_TAMPERED", "exercise artifact 缺失", 409);
+    const integrity = inspectStoredArtifact(file, session.exercise_hash);
     return {
       exerciseId: session.id,
       revision: session.exercise_revision,
@@ -862,7 +922,8 @@ export function finalizeExercise(roleName: string, body: unknown) {
         logicalId: path
           .relative(path.join(config.privateEvidenceRoot, "gates", "R5"), file)
           .replaceAll("\\", "/"),
-        sha256: session.exercise_hash,
+        artifactHash: session.exercise_hash,
+        sha256: integrity.fileHash,
       },
       reused: true,
     };
@@ -899,7 +960,7 @@ export function finalizeExercise(roleName: string, body: unknown) {
     allCriticalStepsPassed: true,
   };
   const stored = writeArtifact(session, "exercise", artifact);
-  markNormalizedArtifactPassed(session, "exercise", stored.sha256);
+  markNormalizedArtifactPassed(session, "exercise", stored.artifactHash);
   const revision = session.exercise_revision + 1;
   transaction((db) =>
     db
@@ -951,7 +1012,7 @@ export function submitExercise(roleName: string, body: unknown) {
     result: input.result,
   };
   const stored = writeArtifact(session, "exercise", artifact);
-  markNormalizedArtifactPassed(session, "exercise", stored.sha256);
+  markNormalizedArtifactPassed(session, "exercise", stored.artifactHash);
   transaction((db) =>
     db
       .prepare(
@@ -1062,8 +1123,9 @@ export function finalizeUnderstanding(roleName: string, body: unknown) {
     session.understanding_artifact_path
   ) {
     const file = safePrivateRelative(session.understanding_artifact_path);
-    if (!fs.existsSync(file) || sha256(fs.readFileSync(file)) !== session.understanding_hash)
-      throw new AppError("R5_ARTIFACT_TAMPERED", "understanding artifact 缺失或 hash 不一致", 409);
+    if (!fs.existsSync(file))
+      throw new AppError("R5_ARTIFACT_TAMPERED", "understanding artifact 缺失", 409);
+    const integrity = inspectStoredArtifact(file, session.understanding_hash);
     return {
       sessionId: session.id,
       revision: session.understanding_revision,
@@ -1072,7 +1134,8 @@ export function finalizeUnderstanding(roleName: string, body: unknown) {
         logicalId: path
           .relative(path.join(config.privateEvidenceRoot, "gates", "R5"), file)
           .replaceAll("\\", "/"),
-        sha256: session.understanding_hash,
+        artifactHash: session.understanding_hash,
+        sha256: integrity.fileHash,
       },
       reused: true,
     };
@@ -1082,7 +1145,7 @@ export function finalizeUnderstanding(roleName: string, body: unknown) {
   if (session.understanding_status !== "ready" || !draft?.passed)
     throw new AppError("R5_UNDERSTANDING_FAILED", "理解检查未达到服务端固定评分门槛", 409);
   const stored = writeArtifact(session, "understanding", draft);
-  markNormalizedArtifactPassed(session, "understanding", stored.sha256);
+  markNormalizedArtifactPassed(session, "understanding", stored.artifactHash);
   const revision = session.understanding_revision + 1;
   transaction((db) =>
     db
@@ -1164,7 +1227,7 @@ export function createHandoff(roleName: string, body: unknown) {
     confirmed: true,
   };
   const stored = writeArtifact(session, "handoff", artifact);
-  markNormalizedArtifactPassed(session, "handoff", stored.sha256);
+  markNormalizedArtifactPassed(session, "handoff", stored.artifactHash);
   transaction((db) =>
     db
       .prepare("UPDATE r5_sessions SET handoff_revision=handoff_revision+1,updated_at=? WHERE id=?")
@@ -1235,7 +1298,7 @@ export function submitUnderstanding(roleName: string, body: unknown) {
     passed,
   };
   const stored = writeArtifact(session, "understanding", artifact);
-  markNormalizedArtifactPassed(session, "understanding", stored.sha256);
+  markNormalizedArtifactPassed(session, "understanding", stored.artifactHash);
   transaction((db) =>
     db
       .prepare(
@@ -1291,7 +1354,7 @@ export function submitHandoff(roleName: string, body: unknown) {
     confirmed: true,
   };
   const stored = writeArtifact(session, "handoff", artifact);
-  markNormalizedArtifactPassed(session, "handoff", stored.sha256);
+  markNormalizedArtifactPassed(session, "handoff", stored.artifactHash);
   transaction((db) =>
     db
       .prepare("UPDATE r5_sessions SET handoff_revision=handoff_revision+1,updated_at=? WHERE id=?")
@@ -1320,8 +1383,7 @@ function buildBundle(boundCommit: string) {
       const file = safePrivateRelative(artifactPath);
       if (!fs.existsSync(file))
         throw new AppError("R5_ARTIFACT_MISSING", `${kind}.json 文件缺失`, 409);
-      if (sha256(fs.readFileSync(file)) !== hash)
-        throw new AppError("R5_ARTIFACT_TAMPERED", `${kind}.json hash 不一致`, 409);
+      inspectStoredArtifact(file, hash);
       const logicalId = path
         .relative(path.join(config.privateEvidenceRoot, "gates", "R5"), file)
         .replaceAll("\\", "/");
@@ -1547,8 +1609,9 @@ export function r5GateArtifacts(boundCommit: string) {
     if (!artifactPath)
       throw new AppError("R5_ARTIFACT_INVALID", `${role}/${kind} artifact path 缺失`, 409);
     const file = safePrivateRelative(artifactPath);
-    if (!fs.existsSync(file) || sha256(fs.readFileSync(file)) !== hash)
-      throw new AppError("R5_ARTIFACT_TAMPERED", `${role}/${kind} artifact 文件 hash 不匹配`, 409);
+    if (!fs.existsSync(file))
+      throw new AppError("R5_ARTIFACT_TAMPERED", `${role}/${kind} artifact 文件缺失`, 409);
+    inspectStoredArtifact(file, hash);
     const logicalId = path
       .relative(path.join(config.privateEvidenceRoot, "gates", "R5"), file)
       .replaceAll("\\", "/");

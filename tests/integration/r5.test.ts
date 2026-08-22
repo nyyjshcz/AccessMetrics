@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
+import { canonicalize, sha256 } from "@/lib/canonical";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "accesscheck-r5-"));
 process.env.DATABASE_URL = path.join(root, "r5.db");
@@ -95,6 +96,36 @@ describe("R5 server-scored handoff chain", () => {
         ),
       ),
     ).toBe(true);
+    const exerciseFile = path.join(
+      root,
+      "private",
+      "gates",
+      "R5",
+      "artifacts",
+      "computer_lead",
+      "exercise.r1.json",
+    );
+    const exerciseBytes = fs.readFileSync(exerciseFile, "utf8");
+    const exercise = JSON.parse(exerciseBytes) as Record<string, unknown>;
+    expect(exercise.artifactHash).toMatch(/^[a-f0-9]{64}$/);
+    const { artifactHash, ...withoutHash } = exercise;
+    expect(artifactHash).toBe(`${sha256(`${canonicalize(withoutHash)}\n`)}`);
+    expect(sha256(exerciseBytes)).not.toBe(artifactHash);
+    const readModel = db
+      .getDb()
+      .prepare(
+        "SELECT exercise_hash,exercise_json FROM r5_sessions WHERE role='computer_lead' AND bound_commit=?",
+      )
+      .get("a".repeat(40)) as { exercise_hash: string; exercise_json: string };
+    expect(readModel.exercise_hash).toBe(artifactHash);
+    const outbox = db
+      .getDb()
+      .prepare(
+        "SELECT expected_file_hash FROM r5_artifact_outbox WHERE target_relpath LIKE '%gates/R5/artifacts/computer_lead/exercise.r1.json'",
+      )
+      .get() as { expected_file_hash: string };
+    expect(outbox.expected_file_hash).toBe(sha256(readModel.exercise_json));
+    expect(outbox.expected_file_hash).not.toBe(readModel.exercise_hash);
     const revisedItems = items.map((item) => ({ ...item, note: `${item.note} 修订说明` }));
     const revised = r5.submitHandoff("computer_reviewer", {
       sessionId: computer.sessionId,

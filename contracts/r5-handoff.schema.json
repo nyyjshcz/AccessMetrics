@@ -9,7 +9,8 @@
     "handoffCatalogHash",
     "confirmGateIds",
     "evidence",
-    "confirmed"
+    "confirmed",
+    "artifactHash"
   ],
   "additionalProperties": false,
   "properties": {
@@ -51,6 +52,7 @@
         "evidenceHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
       }
     },
-    "confirmed": { "const": true }
+    "confirmed": { "const": true },
+    "artifactHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
   }
 }

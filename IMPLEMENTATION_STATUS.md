@@ -30,7 +30,7 @@
 - 生产配置现在要求 Worker 使用隔离的 `scan-isolated` 内部网络和显式代理，代理策略拒绝私网、保留地址、文档示例网段、metadata、IPv4-mapped/ULA/link-local IPv6，并提供 `pnpm egress:check`；Caddy 未提供 `CADDY_SITE` 时 fail-closed，应用镜像在构建时安装固定 Playwright Chromium。
 - 本轮完成度复核又补齐了 `scan:page`/`scan:one-page` 的无副作用共享 CLI（每次命令只启动一次扫描）、下载型非 HTML 响应的 `NON_HTML` 结构化错误、robots deny/最大深度/总时长/三次确定性发现回归，以及混合图片 pass/violation、浏览器关闭后重启和 PDF 下载 fixture；egress proxy 的 IPv6 判定改为按地址段解析并拒绝所有 IPv4-mapped 形式。
 - 本轮安全与验收复核补齐了双角色 cookie 并存时的服务端 role 选择、错误角色 403/未登录 401 区分、生产 reviewer token 不得相同、Caddy 可信代理标记重写，以及只接受可信代理注入的 rate-limit 客户端地址。
-- R5 artifact 现在由服务端按 canonical 字节写入 `gates/R5/artifacts/<role>/<type>.r<revision>.json`，并通过严格的 `artifact_kind/artifact_id/canonical_json` DB outbox 恢复/校验磁盘 hash；跨 rcCommit 的同名旧文件按 commit 归档，绝不覆盖历史证据。修订会使共同 bundle 和双方 finalize 失效，缺失/篡改/冲突均 fail-closed。gate receipt 改为完整 receipt 字节 hash，outbox 幂等写入并有双角色 fixture 验证。
+- R5 artifact 现在由服务端按 canonical 字节写入 `gates/R5/artifacts/<role>/<type>.r<revision>.json`，三个 artifact schema 均强制要求 `artifactHash`；`artifactHash` 是省略自身后的 canonical JSON（含尾换行）的 SHA-256，数据库/bundle 绑定该语义 hash，outbox 的 `expected_file_hash` 单独绑定完整文件字节 hash。系统会在恢复、重复提交、归档、finalize 和 gate 展开时同时校验两种 hash，并通过严格的 `artifact_kind/artifact_id/canonical_json` DB outbox 恢复/校验磁盘 hash；跨 rcCommit 的同名旧文件按 commit 归档，绝不覆盖历史证据。修订会使共同 bundle 和双方 finalize 失效，缺失/篡改/冲突均 fail-closed。gate receipt 改为完整 receipt 字节 hash，outbox 幂等写入并有双角色 fixture 验证。
 - R5 规范化表已与旧 session read-model 同步：`r5_owner_artifacts` 保存角色/版本/当前状态，`r5_exercise_steps` 保存固定命令结果，`r5_artifact_bundles` 保存六份 passed hash；R5 gate 只接受服务端按 `rcCommit` 找到的 ready bundle，不能由请求体自报 artifacts。页面 worker 增加 10 秒 heartbeat、租约拥有者 CAS、崩溃恢复、重试上限、取消时批量终止剩余页面和每页事务提交。
 - 正式抽样请求现在必须绑定并由服务端复核 `sourceManifestHash`；formal/ad-hoc 审核修订要求 `expectedRevision` 与 `supersedesReviewId`，裁决批准要求相同 `resolutionHash`/revision，旧版本不能静默覆盖。
 - 成果 candidate/verify/release 链现在要求固定的 report-data、两份最终报告、图表/表格 hash、R1–R5 数据库绑定 evidence 和分别重算的 `r4EvidenceBundleHash`/`fullGateBundleHash`；缺任何输入均失败，不再把可选参数或文件存在当作完成证明。
@@ -60,13 +60,13 @@ pnpm contract:check
 pnpm typecheck
 pnpm lint
 pnpm format:check
-pnpm test:integration     # 6 files, 18 tests
+pnpm test:integration     # 6 files, 19 tests
 pnpm test:scoring-parity  # 5 files, 22 tests
-pnpm test                 # 11 files, 40 tests
+pnpm test                 # 11 files, 41 tests
 pnpm test:analysis
 pnpm build                # Next production build
 pnpm test:e2e             # 3 browser tests（核心页面 axe、匿名权限、完整 fixture 扫描/审核/发布/导出/撤下流程）
-pnpm test:all             # 上述依赖、静态检查、hygiene/handoff:check、egress policy、40 个 Vitest 测试、Python 分析、构建与 3 个 E2E 总门
+pnpm test:all             # 上述依赖、静态检查、hygiene/handoff:check、egress policy、41 个 Vitest 测试、Python 分析、构建与 3 个 E2E 总门
 node scripts/r5-fixed-exercise.mjs <六个固定 exercise id>  # 六项固定 catalog action 均返回 passed
 pnpm project:status       # 输出 WAITING_EXTERNAL_INPUT，自动实现 ready
 pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部输入齐全

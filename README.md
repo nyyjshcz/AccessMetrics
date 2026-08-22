@@ -25,7 +25,7 @@
 
 ### 测试、扫描、发布与导出
 
-- 完整质量门：`pnpm test:all`；浏览器流程：`pnpm test:e2e`；状态查询：`pnpm project:status`。
+- 完整质量门：`pnpm test:all`（包含 `pnpm docs:check` 文档契约检查）；浏览器流程：`pnpm test:e2e`；状态查询：`pnpm project:status`。
 - 单站点扫描：`pnpm scan:site -- https://example.org --max-pages 10`。只允许计划中的公共站点，私网、环回、凭据 URL、代理绕过和未授权目标必须失败。
 - 研究扫描和正式发布必须经过 R1–R5 receipt、冻结的 source export、报告数据和 manifest/hash 校验；使用 `pnpm deliverables:candidate`、`pnpm deliverables:build`、`pnpm deliverables:render`、`pnpm deliverables:verify`。任何缺失真人门或正式输入都会保持 `WAITING_EXTERNAL_INPUT`。
 - 导出必须来自结构化数据库数据并原子写入；`export:verify`、`gates:verify` 和报告验证脚本检查固定列、canonical JSON、字节/hash、权限和敏感字段。正式 PDF 只能来自同一 `report-data-v1` 的打印 HTML；DOCX 转换结果只放入 `.qa-render` 做视觉 QA。

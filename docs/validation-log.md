@@ -71,4 +71,8 @@
 
 | 2026-08-22 | Compose 隔离、兼容入口与终态校验后的完整总门 | AI | 待负责人 | 当前工作区自动化基线（未发布） | `pnpm test:all`（integration 8 files/25 tests、scoring 5 files/22 tests、全量 13 files/47 tests、Python 分析、Next build、E2E 3 passed） | 通过；本地 Compose 三服务隔离静态门、计划命名兼容入口、外部交付证明 schema/hash 和状态机均无回归；依赖预检基线时间戳已恢复 | Docker Compose 实际启动、真实代理/渲染器 digest、R1–R5、正式研究与交付仍需外部输入 |
 
+| 2026-08-22 | 文档契约检查纳入总门 | AI | 待负责人 | 当前工作区自动化基线（未发布） | `pnpm docs:check`；检查计划/README/关键文档文件、README 必需运行说明、package 命令和本地链接 | 通过；文档缺项或命令漂移会 fail-closed，`pnpm test:all` 已串联该检查 | R1–R5、真实研究/交付和生产环境仍需外部提供 |
+
+| 2026-08-22 | 文档契约纳入后的最终完整总门 | AI | 待负责人 | 当前自动化基线（未发布） | `pnpm test:all`：integration 8 files/25 tests、scoring 5 files/22 tests、全量 13 files/47 tests、Python 分析、Next build、3 个 Playwright E2E；其中包含 `pnpm docs:check` | 通过；依赖、静态、契约、文档、数据库、分析、构建和端到端检查全部通过；依赖预检基线时间戳已恢复为固定值 | Docker Compose 实际启动、真实代理/渲染器 digest、R1–R5、正式研究/交付仍需外部输入 |
+
 真人确认只能由对应 reviewer 会话提交；AI 不得把本表预填行改成“本人已复核”。

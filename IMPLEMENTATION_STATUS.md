@@ -53,6 +53,7 @@
 - 本次按计划逐项复核了步骤 1–19 的自动化命令、交付物和质量证据；`release:* --help`/`publication:preflight --help` 均可启动，`pnpm project:resume` 在缺少 R1–R5 真人证据时按设计以退出码 2 保持等待，未生成伪造正式成果。
 - 计划复核发现并修正本地 Compose 的网络缺口：`compose.yaml` 和兼容的 `docker-compose.yml` 现在都启动 egress-proxy，Worker 仅加入 `scan-isolated`、设置显式 `EGRESS_PROXY_URL`，并由 `ops:check` 静态拒绝 Worker 直连 `external-egress`；当前环境没有 Docker，因此尚未宣称 Compose 实际启动通过。
 - `project:status` 已补齐计划规定的 `EXTERNAL_DELIVERY_COMPLETE` 状态，但只有 R5/研究门通过后，且 Git 外 `private-inputs/external-delivery/attestation.json` 满足严格 schema 和 canonical `attestationHash` 才能进入；当前证明缺失，仍为 `WAITING_EXTERNAL_INPUT`。
+- 新增 `pnpm docs:check` 并纳入 `pnpm test:all`：机械检查计划/README/运维/报告/接手包关键文件、README 必需运行说明、package 命令和本地链接，避免文档契约回退。
 - 正式抽样请求现在必须绑定并由服务端复核 `sourceManifestHash`；formal/ad-hoc 审核修订要求 `expectedRevision` 与 `supersedesReviewId`，裁决批准要求相同 `resolutionHash`/revision，旧版本不能静默覆盖。
 - 成果 candidate/verify/release 链现在要求固定的 report-data、两份最终报告、图表/表格 hash、R1–R5 数据库绑定 evidence 和分别重算的 `r4EvidenceBundleHash`/`fullGateBundleHash`；缺任何输入均失败，不再把可选参数或文件存在当作完成证明。
 - R4 候选链已按计划收紧：`report-data.candidate.json` 使用独立 schema、禁止 `exportId/manifestHash/outcomeDigest/r4EvidenceBundleHash` 等 final 字段，并通过 `$defs` 与最终 report-data 共用分数、frame、人工样本、图表和局限定义；candidate bundle 固定绑定 source/review-freeze/localization/model/commit 以及五个候选文件的 bytes/SHA-256，candidateBundleId 对语义内容完整 hash，候选目录原子写入、只读、可幂等复用。
@@ -76,6 +77,7 @@ pnpm catalog:generate
 pnpm catalog:check
 pnpm ops:check
 pnpm hygiene:check
+pnpm docs:check
 pnpm handoff:check      # 8 份接手包文件、内部链接、35 个 FAQ 与命令索引
 pnpm contract:check
 pnpm typecheck
@@ -83,15 +85,17 @@ pnpm lint
 pnpm format:check
 pnpm test:integration     # 6 files, 19 tests
 pnpm test:scoring-parity  # 5 files, 22 tests
-pnpm test                 # 11 files, 41 tests
+pnpm test                 # 13 files, 47 tests
 pnpm test:analysis
 pnpm build                # Next production build
 pnpm test:e2e             # 3 browser tests（核心页面 axe、匿名权限、完整 fixture 扫描/审核/发布/导出/撤下流程）
-pnpm test:all             # 上述依赖、静态检查、hygiene/handoff:check、egress policy、41 个 Vitest 测试、Python 分析、构建与 3 个 E2E 总门
+pnpm test:all             # 上述依赖、静态检查、hygiene/docs/handoff:check、egress policy、47 个 Vitest 测试、Python 分析、构建与 3 个 E2E 总门
 node scripts/r5-fixed-exercise.mjs <六个固定 exercise id>  # 六项固定 catalog action 均返回 passed
 pnpm project:status       # 输出 WAITING_EXTERNAL_INPUT，自动实现 ready
 pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部输入齐全
 ```
+
+最后一次完整质量门（含 `pnpm docs:check`）通过：迁移 1–25、integration 8 files/25 tests、scoring 5 files/22 tests、全量 13 files/47 tests、Python 分析、Next build、3 个 Playwright E2E；文档契约、Compose 隔离、外部交付状态和计划兼容入口均纳入检查。
 
 本轮 R5 outbox/path 收敛后的完整质量门再次通过：迁移 1–25、integration 6 files/19 tests、scoring 5 files/22 tests、全量 11 files/41 tests、Python 分析、Next build、3 个 Playwright E2E；新增测试确认 outbox 仅含计划字段、固定 artifact 路径和跨 commit 归档行为。
 

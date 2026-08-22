@@ -25,6 +25,7 @@ const required = [
   "Dockerfile",
   "docker-compose.yml",
   "scripts/check-repository-hygiene.ts",
+  "scripts/check-documentation.ts",
   "scripts/check-egress-proxy.mjs",
   "scripts/scan-page-cli.ts",
   "scripts/import-sample-frame.ts",

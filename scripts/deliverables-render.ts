@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright";
 import { canonicalize, sha256 } from "../src/lib/canonical";
+import { loadReportStyle, type ReportStyle } from "./report-style";
 const escapeHtml = (value: string) =>
   value
     .replaceAll("&", "&amp;")
@@ -42,7 +43,7 @@ function inlineHtml(value: string, baseDirectory: string): string {
   return html;
 }
 
-function markdownToPrintHtml(markdown: string, baseDirectory: string): string {
+function markdownToPrintHtml(markdown: string, baseDirectory: string, style: ReportStyle): string {
   const lines = markdown.split(/\r?\n/);
   const blocks: string[] = [];
   let index = 0;
@@ -99,15 +100,15 @@ function markdownToPrintHtml(markdown: string, baseDirectory: string): string {
     else blocks.push(`<p>${inlineHtml(line, baseDirectory)}</p>`);
     index++;
   }
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><style>@page{size:A4;margin:18mm}body{font-family:Arial,"Noto Sans CJK SC",sans-serif;color:#172033;line-height:1.6}h1{font-size:24px;page-break-before:avoid}h2{font-size:18px;page-break-after:avoid}h3{font-size:15px;page-break-after:avoid}table{border-collapse:collapse;width:100%;margin:12px 0;page-break-inside:auto}thead{display:table-header-group}tr{page-break-inside:avoid}th,td{border:1px solid #ccd6e0;padding:6px;text-align:left;vertical-align:top}th{background:#eef3f7}img{max-width:100%;height:auto}blockquote{border-left:4px solid #527da5;padding:6px 12px;background:#f1f6fa}code{font-family:Consolas,monospace;overflow-wrap:anywhere}a{color:#145a86;text-decoration:underline}</style></head><body>${blocks.join("\n")}</body></html>`;
+  return `<!doctype html><html lang="${style.language}"><head><meta charset="utf-8"><style>@page{size:${style.pageSize};margin:18mm}body{font-family:"${style.fontFamily}",Arial,sans-serif;color:#172033;line-height:1.6}h1{font-size:24px;page-break-before:avoid}h2{font-size:18px;page-break-after:avoid}h3{font-size:15px;page-break-after:avoid}table{border-collapse:collapse;width:100%;margin:12px 0;page-break-inside:auto}thead{display:table-header-group}tr{page-break-inside:avoid}th,td{border:1px solid #ccd6e0;padding:6px;text-align:left;vertical-align:top}th{background:#eef3f7}img{max-width:100%;height:auto}blockquote{border-left:4px solid #527da5;padding:6px 12px;background:#f1f6fa}code{font-family:Consolas,monospace;overflow-wrap:anywhere}a{color:#145a86;text-decoration:underline}</style></head><body>${blocks.join("\n")}</body></html>`;
 }
 
-async function renderMarkdownPdf(markdownPath: string, pdfPath: string) {
+async function renderMarkdownPdf(markdownPath: string, pdfPath: string, style: ReportStyle) {
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
     await page.setContent(
-      markdownToPrintHtml(fs.readFileSync(markdownPath, "utf8"), path.dirname(markdownPath)),
+      markdownToPrintHtml(fs.readFileSync(markdownPath, "utf8"), path.dirname(markdownPath), style),
       { waitUntil: "load" },
     );
     await page.pdf({
@@ -149,6 +150,7 @@ async function main() {
   if (options["qa-log"] && !path.isAbsolute(options["qa-log"]))
     throw new Error("--qa-log 必须是绝对路径");
   if (!fs.existsSync(options["input-dir"])) throw new Error("input-dir 不存在");
+  const reportStyle = loadReportStyle();
   try {
     execFileSync("soffice", ["--version"], { stdio: "ignore" });
     execFileSync("pdftoppm", ["-v"], { stdio: "ignore" });
@@ -189,7 +191,7 @@ async function main() {
     fs.mkdirSync(outputDirectory, { recursive: true });
     const stem = path.basename(input).replace(/\.md$/i, "");
     const printPdf = path.join(outputDirectory, `${stem}.pdf`);
-    await renderMarkdownPdf(input, printPdf);
+    await renderMarkdownPdf(input, printPdf, reportStyle);
     if (!fs.existsSync(printPdf) || fs.statSync(printPdf).size === 0)
       throw new Error(`打印 HTML PDF 未生成或为空: ${printPdf}`);
     rendered.push({ markdown: input, printPdf, docx: "", docxPdf: "", png: [] });

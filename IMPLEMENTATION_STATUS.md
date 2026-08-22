@@ -48,6 +48,7 @@
 - 成果/研究导出 CLI 已统一忽略 pnpm 传入的参数分隔符 `--`；计划中可复制的 `pnpm ... -- --参数` 现在会真实读取参数，缺少固定渲染器仍在参数解析后 fail-closed。
 - 报告 DOCX 生成器已把 `zh-CN` 写入默认 run 语言（含 East Asia 与双向文本属性），候选报告集成测试会解包 `styles.xml` 验证该属性；标题、表格表头和图表替代文字检查保持通过。
 - `docs/templates/report-style.json` 已成为报告生成器的强制输入：生成前校验 `report-style-v1`、A4、`zh-CN`、字体和候选水印，并将模板字体/语言用于 DOCX；缺失或篡改模板会 fail-closed，不再让生成器默默使用另一套硬编码样式。
+- 打印 HTML/PDF 渲染器现在复用同一份报告样式模板，输出 `lang=zh-CN`、A4 页面和模板字体；DOCX 与正式打印 PDF 不再各自维护一套语言/页面样式常量。
 - 本次按计划逐项复核了步骤 1–19 的自动化命令、交付物和质量证据；`release:* --help`/`publication:preflight --help` 均可启动，`pnpm project:resume` 在缺少 R1–R5 真人证据时按设计以退出码 2 保持等待，未生成伪造正式成果。
 - 正式抽样请求现在必须绑定并由服务端复核 `sourceManifestHash`；formal/ad-hoc 审核修订要求 `expectedRevision` 与 `supersedesReviewId`，裁决批准要求相同 `resolutionHash`/revision，旧版本不能静默覆盖。
 - 成果 candidate/verify/release 链现在要求固定的 report-data、两份最终报告、图表/表格 hash、R1–R5 数据库绑定 evidence 和分别重算的 `r4EvidenceBundleHash`/`fullGateBundleHash`；缺任何输入均失败，不再把可选参数或文件存在当作完成证明。
@@ -96,6 +97,8 @@ pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部�
 在此基础上补齐 DOCX `zh-CN` 默认语言属性后，完整质量门再次通过：迁移 1–25、integration 7 files/20 tests、scoring 5 files/22 tests、全量 12 files/43 tests、Python 分析、Next build、3 个 Playwright E2E；候选报告结构测试同时验证 DOCX 语言属性。
 
 在此基础上接入 `docs/templates/report-style.json` 后，候选报告测试和完整质量门再次通过；报告样式模板缺失、版本错误、非 A4 或非 `zh-CN` 时会在生成前停止。
+
+在此基础上让打印 HTML/PDF 渲染器复用报告样式模板后，候选/CLI 局部测试与完整质量门再次通过（全量 12 个文件、43 个测试）；缺少或非法样式模板会在渲染前停止，未安装 LibreOffice/Poppler 仍保持原有 fail-closed。
 
 本轮候选链局部质量门另外通过：
 

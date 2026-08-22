@@ -14,6 +14,7 @@ import {
 } from "docx";
 import { canonicalize, sha256 } from "../src/lib/canonical";
 import { assertCandidateReportData } from "./report-data-contract";
+import { loadReportStyle, type ReportStyle } from "./report-style";
 
 type ReportData = {
   siteScores?: Record<string, { exact?: string; display?: number | null }>;
@@ -26,32 +27,6 @@ type ReportData = {
 };
 
 type JsonRecord = Record<string, unknown>;
-
-type ReportStyle = {
-  templateVersion: "report-style-v1";
-  fontFamily: string;
-  pageSize: "A4";
-  language: "zh-CN";
-  candidateHeader: string;
-};
-
-function loadReportStyle(): ReportStyle {
-  const file = path.join(process.cwd(), "docs", "templates", "report-style.json");
-  if (!fs.existsSync(file)) throw new Error("缺少 docs/templates/report-style.json");
-  const raw = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
-  const style = asRecord(raw);
-  if (
-    style.templateVersion !== "report-style-v1" ||
-    typeof style.fontFamily !== "string" ||
-    !/^[A-Za-z0-9 ,"'_-]+$/.test(style.fontFamily) ||
-    style.pageSize !== "A4" ||
-    style.language !== "zh-CN" ||
-    typeof style.candidateHeader !== "string" ||
-    style.candidateHeader.length === 0
-  )
-    throw new Error("docs/templates/report-style.json 不符合 report-style-v1");
-  return style as ReportStyle;
-}
 
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};

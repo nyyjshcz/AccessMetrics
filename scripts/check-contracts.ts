@@ -17,16 +17,63 @@ function sourceRoutePath(file: string) {
   return `/${relative.replace(/\[([^\]]+)\]/g, "{$1}")}`;
 }
 
+const HTTP_METHODS = ["get", "post", "put", "patch", "delete", "options", "head"] as const;
+
+function sourceRouteMethods(file: string) {
+  const source = fs.readFileSync(file, "utf8");
+  const methods = new Set<string>();
+  for (const method of HTTP_METHODS) {
+    const upper = method.toUpperCase();
+    // Route handlers are deliberately detected from the source rather than
+    // importing the module.  Importing would execute application startup and
+    // make a contract check depend on secrets, a database, or a browser.
+    if (
+      new RegExp(`\\bexport\\s+(?:async\\s+function|const)\\s+${upper}\\b`).test(source) ||
+      new RegExp(`\\bexport\\s*\\{[^}]*\\b${upper}\\b[^}]*\\}`).test(source)
+    )
+      methods.add(method);
+  }
+  return [...methods].sort();
+}
+
 const normalizePath = (value: string) => value.replace(/\{[^}]+\}/g, "{}");
 const documentedPaths = new Set(
   [...contract.matchAll(/^  (\/api\/[^:]+):$/gm)].map((match) => normalizePath(match[1])),
 );
-const undocumentedRoutes = routeFiles(path.join(process.cwd(), "src", "app", "api"))
-  .map(sourceRoutePath)
+const sourceRoutes = routeFiles(path.join(process.cwd(), "src", "app", "api")).map((file) => ({
+  file,
+  route: sourceRoutePath(file),
+  methods: sourceRouteMethods(file),
+}));
+const undocumentedRoutes = sourceRoutes
+  .map(({ route }) => route)
   .filter((route) => !documentedPaths.has(normalizePath(route)))
   .sort();
 if (undocumentedRoutes.length)
   throw new Error(`OpenAPI 缺少源码路由: ${undocumentedRoutes.join(", ")}`);
+
+function documentedMethods(route: string) {
+  const pathBlock = [
+    ...contract.matchAll(
+      /^  (\/api\/[^:]+):\r?\n(.*?)(?=^  \/api\/[^:]+:|^components:|(?![\s\S]))/gms,
+    ),
+  ].find((match) => normalizePath(match[1]) === normalizePath(route))?.[2];
+  if (!pathBlock) return [] as string[];
+  return [...pathBlock.matchAll(/^    (get|post|put|patch|delete|options|head):/gm)]
+    .map((match) => match[1])
+    .sort();
+}
+
+const undocumentedMethods = sourceRoutes
+  .flatMap(({ route, methods }) => {
+    const documented = new Set(documentedMethods(route));
+    return methods
+      .filter((method) => !documented.has(method))
+      .map((method) => `${method.toUpperCase()} ${route}`);
+  })
+  .sort();
+if (undocumentedMethods.length)
+  throw new Error(`OpenAPI 缺少源码方法: ${undocumentedMethods.join(", ")}`);
 for (const route of [
   "/api/health",
   "/api/scans",
@@ -57,6 +104,30 @@ const schema = JSON.parse(
 );
 if (schema.properties.schemaVersion.const !== "scan-export-v1")
   throw new Error("export schema mismatch");
+const runExportSchema = JSON.parse(
+  fs.readFileSync(path.join(process.cwd(), "contracts", "run-export.schema.json"), "utf8"),
+);
+const runExportRequired = [
+  "schemaVersion",
+  "exportId",
+  "generatedAt",
+  "site",
+  "run",
+  "configSnapshot",
+  "pages",
+  "ruleResults",
+  "resultNodes",
+  "pageScores",
+  "siteScore",
+  "reviewRefs",
+  "provenance",
+];
+if (
+  runExportSchema.properties.schemaVersion.const !== "scan-export-v1" ||
+  !runExportRequired.every((field) => runExportSchema.required?.includes(field)) ||
+  runExportSchema.additionalProperties !== false
+)
+  throw new Error("run export contract does not lock the complete traceable DTO");
 for (const file of [
   "manifest.schema.json",
   "study-export.schema.json",
@@ -80,6 +151,30 @@ for (const file of [
   if (!value.$schema || (typeof value.type !== "string" && !value.allOf))
     throw new Error(`invalid contract ${file}`);
 }
+const csvContract = JSON.parse(
+  fs.readFileSync(path.join(process.cwd(), "contracts", "study-csv-columns.v1.json"), "utf8"),
+);
+const expectedCsvTables = [
+  "sites.csv",
+  "runs.csv",
+  "pages.csv",
+  "rule_results.csv",
+  "result_nodes.csv",
+  "page_scores.csv",
+  "site_scores.csv",
+  "manual_review_batches.csv",
+  "manual_review_samples.csv",
+  "manual_reviews.csv",
+  "manual_review_adjudications.csv",
+  "job_pages.csv",
+];
+if (
+  csvContract.schemaVersion !== "study-csv-columns-v1" ||
+  csvContract.encoding !== "UTF-8 with BOM" ||
+  csvContract.lineEnding !== "CRLF" ||
+  expectedCsvTables.some((filename) => !Array.isArray(csvContract.tables?.[filename]?.columns))
+)
+  throw new Error("study CSV column contract is incomplete");
 const localization = JSON.parse(
   fs.readFileSync(path.join(process.cwd(), "scoring", "rule-localizations.zh-CN.json"), "utf8"),
 );

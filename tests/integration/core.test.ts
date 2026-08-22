@@ -166,6 +166,18 @@ describe("database and evidence chain", () => {
     ).toBe(4);
     const exported = exportModule.exportRun(run.id);
     expect(fs.existsSync(path.join(exported.target, "manifest.json"))).toBe(true);
+    const runExport = JSON.parse(fs.readFileSync(path.join(exported.target, "scan.json"), "utf8"));
+    expect(runExport).toMatchObject({
+      schemaVersion: "scan-export-v1",
+      exportId: exported.exportId,
+      site: { id: site.id },
+      configSnapshot: expect.any(Object),
+      ruleResults: expect.any(Array),
+      resultNodes: expect.any(Array),
+      pageScores: expect.any(Array),
+      reviewRefs: expect.any(Array),
+      provenance: expect.any(Object),
+    });
     const report = privacy.scanPublicationDirectory(exported.target, exported.exportId);
     expect(report.passed).toBe(true);
     expect(zip.zipDirectory(exported.target).byteLength).toBeGreaterThan(50);

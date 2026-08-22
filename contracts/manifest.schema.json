@@ -15,7 +15,8 @@
         "properties": {
           "path": { "type": "string", "pattern": "^[^/].*" },
           "size": { "type": "integer", "minimum": 0 },
-          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "rows": { "type": "integer", "minimum": 0 }
         }
       }
     },
@@ -39,6 +40,10 @@
     "modelObservationsHash": { "type": ["string", "null"] },
     "r4EvidenceBundleHash": { "type": ["string", "null"] },
     "revision": { "type": "integer", "minimum": 1 },
+    "supersedesExportId": { "type": ["string", "null"] },
+    "publicationStatus": { "type": "string" },
+    "appGitCommit": { "type": ["string", "null"] },
+    "databaseMigration": { "type": ["integer", "null"] },
     "runIds": { "type": "array", "items": { "type": "string" } }
   }
 }

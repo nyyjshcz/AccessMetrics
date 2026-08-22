@@ -1,14 +1,37 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["schemaVersion", "exportId", "run", "score", "issues"],
+  "required": [
+    "schemaVersion",
+    "exportId",
+    "generatedAt",
+    "site",
+    "run",
+    "configSnapshot",
+    "pages",
+    "ruleResults",
+    "resultNodes",
+    "pageScores",
+    "siteScore",
+    "reviewRefs",
+    "provenance"
+  ],
   "additionalProperties": false,
   "properties": {
     "schemaVersion": { "const": "scan-export-v1" },
     "exportId": { "type": "string" },
+    "generatedAt": { "type": "string" },
+    "site": { "type": "object" },
     "run": { "type": "object" },
+    "configSnapshot": { "type": "object" },
     "score": { "type": "object" },
     "issues": { "type": "array" },
-    "pages": { "type": "array", "items": { "type": "object" } }
+    "pages": { "type": "array", "items": { "type": "object" } },
+    "ruleResults": { "type": "array", "items": { "type": "object" } },
+    "resultNodes": { "type": "array", "items": { "type": "object" } },
+    "pageScores": { "type": "array", "items": { "type": "object" } },
+    "siteScore": { "type": ["object", "null"] },
+    "reviewRefs": { "type": "array", "items": { "type": "object" } },
+    "provenance": { "type": "object" }
   }
 }

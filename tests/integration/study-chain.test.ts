@@ -12,6 +12,7 @@ process.env.PUBLIC_EXPORT_ROOT = path.join(testRoot, "public");
 const dbModule = await import("@/lib/db");
 const repositories = await import("@/lib/repositories");
 const study = await import("@/lib/study");
+const studyExport = await import("@/lib/study-export");
 
 describe("formal study freeze chain", () => {
   beforeAll(() => dbModule.migrate());
@@ -99,5 +100,37 @@ describe("formal study freeze chain", () => {
     expect(stored.status).toBe("registered");
     expect(stored.population_digest).toBe(sha256(canonicalize([])));
     expect(stored.run_set_hash).toBe(sha256(canonicalize(first.canonicalRuns)));
+
+    const exported = studyExport.createStudyExport({
+      studyFreezeId: first.freezeId,
+      kind: "study_source",
+    });
+    expect(exported.status).toBe("verified");
+    expect(exported.manifest_hash).toMatch(/^[a-f0-9]{64}$/);
+    for (const file of [
+      "manifest.json",
+      "manifest.sha256",
+      "data/study.json",
+      "data/sites.csv",
+      "data/runs.csv",
+      "data/pages.csv",
+      "data/rule_results.csv",
+      "data/result_nodes.csv",
+      "data/page_scores.csv",
+      "data/site_scores.csv",
+      "data/manual_reviews.csv",
+      "schemas/study-export.schema.json",
+      "configs/scoring-config.v1.json",
+      "research/protocol.md",
+    ])
+      expect(fs.existsSync(path.join(exported.storage_relpath, file))).toBe(true);
+    expect(fs.existsSync(path.join(exported.storage_relpath, "manual-reviews.json"))).toBe(false);
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(exported.storage_relpath, "manifest.json"), "utf8"),
+    );
+    expect(manifest.exportKind).toBe("study_source");
+    expect(manifest.files.some((file: { path: string }) => file.path === "manifest.json")).toBe(
+      false,
+    );
   });
 });

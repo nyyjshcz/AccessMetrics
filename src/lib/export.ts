@@ -40,6 +40,65 @@ export function exportRun(runId: string) {
       "SELECT rr.*,p.canonical_url FROM rule_results rr JOIN pages p ON p.id=rr.page_id WHERE rr.run_id=? ORDER BY p.canonical_url,rr.rule_id,rr.result_type",
     )
     .all(runId) as any[];
+  const resultNodes = getDb()
+    .prepare(
+      `SELECT n.id AS result_node_id,n.rule_result_id,n.ordinal,n.frame_path_json,
+              n.frame_url,n.frame_origin_relation,n.target_json,n.target_hash,
+              n.impact,n.effective_impact,n.severity_weight,n.severity_source,
+              n.html_excerpt,n.failure_summary,n.any_json,n.all_json,n.none_json
+         FROM result_nodes n
+         JOIN rule_results rr ON rr.id=n.rule_result_id
+        WHERE rr.run_id=? ORDER BY rr.page_id,rr.rule_id,rr.result_type,n.ordinal`,
+    )
+    .all(runId) as any[];
+  const pageScores = getDb()
+    .prepare("SELECT * FROM page_scores WHERE run_id=? ORDER BY page_id")
+    .all(runId) as any[];
+  const siteScore = getDb().prepare("SELECT * FROM site_scores WHERE run_id=?").get(runId) as any;
+  const reviewRefs = getDb()
+    .prepare(
+      `SELECT n.id AS result_node_id,mr.verdict AS final_verdict,
+              CASE WHEN mr.review_context='formal' THEN 'agreement' ELSE 'ad_hoc' END AS resolution_source,
+              CASE WHEN mr.sample_id IS NULL THEN NULL ELSE json_object(
+                'batchId',mrs.batch_id,'sourceExportId',mrb.source_export_id,
+                'sourceManifestHash',mrb.source_manifest_hash) END AS batch_ref
+         FROM result_nodes n
+         JOIN rule_results rr ON rr.id=n.rule_result_id
+         JOIN manual_reviews mr ON mr.result_node_id=n.id AND mr.is_current=1
+         LEFT JOIN manual_review_samples mrs ON mrs.id=mr.sample_id
+         LEFT JOIN manual_review_batches mrb ON mrb.id=mrs.batch_id
+        WHERE rr.run_id=? ORDER BY n.id`,
+    )
+    .all(runId)
+    .map((row: any) => ({
+      resultNodeId: row.result_node_id,
+      finalVerdict: row.final_verdict,
+      resolutionSource: row.resolution_source,
+      batchRef: row.batch_ref ? JSON.parse(row.batch_ref) : null,
+    }));
+  const options = (() => {
+    try {
+      return JSON.parse(run.config_snapshot_json ?? "{}");
+    } catch {
+      return {};
+    }
+  })();
+  const catalogPath = path.join(process.cwd(), "configs", "axe-rule-catalog.json");
+  const criteriaPath = path.join(process.cwd(), "scoring", "wcag-criteria.v2.2.json");
+  const localizationPath = path.join(process.cwd(), "scoring", "rule-localizations.zh-CN.json");
+  const fileHash = (file: string) => (fs.existsSync(file) ? sha256(fs.readFileSync(file)) : null);
+  const provenance = {
+    appGitCommit: process.env.APP_GIT_COMMIT ?? null,
+    scannerVersion: run.scanner_version,
+    playwrightVersion: process.env.PLAYWRIGHT_VERSION ?? null,
+    axeVersion: run.axe_version,
+    ruleCatalogVersion: run.catalog_version,
+    ruleCatalogHash: fileHash(catalogPath),
+    scanTimeLocalizationHash: run.scan_time_localization_hash ?? fileHash(localizationPath),
+    wcagCriteriaHash: fileHash(criteriaPath),
+    scoreModelVersion: run.score_model_version ?? "accesscheck-score-v1",
+    databaseMigration: run.database_migration ?? null,
+  };
   const pages = getDb()
     .prepare(
       "SELECT canonical_url,scan_status,http_status,error_code,frame_total,same_origin_frame_total,cross_origin_frame_total,frame_tested_total,frame_skipped_total,frame_error_count,frame_coverage_status,frame_coverage_issues_json,axe_timestamp,axe_test_engine_json,axe_test_environment_json,axe_tool_options_json FROM pages WHERE run_id=? ORDER BY canonical_url",
@@ -48,6 +107,9 @@ export function exportRun(runId: string) {
   const payload = {
     schemaVersion: "scan-export-v1",
     exportId,
+    generatedAt: new Date().toISOString(),
+    site: { id: run.site_id, origin: run.origin, name: run.name },
+    configSnapshot: options,
     run,
     score: buildRunScore(runId),
     pages,
@@ -55,6 +117,15 @@ export function exportRun(runId: string) {
       const { tags_json: _tagsJson, raw_json: _rawJson, ...rest } = row;
       return { ...rest, tags: JSON.parse(row.tags_json), raw: JSON.parse(row.raw_json) };
     }),
+    ruleResults: issues.map((row) => {
+      const { tags_json: _tagsJson, raw_json: _rawJson, ...rest } = row;
+      return { ...rest, tags: JSON.parse(row.tags_json) };
+    }),
+    resultNodes,
+    pageScores,
+    siteScore: siteScore ?? null,
+    reviewRefs,
+    provenance,
   };
   const jsonBytes = Buffer.from(canonicalize(payload) + "\n", "utf8");
   fs.writeFileSync(path.join(target, "scan.json"), jsonBytes);

@@ -75,4 +75,6 @@
 
 | 2026-08-22 | 文档契约纳入后的最终完整总门 | AI | 待负责人 | 当前自动化基线（未发布） | `pnpm test:all`：integration 8 files/25 tests、scoring 5 files/22 tests、全量 13 files/47 tests、Python 分析、Next build、3 个 Playwright E2E；其中包含 `pnpm docs:check` | 通过；依赖、静态、契约、文档、数据库、分析、构建和端到端检查全部通过；依赖预检基线时间戳已恢复为固定值 | Docker Compose 实际启动、真实代理/渲染器 digest、R1–R5、正式研究/交付仍需外部输入 |
 
+| 2026-08-22 | 计划 1–19 逐步覆盖检查纳入最终总门 | AI | 待负责人 | 当前自动化基线（未发布） | `pnpm plan:check`（计划标题 1–19、19 行状态和等待规则通过）；`pnpm test:all`（integration 8 files/25 tests、scoring 5 files/22 tests、全量 13 files/47 tests、Python 分析、Next build、3 个 Playwright E2E） | 通过；逐步覆盖表、文档契约和完整代码质量门均通过；依赖预检基线时间戳已恢复为固定值 | Docker Compose 实际启动、真实代理/渲染器 digest、R1–R5、正式研究/交付仍需外部输入 |
+
 真人确认只能由对应 reviewer 会话提交；AI 不得把本表预填行改成“本人已复核”。

@@ -158,7 +158,18 @@ const requiredColumns = {
     "bundle_hash",
     "created_at",
   ],
-  r5_artifact_outbox: ["artifact_kind", "artifact_id", "canonical_json", "status"],
+  r5_artifact_outbox: [
+    "artifact_kind",
+    "artifact_id",
+    "target_relpath",
+    "canonical_json",
+    "expected_file_hash",
+    "status",
+    "attempt_count",
+    "last_error",
+    "created_at",
+    "written_at",
+  ],
 };
 const missingColumns: string[] = [];
 for (const [table, columns] of Object.entries(requiredColumns)) {

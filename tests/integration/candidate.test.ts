@@ -74,10 +74,28 @@ function writeCandidateFixture() {
   const candidateDataPath = path.join(candidate, "report-data.candidate.json");
   fs.writeFileSync(candidateDataPath, `${JSON.stringify(candidateData)}\n`);
   const candidateDataHash = sha256(fs.readFileSync(candidateDataPath));
+  const reportSections = [
+    "## 摘要",
+    "## 1. 研究背景与问题",
+    "## 2. 自动检测边界与研究范围",
+    "## 3. 样本站点选择原则",
+    "## 4. Playwright/axe-core 扫描方法",
+    "## 5. axe 严重程度、WCAG 映射和评分公式",
+    "## 6. 数据质量与失败页面处理",
+    "## 7. 描述统计和四原则结果",
+    "## 8. 敏感性分析",
+    "## 9. 已知问题 fixture 与人工抽查验证",
+    "## 10. 图表与数据表",
+    "## 11. 局限",
+    "## 12. 结论",
+    "## 13. 参考资料",
+    "## 14. 两人分工与贡献说明",
+    "## 15. 附录：版本、配置和复现方法",
+  ].join("\n");
   for (const name of ["research-report.md", "federation-report.md"])
     fs.writeFileSync(
       path.join(candidate, name),
-      `> REVIEW CANDIDATE — NOT FINAL\nreport-data SHA-256: ${candidateDataHash}\n`,
+      `> REVIEW CANDIDATE — NOT FINAL\nreport-data SHA-256: ${candidateDataHash}\n${reportSections}\n`,
     );
   const sourceReportDataPath = path.join(root, "source-report-data.json");
   fs.writeFileSync(
@@ -234,6 +252,67 @@ describe("candidate deliverables", () => {
       expect(generated).not.toHaveProperty("exportId");
       expect(generated).not.toHaveProperty("manifestHash");
       expect(generated).not.toHaveProperty("outcomeDigest");
+    } finally {
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("generates a traceable multi-section report and structured docx", () => {
+    const fixture = writeCandidateFixture();
+    try {
+      const candidateDataPath = path.join(fixture.candidate, "report-data.candidate.json");
+      const candidateData = JSON.parse(fs.readFileSync(candidateDataPath, "utf8")) as Record<
+        string,
+        unknown
+      >;
+      const chartPath = path.join(fixture.candidate, "charts", "site-scores.json");
+      const chartBytes = Buffer.from('{"rows":[]}\n', "utf8");
+      fs.mkdirSync(path.dirname(chartPath), { recursive: true });
+      fs.writeFileSync(chartPath, chartBytes);
+      candidateData.charts = [
+        { path: "charts/site-scores.json", sha256: sha256(chartBytes), kind: "data" },
+      ];
+      fs.writeFileSync(candidateDataPath, `${JSON.stringify(candidateData)}\n`);
+      const outputRoot = path.join(fixture.root, "reports");
+      const tsx = path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      execFileSync(
+        process.execPath,
+        [
+          tsx,
+          "scripts/generate-report.ts",
+          "--input",
+          path.join(fixture.candidate, "report-data.candidate.json"),
+          "--output-root",
+          outputRoot,
+          "--kind",
+          "research",
+          "--mode",
+          "candidate",
+          "--docx",
+        ],
+        { encoding: "utf8" },
+      );
+      const reportRoot = path.join(outputRoot, "candidate", "research");
+      const markdown = fs.readFileSync(path.join(reportRoot, "research-report.md"), "utf8");
+      for (const heading of [
+        "## 1. 研究背景与问题",
+        "## 5. axe 严重程度、WCAG 映射和评分公式",
+        "## 8. 敏感性分析",
+        "## 10. 图表与数据表",
+        "## 15. 附录：版本、配置和复现方法",
+      ])
+        expect(markdown).toContain(heading);
+      expect(markdown).toContain("> REVIEW CANDIDATE — NOT FINAL");
+      expect(fs.statSync(path.join(reportRoot, "research-report.docx")).size).toBeGreaterThan(1000);
+      expect(fs.readFileSync(path.join(reportRoot, "charts", "site-scores.json"))).toEqual(
+        chartBytes,
+      );
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(reportRoot, "report-manifest.json"), "utf8"),
+      ) as { files?: Array<{ path: string }> };
+      expect(manifest.files?.map((file) => file.path)).toEqual(
+        expect.arrayContaining(["research-report.md", "research-report.docx"]),
+      );
     } finally {
       fs.rmSync(fixture.root, { recursive: true, force: true });
     }

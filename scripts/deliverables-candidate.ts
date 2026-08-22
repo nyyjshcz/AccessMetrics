@@ -170,6 +170,24 @@ if (modelObservationsHash !== modelObservationsFile.sha256)
   throw new Error("modelObservationsHash 与候选文件不一致");
 
 const candidateDataHash = candidateDataFile.sha256;
+const requiredReportSections = [
+  "## 摘要",
+  "## 1. 研究背景与问题",
+  "## 2. 自动检测边界与研究范围",
+  "## 3. 样本站点选择原则",
+  "## 4. Playwright/axe-core 扫描方法",
+  "## 5. axe 严重程度、WCAG 映射和评分公式",
+  "## 6. 数据质量与失败页面处理",
+  "## 7. 描述统计和四原则结果",
+  "## 8. 敏感性分析",
+  "## 9. 已知问题 fixture 与人工抽查验证",
+  "## 10. 图表与数据表",
+  "## 11. 局限",
+  "## 12. 结论",
+  "## 13. 参考资料",
+  "## 14. 两人分工与贡献说明",
+  "## 15. 附录：版本、配置和复现方法",
+];
 for (const reportName of requiredFiles.slice(3)) {
   const report = candidateListing.find((file) => file.path === reportName)!;
   const text = fs.readFileSync(path.join(args["candidate-files"], report.path), "utf8");
@@ -177,6 +195,8 @@ for (const reportName of requiredFiles.slice(3)) {
     throw new Error(`候选报告缺少固定水印: ${reportName}`);
   if (!text.includes(candidateDataHash))
     throw new Error(`候选报告未绑定 candidate report-data hash: ${reportName}`);
+  for (const section of requiredReportSections)
+    if (!text.includes(section)) throw new Error(`候选报告缺少章节「${section}」: ${reportName}`);
   if (/final export-id|final manifest|study_final|report-data-v1|r4EvidenceBundleHash/i.test(text))
     throw new Error(`候选报告出现 final 身份或 final schema: ${reportName}`);
 }

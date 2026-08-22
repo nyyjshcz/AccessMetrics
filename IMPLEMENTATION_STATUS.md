@@ -42,6 +42,7 @@
 - 本轮界面闭环已接入真实数据：首页显示已发布站点/成功页面/最近扫描统计，扫描任务页支持取消与错误状态，结果页展示页面状态和 coverage，问题页支持结果类型/规则/人工状态/影响/原则/排序筛选，报告页展示四原则、主要问题和边界，研究页展示版本/类别筛选后的数据表，reviewer 页按角色加载样本并提交正式复核；报告接口与 HTML/PDF 共用主要问题 DTO。
 - 本轮完成度审计又补齐结果页严重度/四原则分布、问题 API 与页面的节点定位/清理片段/失败原因、HTML/PDF/报告页代表性节点证据，以及研究总览的版本过滤、站点四原则分数、分布统计、类别比较、常见规则、严重度/原则图表和对应数据表；缺失版本三元组的历史 run 不会进入研究基线。
 - 在上述审计后的闭环复跑中，又补齐扫描任务的开始/结束/耗时/当前页面字段、研究总分排名与 10 档直方图数据、PDF 页眉页脚和 A4 打印边距；最终 `pnpm test:all` 覆盖这些改动并通过。
+- 本轮又补齐成果报告链：研究/应用候选与最终报告均输出计划要求的 15 个章节、数字/版本/hash 追溯、图表及相邻数据表；DOCX 使用标题和表格结构；最终成果临时目录原子落盘；候选/最终验证器拒绝缺章节、缺三件套、数字未追溯、manifest/hash 不一致或无法提取 PDF 文本的产物；渲染器生成逐页 PNG 和明确的 `WAITING_HUMAN_REVIEW` QA 记录。
 - 本次按计划逐项复核了步骤 1–19 的自动化命令、交付物和质量证据；`release:* --help`/`publication:preflight --help` 均可启动，`pnpm project:resume` 在缺少 R1–R5 真人证据时按设计以退出码 2 保持等待，未生成伪造正式成果。
 - 正式抽样请求现在必须绑定并由服务端复核 `sourceManifestHash`；formal/ad-hoc 审核修订要求 `expectedRevision` 与 `supersedesReviewId`，裁决批准要求相同 `resolutionHash`/revision，旧版本不能静默覆盖。
 - 成果 candidate/verify/release 链现在要求固定的 report-data、两份最终报告、图表/表格 hash、R1–R5 数据库绑定 evidence 和分别重算的 `r4EvidenceBundleHash`/`fullGateBundleHash`；缺任何输入均失败，不再把可选参数或文件存在当作完成证明。

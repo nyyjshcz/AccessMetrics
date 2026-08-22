@@ -53,6 +53,18 @@ export default function RunPage({ params }: { params: Promise<{ runId: string }>
   if (!data) return <p role="status">正在读取扫描结果…</p>;
   const s = data.score;
   const pages = data.pages ?? [];
+  const severityCounts = data.severityCounts ?? {
+    critical: 0,
+    serious: 0,
+    moderate: 0,
+    minor: 0,
+  };
+  const principleCounts = data.principleCounts ?? {
+    perceivable: 0,
+    operable: 0,
+    understandable: 0,
+    robust: 0,
+  };
   return (
     <section>
       <div className="card">
@@ -113,6 +125,55 @@ export default function RunPage({ params }: { params: Promise<{ runId: string }>
             <div className="score">{value === null ? "N/A" : `${value}`}</div>
           </div>
         ))}
+      </div>
+      <div className="grid" style={{ marginTop: 16 }}>
+        <div className="card">
+          <h2>严重程度分布</h2>
+          <table>
+            <caption className="sr-only">自动失败节点严重程度分布</caption>
+            <thead>
+              <tr>
+                <th scope="col">严重程度</th>
+                <th scope="col">节点数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(severityCounts).map(([name, count]) => (
+                <tr key={name}>
+                  <th scope="row">{name}</th>
+                  <td>{String(count)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="card">
+          <h2>WCAG 原则分布</h2>
+          <table>
+            <caption className="sr-only">问题节点按 WCAG 原则分布</caption>
+            <thead>
+              <tr>
+                <th scope="col">原则</th>
+                <th scope="col">节点数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(principleCounts).map(([name, count]) => (
+                <tr key={name}>
+                  <th scope="row">
+                    {{
+                      perceivable: "可感知",
+                      operable: "可操作",
+                      understandable: "易理解",
+                      robust: "兼容性",
+                    }[name] ?? name}
+                  </th>
+                  <td>{String(count)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
       <div className="card" style={{ marginTop: 16 }}>
         <h2>页面状态与覆盖</h2>

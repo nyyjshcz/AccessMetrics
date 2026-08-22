@@ -3,7 +3,7 @@ import { currentSession, requireRole } from "@/lib/auth";
 import { migrate } from "@/lib/db";
 import { getDb } from "@/lib/db";
 import { buildRunReportDto, renderRunReportHtml } from "@/lib/report";
-import { AppError,errorEnvelope } from "@/lib/errors";
+import { AppError, errorEnvelope } from "@/lib/errors";
 export async function GET(_request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
     migrate();
@@ -22,6 +22,8 @@ export async function GET(_request: Request, context: { params: Promise<{ runId:
       },
     });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), { status: error instanceof AppError ? error.status : 500 });
+    return NextResponse.json(errorEnvelope(error), {
+      status: error instanceof AppError ? error.status : 500,
+    });
   }
 }

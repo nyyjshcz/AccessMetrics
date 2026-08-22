@@ -110,8 +110,66 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
       });
     const total = filtered.length;
     const items = filtered.slice((page - 1) * pageSize, page * pageSize);
+    const nodeRows = items.length
+      ? (getDb()
+          .prepare(
+            `SELECT id,rule_result_id,ordinal,target_json,html_sanitized,failure_summary,frame_path_json,frame_url,frame_origin_relation,target_hash,impact,effective_impact,severity_weight,severity_source FROM result_nodes WHERE rule_result_id IN (${items.map(() => "?").join(",")}) ORDER BY rule_result_id,ordinal`,
+          )
+          .all(...items.map((item) => item.id)) as Array<{
+          id: string;
+          rule_result_id: string;
+          ordinal: number;
+          target_json: string;
+          html_sanitized: string;
+          failure_summary: string | null;
+          frame_path_json: string | null;
+          frame_url: string | null;
+          frame_origin_relation: string | null;
+          target_hash: string | null;
+          impact: string | null;
+          effective_impact: string | null;
+          severity_weight: number | null;
+          severity_source: string | null;
+        }>)
+      : [];
+    const nodesByResult = new Map<string, unknown[]>();
+    for (const node of nodeRows) {
+      const target = (() => {
+        try {
+          return JSON.parse(node.target_json);
+        } catch {
+          return [node.target_json];
+        }
+      })();
+      const framePath = node.frame_path_json
+        ? (() => {
+            try {
+              return JSON.parse(node.frame_path_json as string);
+            } catch {
+              return [];
+            }
+          })()
+        : [];
+      const list = nodesByResult.get(node.rule_result_id) ?? [];
+      list.push({
+        id: node.id,
+        ordinal: node.ordinal,
+        target,
+        html: node.html_sanitized,
+        failureSummary: node.failure_summary,
+        framePath,
+        frameUrl: node.frame_url,
+        frameOriginRelation: node.frame_origin_relation,
+        targetHash: node.target_hash,
+        impact: node.impact,
+        effectiveImpact: node.effective_impact,
+        severityWeight: node.severity_weight,
+        severitySource: node.severity_source,
+      });
+      nodesByResult.set(node.rule_result_id, list);
+    }
     return NextResponse.json({
-      items,
+      items: items.map((item) => ({ ...item, nodes: nodesByResult.get(item.id) ?? [] })),
       pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
     });
   } catch (error) {

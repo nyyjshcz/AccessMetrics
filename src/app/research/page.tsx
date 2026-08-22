@@ -39,6 +39,42 @@ export default function ResearchPage() {
   const categories = [
     ...new Set((value?.items ?? []).map((item: any) => item.category).filter(Boolean)),
   ] as string[];
+  const summary = value?.summary;
+  const severityLabels: Record<string, string> = {
+    critical: "Critical",
+    serious: "Serious",
+    moderate: "Moderate",
+    minor: "Minor",
+  };
+  const principleLabels: Record<string, string> = {
+    perceivable: "可感知",
+    operable: "可操作",
+    understandable: "易理解",
+    robust: "兼容性",
+  };
+  const renderBars = (entries: Array<[string, number]>, labels: Record<string, string>) => {
+    const maximum = Math.max(1, ...entries.map(([, count]) => count));
+    return (
+      <ol aria-label="研究汇总柱状图" style={{ listStyle: "none", padding: 0 }}>
+        {entries.map(([key, count]) => (
+          <li key={key} style={{ margin: "8px 0" }}>
+            <span>
+              {labels[key] ?? key}：{count}
+            </span>
+            <div
+              aria-hidden="true"
+              style={{
+                background: "#d8e6f3",
+                height: 12,
+                marginTop: 4,
+                width: `${(count / maximum) * 100}%`,
+              }}
+            />
+          </li>
+        ))}
+      </ol>
+    );
+  };
   return (
     <section>
       <div className="card">
@@ -101,6 +137,9 @@ export default function ResearchPage() {
               <tr>
                 <th scope="col">网站</th>
                 <th scope="col">类别</th>
+                <th scope="col">总分</th>
+                <th scope="col">四原则</th>
+                <th scope="col">需要人工检查</th>
                 <th scope="col">来源</th>
                 <th scope="col">run</th>
               </tr>
@@ -110,6 +149,12 @@ export default function ResearchPage() {
                 <tr key={item.runId}>
                   <td>{item.name}</td>
                   <td>{item.category ?? "未分类"}</td>
+                  <td>{item.overall === null ? "N/A" : item.overall}</td>
+                  <td>
+                    {item.perceivable ?? "N/A"} / {item.operable ?? "N/A"} /{" "}
+                    {item.understandable ?? "N/A"} / {item.robust ?? "N/A"}
+                  </td>
+                  <td>{item.incomplete}</td>
                   <td>
                     <code>{item.origin}</code>
                   </td>
@@ -122,6 +167,118 @@ export default function ResearchPage() {
           </table>
         )}
       </div>
+      {summary && value?.baseline && (
+        <>
+          <div className="grid" style={{ marginTop: 16 }}>
+            <div className="card">
+              <h2>总分分布</h2>
+              <p>
+                有效站点 {summary.distribution.count}；平均数 {summary.distribution.mean ?? "N/A"}
+                ；中位数 {summary.distribution.median ?? "N/A"}；四分位数{" "}
+                {summary.distribution.q1 ?? "N/A"}–{summary.distribution.q3 ?? "N/A"}；范围{" "}
+                {summary.distribution.min ?? "N/A"}–{summary.distribution.max ?? "N/A"}。
+              </p>
+              <table>
+                <caption className="sr-only">总分分布统计数据表</caption>
+                <tbody>
+                  {Object.entries(summary.distribution).map(([name, count]) => (
+                    <tr key={name}>
+                      <th scope="row">{name}</th>
+                      <td>{String(count ?? "N/A")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="card">
+              <h2>严重程度分布</h2>
+              {renderBars(
+                Object.entries(summary.severity) as Array<[string, number]>,
+                severityLabels,
+              )}
+              <table>
+                <caption className="sr-only">严重程度分布数据表</caption>
+                <tbody>
+                  {Object.entries(summary.severity).map(([name, count]) => (
+                    <tr key={name}>
+                      <th scope="row">{severityLabels[name] ?? name}</th>
+                      <td>{String(count)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="grid" style={{ marginTop: 16 }}>
+            <div className="card">
+              <h2>原则比较</h2>
+              {renderBars(
+                Object.entries(summary.principles) as Array<[string, number]>,
+                principleLabels,
+              )}
+              <table>
+                <caption className="sr-only">原则问题数量数据表</caption>
+                <tbody>
+                  {Object.entries(summary.principles).map(([name, count]) => (
+                    <tr key={name}>
+                      <th scope="row">{principleLabels[name] ?? name}</th>
+                      <td>{String(count)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="card">
+              <h2>类别比较</h2>
+              <table>
+                <caption className="sr-only">类别分数比较数据表</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">类别</th>
+                    <th scope="col">站点数</th>
+                    <th scope="col">平均数</th>
+                    <th scope="col">中位数</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.categories.map((item: any) => (
+                    <tr key={item.name}>
+                      <th scope="row">{item.name}</th>
+                      <td>{item.count}</td>
+                      <td>{item.mean ?? "N/A"}</td>
+                      <td>{item.median ?? "N/A"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="card" style={{ marginTop: 16 }}>
+            <h2>最常见规则与人工检查边界</h2>
+            <p>
+              所有类别合计需要人工检查 {summary.incomplete}{" "}
+              个节点。以下为站点内自动问题节点最多的规则：
+            </p>
+            <table>
+              <caption className="sr-only">最常见规则数据表</caption>
+              <thead>
+                <tr>
+                  <th scope="col">规则</th>
+                  <th scope="col">节点数</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.commonRules.map((item: any) => (
+                  <tr key={item.ruleId}>
+                    <th scope="row">{item.ruleId}</th>
+                    <td>{item.nodeCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </section>
   );
 }

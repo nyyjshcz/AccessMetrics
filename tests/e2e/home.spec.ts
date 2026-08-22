@@ -153,6 +153,8 @@ test("admin, reviewers, publishing and exports complete the fixture flow", async
   for (const principle of ["可感知", "可操作", "易理解", "兼容性"]) {
     await expect(page.getByRole("heading", { name: principle })).toBeVisible();
   }
+  await expect(page.getByRole("heading", { name: "严重程度分布" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "WCAG 原则分布" })).toBeVisible();
   await page.goto(`/scans/${runId}/issues`);
   await expect(page.getByRole("heading", { name: "问题列表" })).toBeVisible();
   await page.getByLabel("严重程度").selectOption("critical");
@@ -162,6 +164,7 @@ test("admin, reviewers, publishing and exports complete the fixture flow", async
   expect(issueResponse.ok).toBeTruthy();
   const issuePayload = JSON.parse(issueResponse.body);
   expect(issuePayload.items.length).toBeGreaterThan(0);
+  expect(issuePayload.items[0].nodes.length).toBeGreaterThan(0);
   const resultNodeId = issuePayload.items[0].result_node_id;
   expect(resultNodeId).toMatch(/^node_/);
   const adminAttempt = await appRequest(page, "/api/reviews/ad-hoc", {
@@ -229,6 +232,10 @@ test("admin, reviewers, publishing and exports complete the fixture flow", async
   const htmlReport = await publicContext.request.get(`${baseUrl}/api/reports/${runId}/html`);
   expect(htmlReport.ok()).toBeTruthy();
   expect((await htmlReport.body()).toString()).toContain("本项目仅评价 axe-core");
+  expect((await htmlReport.body()).toString()).toContain("代表性节点证据");
+  await page.goto("/research");
+  await expect(page.getByRole("heading", { name: "研究总览" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "总分分布" })).toBeVisible();
   const pdfReport = await publicContext.request.get(`${baseUrl}/api/reports/${runId}/pdf`);
   expect(pdfReport.ok()).toBeTruthy();
   expect(pdfReport.headers()["content-type"]).toContain("application/pdf");

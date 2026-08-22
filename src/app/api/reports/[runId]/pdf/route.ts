@@ -35,6 +35,8 @@ export async function GET(_request: Request, context: { params: Promise<{ runId:
       await browser.close();
     }
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), { status: error instanceof AppError ? error.status : 500 });
+    return NextResponse.json(errorEnvelope(error), {
+      status: error instanceof AppError ? error.status : 500,
+    });
   }
 }

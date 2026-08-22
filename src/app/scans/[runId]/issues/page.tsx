@@ -14,6 +14,20 @@ type Issue = {
   node_count: number;
   principles: string[];
   reviewVerdict: string;
+  nodes: Array<{
+    id: string;
+    ordinal: number;
+    target: unknown;
+    html: string;
+    failureSummary: string | null;
+    framePath: unknown;
+    frameUrl: string | null;
+    frameOriginRelation: string | null;
+    targetHash: string | null;
+    effectiveImpact: string | null;
+    severityWeight: number | null;
+    severitySource: string | null;
+  }>;
   localization?: { zhName: string; zhFix: string; translationStatus: string; fallback: boolean };
 };
 
@@ -195,6 +209,33 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
                         ? "中文已人工校对"
                         : "中文草稿/待人工校对；以 axe 原文为准"}
                     </small>
+                    <details style={{ marginTop: 8 }}>
+                      <summary>查看节点定位与清理片段（{item.nodes.length}）</summary>
+                      {item.nodes.length === 0 ? (
+                        <p className="muted">此结果没有可展示的节点证据。</p>
+                      ) : (
+                        item.nodes.map((node) => (
+                          <div key={node.id} style={{ marginTop: 8 }}>
+                            <strong>节点 {node.ordinal + 1}</strong>
+                            <div>
+                              <code>{JSON.stringify(node.target)}</code>
+                              {node.targetHash ? (
+                                <small> · target hash {node.targetHash}</small>
+                              ) : null}
+                            </div>
+                            {node.failureSummary ? <div>{node.failureSummary}</div> : null}
+                            {node.frameOriginRelation && node.frameOriginRelation !== "top" ? (
+                              <div className="muted">
+                                frame：{node.frameOriginRelation} {node.frameUrl ?? ""}
+                              </div>
+                            ) : null}
+                            <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                              {node.html}
+                            </pre>
+                          </div>
+                        ))
+                      )}
+                    </details>
                   </td>
                 </tr>
               ))}

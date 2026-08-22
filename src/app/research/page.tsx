@@ -135,6 +135,7 @@ export default function ResearchPage() {
             <caption className="sr-only">已发布网站研究汇总</caption>
             <thead>
               <tr>
+                <th scope="col">排名</th>
                 <th scope="col">网站</th>
                 <th scope="col">类别</th>
                 <th scope="col">总分</th>
@@ -145,8 +146,9 @@ export default function ResearchPage() {
               </tr>
             </thead>
             <tbody>
-              {value.items.map((item: any) => (
+              {value.items.map((item: any, index: number) => (
                 <tr key={item.runId}>
+                  <td>{item.overall === null ? "N/A" : index + 1}</td>
                   <td>{item.name}</td>
                   <td>{item.category ?? "未分类"}</td>
                   <td>{item.overall === null ? "N/A" : item.overall}</td>
@@ -178,13 +180,25 @@ export default function ResearchPage() {
                 {summary.distribution.q1 ?? "N/A"}–{summary.distribution.q3 ?? "N/A"}；范围{" "}
                 {summary.distribution.min ?? "N/A"}–{summary.distribution.max ?? "N/A"}。
               </p>
+              {renderBars(
+                summary.distribution.histogram.map((item: any) => [item.label, item.count]),
+                {},
+              )}
               <table>
-                <caption className="sr-only">总分分布统计数据表</caption>
+                <caption className="sr-only">总分分布统计与直方图数据表</caption>
                 <tbody>
-                  {Object.entries(summary.distribution).map(([name, count]) => (
-                    <tr key={name}>
-                      <th scope="row">{name}</th>
-                      <td>{String(count ?? "N/A")}</td>
+                  {Object.entries(summary.distribution).map(([name, count]) =>
+                    name === "histogram" ? null : (
+                      <tr key={name}>
+                        <th scope="row">{name}</th>
+                        <td>{String(count ?? "N/A")}</td>
+                      </tr>
+                    ),
+                  )}
+                  {summary.distribution.histogram.map((item: any) => (
+                    <tr key={item.label}>
+                      <th scope="row">{item.label}</th>
+                      <td>{item.count}</td>
                     </tr>
                   ))}
                 </tbody>

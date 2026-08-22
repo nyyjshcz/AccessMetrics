@@ -45,4 +45,6 @@
 
 | 2026-08-22 | 计划展示字段与研究汇总审计后的总门 | AI | 待负责人 | 当前自动化基线（未发布） | `pnpm typecheck`、`pnpm lint`、`pnpm test:integration`（6 files/19 tests）、`pnpm build`、`pnpm test:e2e`（3 passed）、`pnpm test:all`（scoring 5 files/22 tests、全量 11 files/41 tests、Python 分析、Next build、E2E 3 passed） | 通过；结果/问题/报告增加节点证据、严重度与原则分布，研究 API/UI 增加有效版本基线、四原则分数、分布/类别/常见规则统计及可访问数据表；历史缺失版本三元组被排除，新增 E2E 断言覆盖研究总览与代表性节点 | R1–R5 真人 receipt、真实研究站点/许可/标准、生产服务器/域名/密钥/镜像与渲染器 digest 仍需外部输入；Docker/文档渲染器未在当前环境运行 |
 
+| 2026-08-22 | 计划展示字段与研究汇总最终复跑 | AI | 待负责人 | 当前自动化基线（未发布） | 捆绑 Node 24.19.0、pnpm 11.19.0、Python 3.12.13 下 `pnpm test:all`：依赖预检、静态门、迁移/数据库/egress/契约/catalog/ops/hygiene/handoff、integration 6 files/19 tests、scoring 5 files/22 tests、全量 11 files/41 tests、Python 分析、Next build、E2E 3 passed；`pnpm project:status` | 通过；扫描任务显示开始/结束/耗时/当前页面，研究总览增加稳定排名与 10 档总分直方图，PDF 统一 A4 页眉页脚；项目状态仍为 `AUTOMATED_IMPLEMENTATION_COMPLETE / WAITING_EXTERNAL_INPUT`，未伪造 R1–R5 | R1–R5 真人 receipt、真实研究站点/许可/标准、生产服务器/域名/密钥/镜像与渲染器 digest 仍需外部输入；Docker/文档渲染器未在当前环境运行 |
+
 真人确认只能由对应 reviewer 会话提交；AI 不得把本表预填行改成“本人已复核”。

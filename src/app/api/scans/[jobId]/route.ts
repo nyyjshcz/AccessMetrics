@@ -27,7 +27,18 @@ export async function GET(_request: Request, context: { params: Promise<{ jobId:
         "SELECT id,status,published FROM scan_runs WHERE job_id=? ORDER BY started_at DESC LIMIT 1",
       )
       .get(jobId) as { id: string; status: string; published: number } | undefined;
-    return NextResponse.json({ job, pageCounts: counts, progress, run: run ?? null });
+    const currentPage = getDb()
+      .prepare(
+        "SELECT p.id,p.canonical_url,jp.status FROM job_pages jp JOIN pages p ON p.id=jp.page_id WHERE jp.job_id=? AND jp.status='scanning' ORDER BY jp.discovery_order LIMIT 1",
+      )
+      .get(jobId) as { id: string; canonical_url: string; status: string } | undefined;
+    return NextResponse.json({
+      job,
+      pageCounts: counts,
+      progress,
+      currentPage: currentPage ?? null,
+      run: run ?? null,
+    });
   } catch (error) {
     return NextResponse.json(errorEnvelope(error), {
       status: error instanceof AppError ? error.status : 500,

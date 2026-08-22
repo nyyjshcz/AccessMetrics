@@ -137,6 +137,7 @@ test("admin, reviewers, publishing and exports complete the fixture flow", async
   expect(scanResponse.ok()).toBeTruthy();
   await expect(page).toHaveURL(/\/admin\/scans\/job_/);
   await expect(page.getByRole("heading", { name: "扫描任务" })).toBeVisible();
+  await expect(page.getByText(/开始：/)).toBeVisible();
   let jobStatus = "queued";
   for (let attempt = 0; attempt < 5 && jobStatus !== "completed"; attempt++) {
     await runWorkerOnce();

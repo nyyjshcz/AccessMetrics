@@ -24,7 +24,16 @@ export async function GET(_request: Request, context: { params: Promise<{ runId:
       await page.evaluate(async () => {
         if (document.fonts?.ready) await document.fonts.ready;
       });
-      const bytes = await page.pdf({ format: "A4", printBackground: true });
+      const bytes = await page.pdf({
+        format: "A4",
+        printBackground: true,
+        displayHeaderFooter: true,
+        headerTemplate:
+          '<div style="font-size:8px;width:100%;text-align:center;color:#526173">AccessCheck Lishui · 自动检查报告</div>',
+        footerTemplate:
+          '<div style="font-size:8px;width:100%;text-align:center;color:#526173">第 <span class="pageNumber"></span> / <span class="totalPages"></span> 页</div>',
+        margin: { top: "36px", bottom: "36px", left: "20px", right: "20px" },
+      });
       return new NextResponse(bytes as unknown as BodyInit, {
         headers: {
           "content-type": "application/pdf",

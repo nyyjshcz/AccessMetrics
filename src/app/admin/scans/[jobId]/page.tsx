@@ -36,6 +36,12 @@ export default function JobPage({ params }: { params: Promise<{ jobId: string }>
   }
   if (error) return <p className="error">{error}</p>;
   if (!data) return <p>正在读取任务…</p>;
+  const startedAt = data.job.started_at ?? data.job.created_at;
+  const finishedAt = data.job.finished_at;
+  const elapsedMs = startedAt
+    ? new Date(finishedAt ?? new Date().toISOString()).getTime() - new Date(startedAt).getTime()
+    : null;
+  const elapsed = elapsedMs === null ? "N/A" : `${Math.max(0, Math.round(elapsedMs / 1000))} 秒`;
   return (
     <section>
       <div className="card">
@@ -44,6 +50,13 @@ export default function JobPage({ params }: { params: Promise<{ jobId: string }>
           <span className="pill">{data.job.status}</span> {data.job.origin}
         </p>
         <p className="muted">任务 ID：{data.job.id}</p>
+        <p>
+          开始：{startedAt ?? "尚未开始"}；结束：{finishedAt ?? "进行中"}；耗时：{elapsed}
+        </p>
+        <p>
+          当前页面：
+          {data.currentPage?.canonical_url ?? (data.job.status === "queued" ? "等待 Worker" : "无")}
+        </p>
         {!["completed", "completed_with_errors", "failed", "cancelled"].includes(
           data.job.status,
         ) && (

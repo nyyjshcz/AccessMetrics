@@ -135,9 +135,21 @@ export async function GET(request: Request) {
         principles: runPrinciples,
       };
     });
+    enriched.sort((left, right) => {
+      if (left.overall === null && right.overall !== null) return 1;
+      if (left.overall !== null && right.overall === null) return -1;
+      if (left.overall !== null && right.overall !== null && left.overall !== right.overall)
+        return right.overall - left.overall;
+      return left.name.localeCompare(right.name);
+    });
     const overallValues = enriched
       .map((item) => item.overall)
       .filter((value): value is number => typeof value === "number");
+    const histogram = Array.from({ length: 10 }, (_, index) => ({
+      label: `${index * 10}–${index === 9 ? 100 : index * 10 + 9}`,
+      count: 0,
+    }));
+    for (const score of overallValues) histogram[Math.min(9, Math.floor(score / 10))].count += 1;
     const categoryGroups = new Map<string, { count: number; values: number[] }>();
     for (const item of enriched) {
       const key = item.category ?? "未分类";
@@ -164,6 +176,7 @@ export async function GET(request: Request) {
           q3: round(quantile(overallValues, 0.75)),
           min: overallValues.length ? Math.min(...overallValues) : null,
           max: overallValues.length ? Math.max(...overallValues) : null,
+          histogram,
         },
         severity,
         principles,

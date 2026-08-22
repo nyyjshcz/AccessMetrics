@@ -84,6 +84,17 @@ describe("R5 server-scored handoff chain", () => {
     expect(
       fs.existsSync(path.join(root, "private", "gates", "R5", "r5-artifact-bundle.json")),
     ).toBe(true);
+    const bundle = JSON.parse(
+      fs.readFileSync(path.join(root, "private", "gates", "R5", "r5-artifact-bundle.json"), "utf8"),
+    ) as { artifactHashes: string[] };
+    expect(bundle.artifactHashes).toHaveLength(6);
+    expect(
+      bundle.artifactHashes.every((item) =>
+        /^artifacts\/(computer_lead|math_lead)\/(exercise|understanding|handoff)\.r1\.json:[a-f0-9]{64}$/.test(
+          item,
+        ),
+      ),
+    ).toBe(true);
     const revisedItems = items.map((item) => ({ ...item, note: `${item.note} 修订说明` }));
     const revised = r5.submitHandoff("computer_reviewer", {
       sessionId: computer.sessionId,
@@ -141,5 +152,39 @@ describe("R5 server-scored handoff chain", () => {
     expect(result.criticalPassed).toBe(false);
     expect(result.totalScore).toBeLessThan(80);
     expect(result.questionSetHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("keeps the plan's normalized outbox schema and archives reused canonical paths", () => {
+    const columns = (
+      db.getDb().prepare("PRAGMA table_info(r5_artifact_outbox)").all() as any[]
+    ).map((row) => row.name);
+    expect(columns).toEqual([
+      "id",
+      "artifact_kind",
+      "artifact_id",
+      "target_relpath",
+      "canonical_json",
+      "expected_file_hash",
+      "status",
+      "attempt_count",
+      "last_error",
+      "created_at",
+      "written_at",
+    ]);
+    expect(columns).not.toContain("session_id");
+    expect(columns).not.toContain("artifact_json");
+    const rows = db
+      .getDb()
+      .prepare("SELECT artifact_kind,target_relpath,canonical_json,status FROM r5_artifact_outbox")
+      .all() as any[];
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => ["owner_artifact", "bundle"].includes(row.artifact_kind))).toBe(
+      true,
+    );
+    expect(rows.every((row) => typeof row.canonical_json === "string")).toBe(true);
+    expect(
+      rows.every((row) => /^gates\/R5\/(artifacts|bundles)\/.+\.json$/.test(row.target_relpath)),
+    ).toBe(true);
+    expect(fs.existsSync(path.join(root, "private", "gates", "R5", "archive"))).toBe(true);
   });
 });

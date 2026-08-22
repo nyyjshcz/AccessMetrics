@@ -426,7 +426,7 @@ function recoverR5Artifacts() {
   try {
     rows = getDb()
       .prepare(
-        "SELECT id,target_relpath,artifact_json,expected_file_hash,status FROM r5_artifact_outbox WHERE status='pending' ORDER BY created_at",
+        "SELECT id,target_relpath,canonical_json,expected_file_hash,status FROM r5_artifact_outbox WHERE status='pending' ORDER BY created_at",
       )
       .all() as any[];
   } catch {
@@ -441,7 +441,7 @@ function recoverR5Artifacts() {
           throw new Error("pending artifact bytes differ from expected hash");
       } else {
         const temporary = `${target}.recover-${process.pid}-${Date.now()}`;
-        fs.writeFileSync(temporary, row.artifact_json, { mode: 0o600, flag: "wx" });
+        fs.writeFileSync(temporary, row.canonical_json, { mode: 0o600, flag: "wx" });
         fs.renameSync(temporary, target);
       }
       transaction((db) =>
@@ -479,7 +479,11 @@ function writeArtifact(
   const legacyDirectory = path.join(config.privateEvidenceRoot, "r5", session.role, session.id);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   fs.mkdirSync(legacyDirectory, { recursive: true, mode: 0o700 });
-  const target = path.join(directory, `${session.id}.${filename}`);
+  // The canonical evidence path is deliberately session-independent.  A new
+  // rcCommit/revision must not silently overwrite an older role artifact, so
+  // an existing artifact owned by a different session is moved to a private,
+  // commit-addressed archive before the new bytes are installed.
+  const target = path.join(directory, filename);
   const alias = path.join(legacyDirectory, aliasFilename);
   const column = `${kind}_json`;
   const hashColumn = `${kind}_hash`;
@@ -500,7 +504,7 @@ function writeArtifact(
         throw new AppError("R5_ARTIFACT_TAMPERED", `${aliasFilename} 文件已被外部修改`, 409);
       return {
         logicalId: path
-          .relative(path.join(config.privateEvidenceRoot, "r5"), currentTarget)
+          .relative(path.join(config.privateEvidenceRoot, "gates", "R5"), currentTarget)
           .replaceAll("\\", "/"),
         sha256: hash,
       };
@@ -509,10 +513,43 @@ function writeArtifact(
     // forces both roles to finalize the same bound commit again.
     invalidateBundle(session.bound_commit);
   }
+  let archived: { sessionId: string; archive: string; relative: string } | null = null;
   if (fs.existsSync(target)) {
     const onDiskHash = sha256(fs.readFileSync(target));
-    if (onDiskHash !== hash)
-      throw new AppError("R5_ARTIFACT_TAMPERED", `${filename} 文件已被外部修改`, 409);
+    if (onDiskHash !== hash) {
+      const previous = getDb()
+        .prepare(
+          `SELECT id,bound_commit,${pathColumn} AS artifact_path,${hashColumn} AS artifact_hash
+           FROM r5_sessions WHERE role=? AND ${pathColumn}=? AND id<>? ORDER BY updated_at DESC LIMIT 1`,
+        )
+        .get(
+          session.role,
+          path.relative(config.privateEvidenceRoot, target).replaceAll("\\", "/"),
+          session.id,
+        ) as
+        | { id: string; bound_commit: string; artifact_path: string; artifact_hash: string }
+        | undefined;
+      if (!previous || previous.artifact_hash !== onDiskHash)
+        throw new AppError("R5_ARTIFACT_TAMPERED", `${filename} 文件已被外部修改`, 409);
+      const archive = privateChild(
+        "gates",
+        "R5",
+        "archive",
+        previous.bound_commit,
+        session.role,
+        filename,
+      );
+      fs.mkdirSync(path.dirname(archive), { recursive: true, mode: 0o700 });
+      if (fs.existsSync(archive) && sha256(fs.readFileSync(archive)) !== onDiskHash)
+        throw new AppError("R5_ARTIFACT_TAMPERED", `${filename} 历史归档已被外部修改`, 409);
+      if (!fs.existsSync(archive)) fs.renameSync(target, archive);
+      else fs.unlinkSync(target);
+      archived = {
+        sessionId: previous.id,
+        archive,
+        relative: path.relative(config.privateEvidenceRoot, archive).replaceAll("\\", "/"),
+      };
+    }
   }
   if (fs.existsSync(alias) && previousHash && sha256(fs.readFileSync(alias)) !== previousHash)
     throw new AppError("R5_ARTIFACT_TAMPERED", `${aliasFilename} 文件已被外部修改`, 409);
@@ -520,44 +557,56 @@ function writeArtifact(
   const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
   fs.writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });
   let normalizedArtifactId: string | null = null;
-  transaction((db) => {
-    db.prepare(
-      `UPDATE r5_sessions SET ${column}=?,${hashColumn}=?,${pathColumn}=?,updated_at=? WHERE id=?`,
-    ).run(bytes, hash, relativePath, now(), session.id);
-    normalizedArtifactId = persistNormalizedOwnerArtifact(
-      db,
-      session,
-      kind,
-      value,
-      bytes,
-      hash,
-      revision,
-    );
-    db.prepare(
-      "INSERT INTO r5_artifact_outbox(id,session_id,kind,target_relpath,artifact_json,expected_file_hash,status,created_at,artifact_kind,artifact_id,canonical_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-    ).run(
-      id("r5-outbox"),
-      session.id,
-      kind,
-      relativePath,
-      bytes,
-      hash,
-      "pending",
-      now(),
-      "owner_artifact",
-      normalizedArtifactId ?? session.id,
-      bytes,
-    );
-  });
+  const outboxId = id("r5-outbox");
+  try {
+    transaction((db) => {
+      if (archived)
+        db.prepare(`UPDATE r5_sessions SET ${pathColumn}=?,updated_at=? WHERE id=?`).run(
+          archived.relative,
+          now(),
+          archived.sessionId,
+        );
+      db.prepare(
+        `UPDATE r5_sessions SET ${column}=?,${hashColumn}=?,${pathColumn}=?,updated_at=? WHERE id=?`,
+      ).run(bytes, hash, relativePath, now(), session.id);
+      normalizedArtifactId = persistNormalizedOwnerArtifact(
+        db,
+        session,
+        kind,
+        value,
+        bytes,
+        hash,
+        revision,
+      );
+      db.prepare(
+        "INSERT INTO r5_artifact_outbox(id,artifact_kind,artifact_id,target_relpath,canonical_json,expected_file_hash,status,created_at) VALUES (?,?,?,?,?,?,?,?)",
+      ).run(
+        outboxId,
+        "owner_artifact",
+        normalizedArtifactId ?? session.id,
+        relativePath,
+        bytes,
+        hash,
+        "pending",
+        now(),
+      );
+    });
+  } catch (error) {
+    // Keep a failed transaction recoverable: the old canonical path must be
+    // restored if its metadata update did not commit.
+    if (archived && !fs.existsSync(target) && fs.existsSync(archived.archive))
+      fs.renameSync(archived.archive, target);
+    throw error;
+  }
   try {
     fs.renameSync(temporary, target);
     fs.writeFileSync(alias, bytes, { mode: 0o600 });
     transaction((db) =>
       db
         .prepare(
-          "UPDATE r5_artifact_outbox SET status='written',written_at=?,attempt_count=attempt_count+1 WHERE target_relpath=?",
+          "UPDATE r5_artifact_outbox SET status='written',written_at=?,attempt_count=attempt_count+1 WHERE id=?",
         )
-        .run(now(), relativePath),
+        .run(now(), outboxId),
     );
   } catch (error) {
     throw new AppError(
@@ -566,7 +615,7 @@ function writeArtifact(
       503,
     );
   }
-  return { logicalId: `${session.role}/${session.id}/${filename}`, sha256: hash };
+  return { logicalId: `gates/R5/artifacts/${session.role}/${filename}`, sha256: hash };
 }
 
 function parseJsonObject(body: unknown): Record<string, unknown> {
@@ -811,7 +860,7 @@ export function finalizeExercise(roleName: string, body: unknown) {
       status: "passed",
       artifact: {
         logicalId: path
-          .relative(path.join(config.privateEvidenceRoot, "r5"), file)
+          .relative(path.join(config.privateEvidenceRoot, "gates", "R5"), file)
           .replaceAll("\\", "/"),
         sha256: session.exercise_hash,
       },
@@ -1021,7 +1070,7 @@ export function finalizeUnderstanding(roleName: string, body: unknown) {
       status: "passed",
       artifact: {
         logicalId: path
-          .relative(path.join(config.privateEvidenceRoot, "r5"), file)
+          .relative(path.join(config.privateEvidenceRoot, "gates", "R5"), file)
           .replaceAll("\\", "/"),
         sha256: session.understanding_hash,
       },
@@ -1274,7 +1323,7 @@ function buildBundle(boundCommit: string) {
       if (sha256(fs.readFileSync(file)) !== hash)
         throw new AppError("R5_ARTIFACT_TAMPERED", `${kind}.json hash 不一致`, 409);
       const logicalId = path
-        .relative(path.join(config.privateEvidenceRoot, "r5"), file)
+        .relative(path.join(config.privateEvidenceRoot, "gates", "R5"), file)
         .replaceAll("\\", "/");
       artifactHashes.push(`${logicalId}:${hash}`);
     }
@@ -1344,20 +1393,8 @@ function buildBundle(boundCommit: string) {
         // The legacy `kind` column has a restrictive check; artifact_kind is
         // the authoritative normalized discriminator and remains `bundle`.
         db.prepare(
-          "INSERT INTO r5_artifact_outbox(id,session_id,kind,target_relpath,artifact_json,expected_file_hash,status,created_at,artifact_kind,artifact_id,canonical_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        ).run(
-          bundleOutboxId,
-          sessions[0].id,
-          "handoff",
-          rel,
-          bytes,
-          sha256(bytes),
-          "pending",
-          now(),
-          "bundle",
-          bundleId,
-          bytes,
-        );
+          "INSERT INTO r5_artifact_outbox(id,artifact_kind,artifact_id,target_relpath,canonical_json,expected_file_hash,status,created_at) VALUES (?,?,?,?,?,?,?,?)",
+        ).run(bundleOutboxId, "bundle", bundleId, rel, bytes, sha256(bytes), "pending", now());
       }
     });
   }
@@ -1494,6 +1531,7 @@ export function r5GateArtifacts(boundCommit: string) {
     ["math_lead", "understanding", bundle.math_understanding_hash],
     ["math_lead", "handoff", bundle.math_handoff_hash],
   ] as const;
+  const expectedBundleArtifacts: string[] = [];
   for (const [role, kind, hash] of expected) {
     const artifact = getDb()
       .prepare(
@@ -1511,6 +1549,10 @@ export function r5GateArtifacts(boundCommit: string) {
     const file = safePrivateRelative(artifactPath);
     if (!fs.existsSync(file) || sha256(fs.readFileSync(file)) !== hash)
       throw new AppError("R5_ARTIFACT_TAMPERED", `${role}/${kind} artifact 文件 hash 不匹配`, 409);
+    const logicalId = path
+      .relative(path.join(config.privateEvidenceRoot, "gates", "R5"), file)
+      .replaceAll("\\", "/");
+    expectedBundleArtifacts.push(`${logicalId}:${hash}`);
   }
   const bundleFile = canonicalBundlePath(bundle.bundle_hash);
   let parsedBundle: any;
@@ -1522,6 +1564,9 @@ export function r5GateArtifacts(boundCommit: string) {
   if (
     !parsedBundle ||
     parsedBundle.bundleHash !== bundle.bundle_hash ||
+    !Array.isArray(parsedBundle.artifactHashes) ||
+    canonicalize([...parsedBundle.artifactHashes].sort()) !==
+      canonicalize(expectedBundleArtifacts.sort()) ||
     sha256(
       canonicalize({
         schemaVersion: parsedBundle.schemaVersion,
@@ -1531,8 +1576,13 @@ export function r5GateArtifacts(boundCommit: string) {
     ) !== bundle.bundle_hash
   )
     throw new AppError("R5_BUNDLE_INVALID", "R5 bundle 文件缺失或 hash 不匹配", 409);
-  return expected.map(([role, kind, hash]) => ({
-    logicalId: `R5/${role}/${kind}`,
-    sha256: hash,
-  }));
+  return expected.map(([role, kind, hash]) => {
+    const match = expectedBundleArtifacts.find(
+      (artifact) => artifact.endsWith(`:${hash}`) && artifact.includes(`/${role}/`),
+    );
+    return {
+      logicalId: match?.slice(0, -65) ?? `artifacts/${role}/${kind}.json`,
+      sha256: hash,
+    };
+  });
 }

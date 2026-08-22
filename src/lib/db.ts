@@ -63,6 +63,7 @@ export function migrate() {
     migration022,
     migration023,
     migration024,
+    migration025,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -841,6 +842,50 @@ function migration024(db: Database.Database) {
         artifact_id=COALESCE(artifact_id,session_id),
         canonical_json=COALESCE(canonical_json,artifact_json)
     WHERE artifact_kind IS NULL OR canonical_json IS NULL;
+  `);
+}
+
+function migration025(db: Database.Database) {
+  // 024 added the normalized columns to the compatibility outbox. Rebuild it
+  // once so the production contract is the plan's polymorphic artifact/bundle
+  // outbox rather than the legacy session/kind read-model.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS r5_artifact_outbox_v25 (
+      id TEXT PRIMARY KEY,
+      artifact_kind TEXT NOT NULL CHECK(artifact_kind IN ('owner_artifact','bundle')),
+      artifact_id TEXT NOT NULL,
+      target_relpath TEXT NOT NULL,
+      canonical_json TEXT NOT NULL,
+      expected_file_hash TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','written','failed')),
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      written_at TEXT
+    );
+    INSERT INTO r5_artifact_outbox_v25(
+      id,artifact_kind,artifact_id,target_relpath,canonical_json,expected_file_hash,
+      status,attempt_count,last_error,created_at,written_at
+    )
+    SELECT
+      id,
+      COALESCE(artifact_kind,CASE WHEN kind IN ('exercise','understanding','handoff') THEN 'owner_artifact' ELSE 'bundle' END),
+      COALESCE(artifact_id,session_id),
+      target_relpath,
+      COALESCE(canonical_json,artifact_json),
+      expected_file_hash,
+      status,
+      attempt_count,
+      last_error,
+      created_at,
+      written_at
+    FROM r5_artifact_outbox;
+    DROP TABLE r5_artifact_outbox;
+    ALTER TABLE r5_artifact_outbox_v25 RENAME TO r5_artifact_outbox;
+    CREATE INDEX IF NOT EXISTS idx_r5_artifact_outbox_status_only
+      ON r5_artifact_outbox(status);
+    CREATE INDEX IF NOT EXISTS idx_r5_artifact_outbox_status
+      ON r5_artifact_outbox(status,created_at);
   `);
 }
 

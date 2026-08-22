@@ -289,7 +289,7 @@ export function verifyApprovedGate(root: string, gate: Gate, databasePathOverrid
     artifactHashes.some(
       (value) =>
         typeof value !== "string" ||
-        !/^(computer_lead|math_lead)\/[^/]+\/(exercise|understanding|handoff)\.r[1-9][0-9]*\.json:[a-f0-9]{64}$/.test(
+        !/^artifacts\/(computer_lead|math_lead)\/(exercise|understanding|handoff)\.r[1-9][0-9]*\.json:[a-f0-9]{64}$/.test(
           value,
         ),
     ) ||

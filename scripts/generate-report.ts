@@ -27,6 +27,12 @@ type ReportData = {
 
 type JsonRecord = Record<string, unknown>;
 
+const REPORT_DOCUMENT_LANGUAGE = {
+  value: "zh-CN",
+  eastAsia: "zh-CN",
+  bidirectional: "zh-CN",
+} as const;
+
 function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
 }
@@ -521,6 +527,13 @@ async function main() {
   };
   if (options.docx !== undefined) {
     const doc = new Document({
+      styles: {
+        default: {
+          document: {
+            run: { language: REPORT_DOCUMENT_LANGUAGE },
+          },
+        },
+      },
       sections: [
         {
           children: markdownToDocx(markdown, output),

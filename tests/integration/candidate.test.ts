@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { strFromU8, unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 import { canonicalize, sha256 } from "../../src/lib/canonical";
 
@@ -303,7 +304,10 @@ describe("candidate deliverables", () => {
       ])
         expect(markdown).toContain(heading);
       expect(markdown).toContain("> REVIEW CANDIDATE — NOT FINAL");
-      expect(fs.statSync(path.join(reportRoot, "research-report.docx")).size).toBeGreaterThan(1000);
+      const docxPath = path.join(reportRoot, "research-report.docx");
+      expect(fs.statSync(docxPath).size).toBeGreaterThan(1000);
+      const docxArchive = unzipSync(fs.readFileSync(docxPath));
+      expect(strFromU8(docxArchive["word/styles.xml"])).toContain('w:eastAsia="zh-CN"');
       expect(fs.readFileSync(path.join(reportRoot, "charts", "site-scores.json"))).toEqual(
         chartBytes,
       );

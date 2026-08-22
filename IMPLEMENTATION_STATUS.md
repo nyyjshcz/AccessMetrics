@@ -46,6 +46,7 @@
 - 成果渲染进一步收敛为同一 report-data 对应的 Markdown/打印 HTML 生成正式 PDF，DOCX→PDF/PNG 仅作为独立视觉 QA 证据；DOCX 图表带替代文字、标题和真实超链接，正式 PDF 的 hash 写回报告 manifest。
 - README 已补齐成果链的可执行参数和边界：`deliverables:build` 原子生成两份报告，`deliverables:render` 以同一 report-data 生成正式打印 PDF、把 DOCX 转换结果隔离到 `.qa-render/`，缺少 LibreOffice/Poppler 时 fail-closed，`document-render-qa.json` 的视觉状态仍必须等待人工逐页复核。
 - 成果/研究导出 CLI 已统一忽略 pnpm 传入的参数分隔符 `--`；计划中可复制的 `pnpm ... -- --参数` 现在会真实读取参数，缺少固定渲染器仍在参数解析后 fail-closed。
+- 报告 DOCX 生成器已把 `zh-CN` 写入默认 run 语言（含 East Asia 与双向文本属性），候选报告集成测试会解包 `styles.xml` 验证该属性；标题、表格表头和图表替代文字检查保持通过。
 - 本次按计划逐项复核了步骤 1–19 的自动化命令、交付物和质量证据；`release:* --help`/`publication:preflight --help` 均可启动，`pnpm project:resume` 在缺少 R1–R5 真人证据时按设计以退出码 2 保持等待，未生成伪造正式成果。
 - 正式抽样请求现在必须绑定并由服务端复核 `sourceManifestHash`；formal/ad-hoc 审核修订要求 `expectedRevision` 与 `supersedesReviewId`，裁决批准要求相同 `resolutionHash`/revision，旧版本不能静默覆盖。
 - 成果 candidate/verify/release 链现在要求固定的 report-data、两份最终报告、图表/表格 hash、R1–R5 数据库绑定 evidence 和分别重算的 `r4EvidenceBundleHash`/`fullGateBundleHash`；缺任何输入均失败，不再把可选参数或文件存在当作完成证明。
@@ -90,6 +91,8 @@ pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部�
 本轮 R5 outbox/path 收敛后的完整质量门再次通过：迁移 1–25、integration 6 files/19 tests、scoring 5 files/22 tests、全量 11 files/41 tests、Python 分析、Next build、3 个 Playwright E2E；新增测试确认 outbox 仅含计划字段、固定 artifact 路径和跨 commit 归档行为。
 
 在此基础上新增计划 CLI 参数分隔符回归测试后，完整质量门再次通过：迁移 1–25、integration 7 files/20 tests、scoring 5 files/22 tests、全量 11 files/42 tests、Python 分析、Next build、3 个 Playwright E2E；新增测试确认原样传入 `pnpm ... -- --参数` 会进入真实业务门，而不是被误判为缺少参数。
+
+在此基础上补齐 DOCX `zh-CN` 默认语言属性后，完整质量门再次通过：迁移 1–25、integration 7 files/20 tests、scoring 5 files/22 tests、全量 12 files/43 tests、Python 分析、Next build、3 个 Playwright E2E；候选报告结构测试同时验证 DOCX 语言属性。
 
 本轮候选链局部质量门另外通过：
 

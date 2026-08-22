@@ -164,6 +164,21 @@ describe("database and evidence chain", () => {
         }
       ).weighted_defects,
     ).toBe(4);
+    const nodeId = (db.prepare("SELECT id FROM result_nodes LIMIT 1").get() as { id: string }).id;
+    db.prepare(
+      "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,is_current,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ).run(
+      "adhoc-core-review",
+      nodeId,
+      null,
+      "ad_hoc",
+      "computer_lead",
+      "uncertain",
+      "fixture",
+      1,
+      1,
+      new Date().toISOString(),
+    );
     const exported = exportModule.exportRun(run.id);
     expect(fs.existsSync(path.join(exported.target, "manifest.json"))).toBe(true);
     const runExport = JSON.parse(fs.readFileSync(path.join(exported.target, "scan.json"), "utf8"));
@@ -178,6 +193,14 @@ describe("database and evidence chain", () => {
       reviewRefs: expect.any(Array),
       provenance: expect.any(Object),
     });
+    expect(runExport.reviewRefs).toEqual([
+      {
+        resultNodeId: nodeId,
+        finalVerdict: "uncertain",
+        resolutionSource: "ad_hoc",
+        batchRef: null,
+      },
+    ]);
     const report = privacy.scanPublicationDirectory(exported.target, exported.exportId);
     expect(report.passed).toBe(true);
     expect(zip.zipDirectory(exported.target).byteLength).toBeGreaterThan(50);

@@ -55,27 +55,94 @@ export function exportRun(runId: string) {
     .prepare("SELECT * FROM page_scores WHERE run_id=? ORDER BY page_id")
     .all(runId) as any[];
   const siteScore = getDb().prepare("SELECT * FROM site_scores WHERE run_id=?").get(runId) as any;
-  const reviewRefs = getDb()
+  const reviewRows = getDb()
     .prepare(
-      `SELECT n.id AS result_node_id,mr.verdict AS final_verdict,
-              CASE WHEN mr.review_context='formal' THEN 'agreement' ELSE 'ad_hoc' END AS resolution_source,
-              CASE WHEN mr.sample_id IS NULL THEN NULL ELSE json_object(
-                'batchId',mrs.batch_id,'sourceExportId',mrb.source_export_id,
-                'sourceManifestHash',mrb.source_manifest_hash) END AS batch_ref
-         FROM result_nodes n
+      `SELECT mr.result_node_id,mr.sample_id,mr.review_context,mr.reviewer,mr.verdict,
+              mrs.batch_id,mrb.status AS batch_status,mrb.source_export_id,mrb.source_manifest_hash
+         FROM manual_reviews mr
+         JOIN result_nodes n ON n.id=mr.result_node_id
          JOIN rule_results rr ON rr.id=n.rule_result_id
-         JOIN manual_reviews mr ON mr.result_node_id=n.id AND mr.is_current=1
          LEFT JOIN manual_review_samples mrs ON mrs.id=mr.sample_id
          LEFT JOIN manual_review_batches mrb ON mrb.id=mrs.batch_id
-        WHERE rr.run_id=? ORDER BY n.id`,
+        WHERE rr.run_id=? AND mr.is_current=1
+        ORDER BY mr.result_node_id,mr.review_context,mr.reviewer`,
     )
-    .all(runId)
-    .map((row: any) => ({
-      resultNodeId: row.result_node_id,
-      finalVerdict: row.final_verdict,
-      resolutionSource: row.resolution_source,
-      batchRef: row.batch_ref ? JSON.parse(row.batch_ref) : null,
-    }));
+    .all(runId) as Array<{
+    result_node_id: string;
+    sample_id: string | null;
+    review_context: string;
+    reviewer: string;
+    verdict: string;
+    batch_id: string | null;
+    batch_status: string | null;
+    source_export_id: string | null;
+    source_manifest_hash: string | null;
+  }>;
+  const reviewRefs: Array<Record<string, unknown>> = [];
+  const formalGroups = new Map<string, typeof reviewRows>();
+  for (const row of reviewRows) {
+    if (row.review_context === "formal" && row.sample_id) {
+      const group = formalGroups.get(row.sample_id) ?? [];
+      group.push(row);
+      formalGroups.set(row.sample_id, group);
+      continue;
+    }
+    if (row.review_context === "ad_hoc")
+      reviewRefs.push({
+        resultNodeId: row.result_node_id,
+        finalVerdict: row.verdict,
+        resolutionSource: "ad_hoc",
+        batchRef: null,
+      });
+  }
+  for (const rows of formalGroups.values()) {
+    const first = rows[0];
+    const batchRef = first.batch_id
+      ? {
+          batchId: first.batch_id,
+          sourceExportId: first.source_export_id,
+          sourceManifestHash: first.source_manifest_hash,
+          ...(first.batch_status &&
+          !["completed", "completed_no_eligible_items"].includes(first.batch_status)
+            ? { status: first.batch_status }
+            : {}),
+        }
+      : null;
+    if (
+      !first.batch_status ||
+      !["completed", "completed_no_eligible_items"].includes(first.batch_status)
+    ) {
+      reviewRefs.push({
+        resultNodeId: first.result_node_id,
+        finalVerdict: null,
+        resolutionSource: "agreement",
+        batchRef,
+      });
+      continue;
+    }
+    const verdicts = new Set(rows.map((row) => row.verdict));
+    if (verdicts.size === 1) {
+      reviewRefs.push({
+        resultNodeId: first.result_node_id,
+        finalVerdict: first.verdict,
+        resolutionSource: "agreement",
+        batchRef,
+      });
+      continue;
+    }
+    const adjudication = getDb()
+      .prepare(
+        "SELECT adjudicated_verdict FROM manual_review_adjudications WHERE sample_id=? AND status='approved' AND is_current=1 ORDER BY revision DESC LIMIT 1",
+      )
+      .get(first.sample_id) as { adjudicated_verdict: string } | undefined;
+    reviewRefs.push({
+      resultNodeId: first.result_node_id,
+      finalVerdict: adjudication?.adjudicated_verdict ?? null,
+      resolutionSource: adjudication ? "adjudication" : "agreement",
+      batchRef,
+    });
+  }
+  reviewRefs.sort((a, b) => String(a.resultNodeId).localeCompare(String(b.resultNodeId)));
   const options = (() => {
     try {
       return JSON.parse(run.config_snapshot_json ?? "{}");

@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   Document,
+  ExternalHyperlink,
   HeadingLevel,
+  ImageRun,
   Packer,
   Paragraph,
   Table,
@@ -147,7 +149,48 @@ function copyChartAssets(data: ReportData, inputPath: string, outputRoot: string
   });
 }
 
-function markdownToDocx(markdown: string): Array<Paragraph | Table> {
+function docxInlineRuns(value: string, baseDirectory: string) {
+  const runs: Array<TextRun | ImageRun | ExternalHyperlink> = [];
+  const pattern = /!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g;
+  let cursor = 0;
+  for (const match of value.matchAll(pattern)) {
+    const start = match.index ?? 0;
+    if (start > cursor) runs.push(new TextRun(value.slice(cursor, start)));
+    if (match[1] !== undefined && match[2] !== undefined) {
+      const relative = match[2];
+      const file = path.resolve(baseDirectory, relative);
+      const extension = path.extname(file).toLowerCase();
+      if (
+        (extension === ".png" || extension === ".jpg" || extension === ".jpeg") &&
+        file.startsWith(`${path.resolve(baseDirectory)}${path.sep}`) &&
+        fs.existsSync(file)
+      ) {
+        runs.push(
+          new ImageRun({
+            type: extension === ".png" ? "png" : "jpg",
+            data: fs.readFileSync(file),
+            transformation: { width: 560, height: 260 },
+            altText: { name: match[1] || "报告图表", description: match[1] || "报告图表" },
+          }),
+        );
+      } else {
+        runs.push(new TextRun(`[${match[1]}]`));
+      }
+    } else if (match[3] !== undefined && match[4] !== undefined) {
+      runs.push(
+        new ExternalHyperlink({
+          link: match[4],
+          children: [new TextRun({ text: match[3], style: "Hyperlink" })],
+        }),
+      );
+    }
+    cursor = start + match[0].length;
+  }
+  if (cursor < value.length) runs.push(new TextRun(value.slice(cursor)));
+  return runs.length ? runs : [new TextRun(value)];
+}
+
+function markdownToDocx(markdown: string, baseDirectory: string): Array<Paragraph | Table> {
   const lines = markdown.split(/\r?\n/);
   const blocks: Array<Paragraph | Table> = [];
   let index = 0;
@@ -202,7 +245,9 @@ function markdownToDocx(markdown: string): Array<Paragraph | Table> {
                   children: row.map(
                     (value) =>
                       new TableCell({
-                        children: [new Paragraph({ children: [new TextRun(value)] })],
+                        children: [
+                          new Paragraph({ children: docxInlineRuns(value, baseDirectory) }),
+                        ],
                       }),
                   ),
                 }),
@@ -213,13 +258,20 @@ function markdownToDocx(markdown: string): Array<Paragraph | Table> {
       continue;
     }
     if (/^[-*]\s+/.test(line)) {
-      blocks.push(new Paragraph({ text: line.replace(/^[-*]\s+/, ""), bullet: { level: 0 } }));
+      blocks.push(
+        new Paragraph({
+          children: docxInlineRuns(line.replace(/^[-*]\s+/, ""), baseDirectory),
+          bullet: { level: 0 },
+        }),
+      );
     } else if (line.startsWith("> ")) {
       blocks.push(
-        new Paragraph({ children: [new TextRun({ text: line.slice(2), italics: true })] }),
+        new Paragraph({
+          children: [new TextRun({ text: line.slice(2), italics: true })],
+        }),
       );
     } else {
-      blocks.push(new Paragraph({ text: line }));
+      blocks.push(new Paragraph({ children: docxInlineRuns(line, baseDirectory) }));
     }
     index++;
   }
@@ -471,7 +523,7 @@ async function main() {
     const doc = new Document({
       sections: [
         {
-          children: markdownToDocx(markdown),
+          children: markdownToDocx(markdown, output),
         },
       ],
     });

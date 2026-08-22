@@ -51,4 +51,6 @@
 
 | 2026-08-22 | 成果报告生成/渲染/验证链强化后的完整总门 | AI | 待负责人 | 当前自动化基线（未发布） | 捆绑 Node 24.19.0、pnpm 11.19.0、Python 3.12.13 下 `pnpm test:all`：依赖预检、静态门、数据库/egress/契约/catalog/ops/hygiene/handoff、integration 6 files/20 tests、scoring 5 files/22 tests、全量 11 files/42 tests、Python 分析、Next build、E2E 3 passed；另单独运行候选报告生成/图表复制测试 | 通过；报告 15 节、结构化 DOCX、图表/数据表 hash、final 原子构建、PDF 文本/三件套/数字追溯验证和渲染 QA 状态均已接入；未伪造 R4/R5 或视觉人工检查 | R1–R5 真人 receipt、真实研究站点/许可/标准、生产服务器/域名/密钥/镜像与渲染器 digest 仍需外部输入；当前无 LibreOffice/Poppler，故未宣称 PDF 视觉 QA 通过 |
 
+| 2026-08-22 | 同一 report-data 打印 PDF 与 DOCX QA 分离复核 | AI | 待负责人 | 当前自动化基线（未发布） | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`、候选报告/图表/DOCX 结构测试 4 passed；渲染器命令在缺少 LibreOffice/Poppler 时按设计 fail-closed | 通过；正式 PDF 由打印 HTML/Playwright 生成，DOCX 转 PDF/逐页 PNG 只进入 `.qa-render`，manifest 只绑定正式打印 PDF；无法视觉复核时不会报告“通过” | 当前环境无 LibreOffice/Poppler，正式研究数据/R4/R5/生产渲染器 digest 仍需外部输入 |
+
 真人确认只能由对应 reviewer 会话提交；AI 不得把本表预填行改成“本人已复核”。

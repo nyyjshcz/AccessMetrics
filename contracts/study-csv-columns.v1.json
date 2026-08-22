@@ -3,7 +3,9 @@
   "encoding": "UTF-8 with BOM",
   "lineEnding": "CRLF",
   "tables": {
-    "sites.csv": { "columns": ["id", "origin", "name", "created_at", "updated_at", "status"] },
+    "sites.csv": {
+      "columns": ["id", "origin", "name", "category", "created_at", "updated_at", "status"]
+    },
     "runs.csv": {
       "columns": [
         "id",

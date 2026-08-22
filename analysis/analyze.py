@@ -28,6 +28,57 @@ PRINCIPLES = ("perceivable", "operable", "understandable", "robust")
 IMPACTS = ("critical", "serious", "moderate", "minor")
 
 
+def describe(values: list[float]) -> dict[str, Any]:
+    ordered = sorted(values)
+    if not ordered:
+        return {"n": 0, "mean": None, "median": None, "q1": None, "q3": None, "min": None, "max": None}
+
+    def percentile(fraction: float) -> float:
+        position = (len(ordered) - 1) * fraction
+        lower = int(position)
+        upper = min(len(ordered) - 1, lower + 1)
+        weight = position - lower
+        return ordered[lower] * (1 - weight) + ordered[upper] * weight
+
+    return {
+        "n": len(ordered),
+        "mean": sum(ordered) / len(ordered),
+        "median": percentile(0.5),
+        "q1": percentile(0.25),
+        "q3": percentile(0.75),
+        "min": ordered[0],
+        "max": ordered[-1],
+    }
+
+
+def rank_values(values: list[float]) -> list[float]:
+    indexed = sorted(enumerate(values), key=lambda item: item[1])
+    ranks = [0.0] * len(values)
+    index = 0
+    while index < len(indexed):
+        end = index
+        while end + 1 < len(indexed) and indexed[end + 1][1] == indexed[index][1]:
+            end += 1
+        rank = (index + end + 2) / 2
+        for cursor in range(index, end + 1):
+            ranks[indexed[cursor][0]] = rank
+        index = end + 1
+    return ranks
+
+
+def spearman(left: list[float], right: list[float]) -> float | None:
+    if len(left) != len(right) or len(left) < 2:
+        return None
+    left_rank, right_rank = rank_values(left), rank_values(right)
+    left_mean = sum(left_rank) / len(left_rank)
+    right_mean = sum(right_rank) / len(right_rank)
+    numerator = sum((a - left_mean) * (b - right_mean) for a, b in zip(left_rank, right_rank))
+    denominator_left = sum((a - left_mean) ** 2 for a in left_rank)
+    denominator_right = sum((b - right_mean) ** 2 for b in right_rank)
+    denominator = (denominator_left * denominator_right) ** 0.5
+    return numerator / denominator if denominator else None
+
+
 def canonical(value: Any) -> bytes:
     return (
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -207,6 +258,23 @@ def summarize_manual_validation(root: Path, population_size: int) -> dict[str, A
     pairs = [values for values in by_node.values() if len(values) >= 2]
     agreements = sum(1 for values in pairs if len(set(values.values())) == 1)
     disagreements = len(pairs) - agreements
+    kappa: float | None = None
+    kappa_reason: str | None = None
+    if not pairs:
+        kappa_reason = "no_complete_two_reviewer_pairs"
+    else:
+        labels = sorted({verdict for values in pairs for verdict in values.values()})
+        n = len(pairs)
+        observed = agreements / n
+        expected = sum(
+            sum(1 for values in pairs if values.get("computer_lead") == label)
+            * sum(1 for values in pairs if values.get("math_lead") == label)
+            for label in labels
+        ) / (n * n)
+        if expected == 1:
+            kappa_reason = "all_pairs_have_one_verdict"
+        else:
+            kappa = (observed - expected) / (1 - expected)
     return {
         "populationSize": population_size,
         "targetSize": min(40, population_size),
@@ -217,8 +285,8 @@ def summarize_manual_validation(root: Path, population_size: int) -> dict[str, A
         "agreementCount": agreements,
         "disagreementCount": disagreements,
         "agreementRate": agreements / len(pairs) if pairs else None,
-        "kappa": None,
-        "kappaNullReason": "not_computed_without_two_complete_reviewer_sets",
+        "kappa": kappa,
+        "kappaNullReason": kappa_reason,
         "interpretationScope": "manual sample only; not axe accuracy or a citywide estimate",
     }
 
@@ -291,6 +359,18 @@ def write_chart(output_root: Path, site_scores: dict[str, Fraction]) -> list[dic
 def analyze_export(root: Path) -> dict[str, Any]:
     manifest, manifest_hash = verify_manifest(root)
     scans = [read_json(path) for path in scan_files(root)]
+    site_categories: dict[str, str] = {}
+    sites_csv = root / "data" / "sites.csv"
+    if sites_csv.is_file():
+        lines = sites_csv.read_text(encoding="utf-8-sig").splitlines()
+        if lines:
+            headers = lines[0].split(",")
+            if "id" in headers and "category" in headers:
+                id_index, category_index = headers.index("id"), headers.index("category")
+                for line in lines[1:]:
+                    cells = line.split(",")
+                    if len(cells) > max(id_index, category_index) and cells[category_index]:
+                        site_categories[cells[id_index]] = cells[category_index]
     site_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
     severity = Counter()
     common_rules = Counter()
@@ -368,6 +448,41 @@ def analyze_export(root: Path) -> dict[str, Any]:
             "ranking": sorted(scenario_values, key=lambda site: (-scenario_values[site], site)),
             "rank": rank_scores(scenario_values),
         }
+    score_displays = [float(half_up_tenths(value)) for value in site_exact.values() if half_up_tenths(value) is not None]
+    category_scores: dict[str, list[float]] = defaultdict(list)
+    for site, value in site_exact.items():
+        if site_categories.get(site):
+            category_scores[site_categories[site]].append(float(half_up_tenths(value) or 0))
+    category_comparison = {
+        category: {"siteCount": len(values), "scoreDistribution": describe(values)}
+        for category, values in sorted(category_scores.items())
+    }
+    scenario_scores = {
+        name: {
+            site: float(value)
+            for site, value in (
+                (site, exact_score(site_rows[site], SCENARIOS[name][0], SCENARIOS[name][1]))
+                for site in site_rows
+            )
+            if value is not None
+        }
+        for name in SCENARIOS
+    }
+    common_sites = sorted(set.intersection(*(set(values) for values in scenario_scores.values()))) if scenario_scores else []
+    spearman_pairs = {}
+    for left, right in (("A", "B"), ("A", "C"), ("B", "C")):
+        if left not in scenario_scores or right not in scenario_scores:
+            spearman_pairs[f"{left}_vs_{right}"] = None
+            continue
+        spearman_pairs[f"{left}_vs_{right}"] = spearman(
+            [scenario_scores[left][site] for site in common_sites],
+            [scenario_scores[right][site] for site in common_sites],
+        )
+    sensitivity["spearman"] = {
+        "commonSiteCount": len(common_sites),
+        "correlations": spearman_pairs,
+        "nullReason": "fewer_than_two_common_sites_or_constant_ranks" if any(value is None for value in spearman_pairs.values()) else None,
+    }
     computed_population_digest = sha256(canonical(sorted(population_items, key=lambda item: canonical(item))))
     manifest_population_digest = manifest.get("populationDigest")
     if manifest_population_digest is not None and (
@@ -403,6 +518,14 @@ def analyze_export(root: Path) -> dict[str, Any]:
                 [{"scannerVersion": a, "axeVersion": b, "modelVersion": c} for a, b, c in versions],
                 key=lambda item: (item["scannerVersion"], item["axeVersion"], item["modelVersion"]),
             ),
+            "calculationKeys": {
+                "siteScores": "data/runs/*/scan.json:eligible pass/violation nodes grouped by site; exact_score; half_up_tenths",
+                "severitySummary": "data/runs/*/scan.json:violation nodes grouped by effective impact",
+                "manualValidation": "manual-reviews.json:current formal rows grouped by result node and reviewer",
+                "sensitivity": "data/runs/*/scan.json:three fixed weight scenarios A/B/C; exact values before display rounding",
+                "categoryComparison": "data/sites.csv:category joined to site score by sites.id",
+                "spearman": "sensitivity A/B/C:common site IDs; average ranks for ties",
+            },
         },
     }
     output: dict[str, Any] = {
@@ -434,6 +557,8 @@ def analyze_export(root: Path) -> dict[str, Any]:
             "rank": rank_scores(site_exact),
             "overall": score_payload(exact_score(all_rows)),
             "fourPrinciples": four_principles,
+            "distribution": describe(score_displays),
+            "categoryComparison": category_comparison,
         },
         "severitySummary": {key: severity[key] for key in sorted(severity)},
         "commonRules": [{"ruleId": rule, "count": count} for rule, count in common_rules.most_common()],

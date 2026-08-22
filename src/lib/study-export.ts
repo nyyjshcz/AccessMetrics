@@ -9,7 +9,7 @@ import { AppError } from "./errors";
 type ExportKind = "study_source" | "study_final";
 
 const CSV_TABLES = {
-  "sites.csv": ["id", "origin", "name", "created_at", "updated_at", "status"],
+  "sites.csv": ["id", "origin", "name", "category", "created_at", "updated_at", "status"],
   "runs.csv": [
     "id",
     "job_id",
@@ -307,6 +307,205 @@ function readonlyTree(root: string) {
   for (const file of walkFiles(root)) fs.chmodSync(file, 0o444);
 }
 
+function findArtifactByHash(expectedHash: string, allowedNames: Set<string>): string {
+  const root = config.privateEvidenceRoot;
+  if (!fs.existsSync(root))
+    throw new AppError("FINAL_ARTIFACT_MISSING", "R4 私有证据根不存在", 409);
+  const matches: string[] = [];
+  for (const file of walkFiles(root)) {
+    if (!allowedNames.has(path.basename(file))) continue;
+    if (sha256(fs.readFileSync(file)) === expectedHash) matches.push(file);
+  }
+  if (matches.length !== 1)
+    throw new AppError(
+      "FINAL_ARTIFACT_HASH_MISMATCH",
+      `R4 冻结材料不存在或匹配不唯一: ${[...allowedNames].join(", ")}`,
+      409,
+    );
+  return matches[0];
+}
+
+function parseCsv(bytes: Buffer, filename: string): string[][] {
+  if (!bytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])))
+    throw new AppError("CSV_ENCODING_INVALID", `${filename} 必须是 UTF-8 BOM`, 500);
+  const text = bytes.subarray(3).toString("utf8");
+  if (!text.endsWith("\r\n") || (text.includes("\n") && text.replaceAll("\r\n", "").includes("\n")))
+    throw new AppError("CSV_LINE_ENDING_INVALID", `${filename} 必须使用 CRLF`, 500);
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if (quoted) {
+      if (char === '"' && text[index + 1] === '"') {
+        cell += '"';
+        index++;
+      } else if (char === '"') quoted = false;
+      else cell += char;
+      continue;
+    }
+    if (char === '"' && cell.length === 0) quoted = true;
+    else if (char === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\r" && text[index + 1] === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+      index++;
+    } else cell += char;
+  }
+  if (quoted || row.length || cell)
+    throw new AppError("CSV_PARSE_INVALID", `${filename} 无法解析`, 500);
+  return rows;
+}
+
+function validateStudyPayload(target: string, kind: ExportKind, exportId: string) {
+  const contract = JSON.parse(
+    fs.readFileSync(path.join(target, "schemas", "study-csv-columns.v1.json"), "utf8"),
+  ) as { tables?: Record<string, { columns?: string[] }> };
+  const csvIds = new Map<string, Set<string>>();
+  for (const [filename, columns] of Object.entries(CSV_TABLES)) {
+    const rows = parseCsv(fs.readFileSync(path.join(target, "data", filename)), filename);
+    if (JSON.stringify(rows[0] ?? []) !== JSON.stringify(columns))
+      throw new AppError("CSV_HEADER_INVALID", `${filename} 列顺序不符合契约`, 500);
+    if (JSON.stringify(contract.tables?.[filename]?.columns) !== JSON.stringify(columns))
+      throw new AppError("CSV_CONTRACT_MISMATCH", `${filename} schema 与导出不一致`, 500);
+    csvIds.set(
+      filename,
+      new Set(
+        rows
+          .slice(1)
+          .map((row) => row[0])
+          .filter(Boolean),
+      ),
+    );
+  }
+  const runs = csvIds.get("runs.csv")!;
+  const pages = csvIds.get("pages.csv")!;
+  const rules = csvIds.get("rule_results.csv")!;
+  const nodes = csvIds.get("result_nodes.csv")!;
+  const samples = csvIds.get("manual_review_samples.csv")!;
+  for (const row of parseCsv(
+    fs.readFileSync(path.join(target, "data", "pages.csv")),
+    "pages.csv",
+  ).slice(1))
+    if (!runs.has(row[2]))
+      throw new AppError("CSV_FOREIGN_KEY_INVALID", "pages.run_id 不存在", 500);
+  for (const row of parseCsv(
+    fs.readFileSync(path.join(target, "data", "rule_results.csv")),
+    "rule_results.csv",
+  ).slice(1))
+    if (!runs.has(row[1]) || !pages.has(row[2]))
+      throw new AppError("CSV_FOREIGN_KEY_INVALID", "rule_results 外键不存在", 500);
+  for (const row of parseCsv(
+    fs.readFileSync(path.join(target, "data", "result_nodes.csv")),
+    "result_nodes.csv",
+  ).slice(1))
+    if (!rules.has(row[1]))
+      throw new AppError("CSV_FOREIGN_KEY_INVALID", "result_nodes.rule_result_id 不存在", 500);
+  for (const row of parseCsv(
+    fs.readFileSync(path.join(target, "data", "manual_review_samples.csv")),
+    "manual_review_samples.csv",
+  ).slice(1))
+    if (!nodes.has(row[2]))
+      throw new AppError(
+        "CSV_FOREIGN_KEY_INVALID",
+        "manual_review_samples.result_node_id 不存在",
+        500,
+      );
+  for (const row of parseCsv(
+    fs.readFileSync(path.join(target, "data", "manual_reviews.csv")),
+    "manual_reviews.csv",
+  ).slice(1))
+    if (!nodes.has(row[1]) || (row[2] && !samples.has(row[2])))
+      throw new AppError("CSV_FOREIGN_KEY_INVALID", "manual_reviews 外键不存在", 500);
+  const study = JSON.parse(
+    fs.readFileSync(path.join(target, "data", "study.json"), "utf8"),
+  ) as Record<string, unknown>;
+  if (
+    study.schemaVersion !== "study-export-v1" ||
+    study.exportId !== exportId ||
+    study.exportKind !== kind ||
+    typeof study.studyFreezeId !== "string" ||
+    !Array.isArray(study.runSet) ||
+    (study.runSet as unknown[]).some((value) => typeof value !== "string")
+  )
+    throw new AppError("STUDY_SCHEMA_INVALID", "data/study.json 不符合固定 schema", 500);
+  const listedRunIds = [...runs].sort();
+  const studyRunIds = (study.runSet as string[]).slice().sort();
+  if (JSON.stringify(listedRunIds) !== JSON.stringify(studyRunIds))
+    throw new AppError("STUDY_RUN_SET_INVALID", "study.json runSet 与 runs.csv 不一致", 500);
+}
+
+function validateManifestDocument(target: string, kind: ExportKind, exportId: string) {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(target, "manifest.json"), "utf8"),
+  ) as Record<string, any>;
+  if (
+    manifest.schemaVersion !== "canonical-manifest-json-v1" ||
+    manifest.exportId !== exportId ||
+    manifest.exportKind !== kind ||
+    manifest.kind !== kind ||
+    !Array.isArray(manifest.files) ||
+    !Number.isInteger(manifest.revision) ||
+    manifest.revision < 1
+  )
+    throw new AppError("MANIFEST_SCHEMA_INVALID", "manifest.json 不符合固定 schema", 500);
+  const paths = new Set(manifest.files.map((file: any) => file.path));
+  for (const file of manifest.files) {
+    if (
+      !file ||
+      typeof file.path !== "string" ||
+      !Number.isInteger(file.size) ||
+      file.size < 0 ||
+      !/^[a-f0-9]{64}$/.test(file.sha256)
+    )
+      throw new AppError("MANIFEST_FILE_INVALID", "manifest.files 存在无效条目", 500);
+  }
+  if (kind === "study_source") {
+    for (const field of [
+      "sourceExportId",
+      "sourceManifestHash",
+      "outcomeDigest",
+      "reviewFreezeHash",
+      "reportLocalizationHash",
+      "modelDecisionHash",
+      "modelObservationsHash",
+      "r4EvidenceBundleHash",
+    ])
+      if (manifest[field] !== null)
+        throw new AppError("SOURCE_MANIFEST_CONTAMINATED", `study_source 不得包含 ${field}`, 500);
+    if (
+      [...paths].some(
+        (value) => value.includes("report-localization") || value.startsWith("analysis/"),
+      )
+    )
+      throw new AppError("SOURCE_MANIFEST_CONTAMINATED", "study_source 不得包含 final 材料", 500);
+  } else {
+    for (const field of [
+      "sourceExportId",
+      "sourceManifestHash",
+      "outcomeDigest",
+      "reviewFreezeHash",
+      "reportLocalizationHash",
+      "modelDecisionHash",
+      "modelObservationsHash",
+      "r4EvidenceBundleHash",
+    ])
+      if (typeof manifest[field] !== "string" || !/^[a-f0-9]{64}$/.test(manifest[field]))
+        throw new AppError("FINAL_MANIFEST_INCOMPLETE", `study_final 缺少冻结字段 ${field}`, 500);
+    if (
+      !paths.has("configs/rule-localizations.report.zh-CN.json") ||
+      !paths.has("analysis/model-decision-record.md") ||
+      !paths.has("analysis/model-observations.md")
+    )
+      throw new AppError("FINAL_MANIFEST_INCOMPLETE", "study_final 缺少 R4 冻结材料", 500);
+  }
+}
+
 function canonicalRunsForFreeze(freeze: any) {
   const attempts = getDb()
     .prepare(
@@ -571,19 +770,16 @@ function writeStudyPayload(
       path.join(researchDir, filename),
     );
   if (kind === "study_final") {
-    const modelDecision = path.join(process.cwd(), "scoring", "model-decision-record.md");
-    const modelObservations = path.join(
-      process.cwd(),
-      "analysis",
-      "outputs",
-      "model-observations.md",
+    if (!freeze.model_decision_hash || !freeze.model_observations_hash)
+      throw new AppError("FINAL_ANALYSIS_MISSING", "study_final 缺少 R4 冻结的模型 hash", 409);
+    const modelDecision = findArtifactByHash(
+      freeze.model_decision_hash,
+      new Set(["model-decision-record.md"]),
     );
-    if (!fs.existsSync(modelDecision) || !fs.existsSync(modelObservations))
-      throw new AppError(
-        "FINAL_ANALYSIS_MISSING",
-        "study_final 缺少已核验的模型决策/观察文件",
-        409,
-      );
+    const modelObservations = findArtifactByHash(
+      freeze.model_observations_hash,
+      new Set(["model-observations.md"]),
+    );
     fs.mkdirSync(path.join(target, "analysis"), { recursive: true });
     fs.copyFileSync(modelDecision, path.join(target, "analysis", "model-decision-record.md"));
     fs.copyFileSync(modelObservations, path.join(target, "analysis", "model-observations.md"));
@@ -593,8 +789,12 @@ function writeStudyPayload(
         "study_final 缺少 R4 冻结的报告中文目录",
         409,
       );
+    const reportLocalization = findArtifactByHash(
+      freeze.report_localization_hash,
+      new Set(["rule-localizations.report.zh-CN.json"]),
+    );
     fs.copyFileSync(
-      path.join(process.cwd(), "scoring", "rule-localizations.zh-CN.json"),
+      reportLocalization,
       path.join(configDir, "rule-localizations.report.zh-CN.json"),
     );
   }
@@ -745,7 +945,9 @@ export function createStudyExport(input: {
     input.kind === "study_source"
       ? `study-source-${input.studyFreezeId}`
       : `study-final-${(outcomeDigest as string).slice(0, 32)}`;
-  const target = path.join(config.privateEvidenceRoot, "study-exports", exportId);
+  const exportRoot = path.join(config.privateEvidenceRoot, "study-exports");
+  const target = path.join(exportRoot, exportId);
+  const temporary = path.join(exportRoot, `.tmp-${exportId}`);
   const now = new Date().toISOString();
   const sourceManifestHash = input.kind === "study_final" ? source.manifest_hash : null;
   const priorGenerating = db.prepare("SELECT * FROM study_exports WHERE id=?").get(exportId) as any;
@@ -787,6 +989,13 @@ export function createStudyExport(input: {
       throw new AppError("EXPORT_PATH_INVALID", "study export 路径越界", 500);
     fs.rmSync(resolvedTarget, { recursive: true, force: true });
   }
+  if (fs.existsSync(temporary)) {
+    const privateRoot = path.resolve(config.privateEvidenceRoot);
+    const resolvedTemporary = path.resolve(temporary);
+    if (!resolvedTemporary.startsWith(`${privateRoot}${path.sep}`))
+      throw new AppError("EXPORT_PATH_INVALID", "study export 临时路径越界", 500);
+    fs.rmSync(resolvedTemporary, { recursive: true, force: true });
+  }
   if (!priorGenerating) {
     db.prepare(
       "INSERT INTO study_exports(id,study_freeze_id,kind,source_export_id,revision,outcome_digest,supersedes_export_id,is_current,run_set_hash,status,storage_relpath,manifest_hash,source_manifest_hash,review_freeze_hash,report_localization_hash,r4_evidence_bundle_hash,created_at,verified_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -812,98 +1021,119 @@ export function createStudyExport(input: {
     );
   }
 
-  fs.mkdirSync(target, { recursive: true });
-  let finalBatchId: string | null = null;
-  if (input.kind === "study_final") {
-    const batch = db
-      .prepare(
-        "SELECT id FROM manual_review_batches WHERE study_freeze_id=? ORDER BY created_at DESC LIMIT 1",
-      )
-      .get(input.studyFreezeId) as { id: string };
-    finalBatchId = batch.id;
-    const reviews = db
-      .prepare(
-        "SELECT mr.* FROM manual_reviews mr JOIN manual_review_samples ms ON ms.result_node_id=mr.result_node_id WHERE ms.batch_id=? ORDER BY mr.result_node_id,mr.revision",
-      )
-      .all(batch.id);
-    fs.writeFileSync(path.join(target, "manual-reviews.json"), canonicalize(reviews) + "\n");
-    if (!reviewFreeze.storage_relpath || !fs.existsSync(reviewFreeze.storage_relpath))
-      throw new AppError("REVIEW_FREEZE_MISSING", "review-freeze artifact 缺失", 409);
-    fs.copyFileSync(reviewFreeze.storage_relpath, path.join(target, "review-freeze.json"));
-  }
-  const allowedReviewNodeIds = new Set<string>();
-  if (finalBatchId) {
-    for (const row of db
-      .prepare("SELECT result_node_id FROM manual_review_samples WHERE batch_id=?")
-      .all(finalBatchId) as Array<{ result_node_id: string }>)
-      allowedReviewNodeIds.add(row.result_node_id);
-  }
-  copyRunExports(target, canonicalRunIds, allowedReviewNodeIds);
-  writeStudyPayload(
-    target,
-    canonicalRunIds,
-    finalBatchId ? [finalBatchId] : [],
-    input.kind,
-    freeze,
-    exportId,
-    outcomeDigest,
-  );
-  const localizationHashes = db
-    .prepare(
-      `SELECT DISTINCT scan_time_localization_hash AS hash FROM scan_runs WHERE id IN (${canonicalRunIds.map(() => "?").join(",")})`,
-    )
-    .all(...canonicalRunIds)
-    .map((row: any) => row.hash)
-    .filter(Boolean) as string[];
-  if (new Set(localizationHashes).size > 1)
-    throw new AppError(
-      "LOCALIZATION_VERSION_MISMATCH",
-      "同一 study export 不能混用扫描时中文目录版本",
-      409,
+  let manifestHash = "";
+  try {
+    fs.mkdirSync(temporary, { recursive: true });
+    let finalBatchId: string | null = null;
+    if (input.kind === "study_final") {
+      const batch = db
+        .prepare(
+          "SELECT id FROM manual_review_batches WHERE study_freeze_id=? ORDER BY created_at DESC LIMIT 1",
+        )
+        .get(input.studyFreezeId) as { id: string };
+      finalBatchId = batch.id;
+      const reviews = db
+        .prepare(
+          "SELECT mr.* FROM manual_reviews mr JOIN manual_review_samples ms ON ms.result_node_id=mr.result_node_id WHERE ms.batch_id=? ORDER BY mr.result_node_id,mr.revision",
+        )
+        .all(batch.id);
+      fs.writeFileSync(path.join(temporary, "manual-reviews.json"), canonicalize(reviews) + "\n");
+      if (!reviewFreeze.storage_relpath || !fs.existsSync(reviewFreeze.storage_relpath))
+        throw new AppError("REVIEW_FREEZE_MISSING", "review-freeze artifact 缺失", 409);
+      fs.copyFileSync(reviewFreeze.storage_relpath, path.join(temporary, "review-freeze.json"));
+    }
+    const allowedReviewNodeIds = new Set<string>();
+    if (finalBatchId) {
+      for (const row of db
+        .prepare("SELECT result_node_id FROM manual_review_samples WHERE batch_id=?")
+        .all(finalBatchId) as Array<{ result_node_id: string }>)
+        allowedReviewNodeIds.add(row.result_node_id);
+    }
+    copyRunExports(temporary, canonicalRunIds, allowedReviewNodeIds);
+    writeStudyPayload(
+      temporary,
+      canonicalRunIds,
+      finalBatchId ? [finalBatchId] : [],
+      input.kind,
+      freeze,
+      exportId,
+      outcomeDigest,
     );
-  const campaign = db
-    .prepare("SELECT campaign_plan_hash FROM study_campaigns WHERE id=?")
-    .get(freeze.campaign_id) as { campaign_plan_hash: string };
-  const manifest = {
-    schemaVersion: "canonical-manifest-json-v1",
-    exportId,
-    generatedAt: new Date().toISOString(),
-    exportKind: input.kind,
-    kind: input.kind,
-    studyFreezeId: input.studyFreezeId,
-    freezeDigest: freeze.freeze_digest,
-    populationDigest: freeze.population_digest,
-    campaignPlanHash: campaign.campaign_plan_hash,
-    attemptLogHash: freeze.attempt_log_hash,
-    executionLogHash: freeze.execution_log_hash,
-    runSetHash,
-    sourceExportId: input.kind === "study_final" ? input.expectedSourceExportId : null,
-    sourceManifestHash,
-    outcomeDigest,
-    supersedesExportId: previous?.id ?? null,
-    publicationStatus: "unpublished",
-    appGitCommit: process.env.APP_GIT_COMMIT ?? null,
-    databaseMigration:
-      (
-        db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as
-          | { version: number | null }
-          | undefined
-      )?.version ?? null,
-    scanTimeLocalizationHash: localizationHashes[0] ?? null,
-    modelDecisionHash: input.kind === "study_final" ? freeze.model_decision_hash : null,
-    modelObservationsHash: input.kind === "study_final" ? freeze.model_observations_hash : null,
-    reviewFreezeHash: reviewFreeze?.artifact_hash ?? null,
-    reportLocalizationHash: input.kind === "study_final" ? freeze.report_localization_hash : null,
-    r4EvidenceBundleHash: input.kind === "study_final" ? freeze.r4_evidence_bundle_hash : null,
-    revision,
-    runIds: canonicalRunIds,
-    files: fileManifest(target),
-  };
-  const manifestBytes = Buffer.from(canonicalize(manifest) + "\n");
-  fs.writeFileSync(path.join(target, "manifest.json"), manifestBytes);
-  fs.writeFileSync(path.join(target, "manifest.sha256"), `${sha256(manifestBytes)}\n`);
-  const manifestHash = sha256(manifestBytes);
-  readonlyTree(target);
+    const localizationHashes = db
+      .prepare(
+        `SELECT DISTINCT scan_time_localization_hash AS hash FROM scan_runs WHERE id IN (${canonicalRunIds.map(() => "?").join(",")})`,
+      )
+      .all(...canonicalRunIds)
+      .map((row: any) => row.hash)
+      .filter(Boolean) as string[];
+    if (new Set(localizationHashes).size > 1)
+      throw new AppError(
+        "LOCALIZATION_VERSION_MISMATCH",
+        "同一 study export 不能混用扫描时中文目录版本",
+        409,
+      );
+    const campaign = db
+      .prepare("SELECT campaign_plan_hash FROM study_campaigns WHERE id=?")
+      .get(freeze.campaign_id) as { campaign_plan_hash: string };
+    const manifest = {
+      schemaVersion: "canonical-manifest-json-v1",
+      exportId,
+      generatedAt: new Date().toISOString(),
+      exportKind: input.kind,
+      kind: input.kind,
+      studyFreezeId: input.studyFreezeId,
+      freezeDigest: freeze.freeze_digest,
+      populationDigest: freeze.population_digest,
+      campaignPlanHash: campaign.campaign_plan_hash,
+      attemptLogHash: freeze.attempt_log_hash,
+      executionLogHash: freeze.execution_log_hash,
+      runSetHash,
+      sourceExportId: input.kind === "study_final" ? input.expectedSourceExportId : null,
+      sourceManifestHash,
+      outcomeDigest,
+      supersedesExportId: previous?.id ?? null,
+      publicationStatus: "unpublished",
+      appGitCommit: process.env.APP_GIT_COMMIT ?? null,
+      databaseMigration:
+        (
+          db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as
+            | { version: number | null }
+            | undefined
+        )?.version ?? null,
+      scanTimeLocalizationHash: localizationHashes[0] ?? null,
+      modelDecisionHash: input.kind === "study_final" ? freeze.model_decision_hash : null,
+      modelObservationsHash: input.kind === "study_final" ? freeze.model_observations_hash : null,
+      reviewFreezeHash: reviewFreeze?.artifact_hash ?? null,
+      reportLocalizationHash: input.kind === "study_final" ? freeze.report_localization_hash : null,
+      r4EvidenceBundleHash: input.kind === "study_final" ? freeze.r4_evidence_bundle_hash : null,
+      revision,
+      runIds: canonicalRunIds,
+      files: fileManifest(temporary),
+    };
+    const manifestBytes = Buffer.from(canonicalize(manifest) + "\n");
+    fs.writeFileSync(path.join(temporary, "manifest.json"), manifestBytes);
+    fs.writeFileSync(path.join(temporary, "manifest.sha256"), `${sha256(manifestBytes)}\n`);
+    manifestHash = sha256(manifestBytes);
+    validateStudyPayload(temporary, input.kind, exportId);
+    validateManifestDocument(temporary, input.kind, exportId);
+    readonlyTree(temporary);
+    if (fs.existsSync(target)) {
+      const privateRoot = path.resolve(config.privateEvidenceRoot);
+      const resolvedTarget = path.resolve(target);
+      if (!resolvedTarget.startsWith(`${privateRoot}${path.sep}`))
+        throw new AppError("EXPORT_PATH_INVALID", "study export 路径越界", 500);
+      fs.rmSync(resolvedTarget, { recursive: true, force: true });
+    }
+    try {
+      fs.renameSync(temporary, target);
+    } catch (error) {
+      fs.rmSync(temporary, { recursive: true, force: true });
+      throw error;
+    }
+  } catch (error) {
+    if (fs.existsSync(temporary)) fs.rmSync(temporary, { recursive: true, force: true });
+    throw error;
+  }
   const verifiedAt = new Date().toISOString();
   const record = {
     ...generating,

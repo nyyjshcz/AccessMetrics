@@ -84,11 +84,17 @@ export function assertCandidateReportData(data: RecordValue) {
   for (const field of ["frameTotal", "tested", "skipped", "errors", "limitedPages"])
     nonNegativeInteger(frame[field], `frameCoverageSummary.${field}`);
   const scores = object(data.scores, "candidate report-data.scores");
-  exactKeys(scores, ["siteScores", "rank", "overall", "fourPrinciples"], "scores");
+  exactKeys(
+    scores,
+    ["siteScores", "rank", "overall", "fourPrinciples", "distribution", "categoryComparison"],
+    "scores",
+  );
   object(scores.siteScores, "scores.siteScores");
   object(scores.rank, "scores.rank");
   if (scores.overall !== null) object(scores.overall, "scores.overall");
   object(scores.fourPrinciples, "scores.fourPrinciples");
+  object(scores.distribution, "scores.distribution");
+  object(scores.categoryComparison, "scores.categoryComparison");
   if (!Array.isArray(data.commonRules)) throw new Error("commonRules 必须是数组");
   if (!Array.isArray(data.limitations) || data.limitations.some((item) => typeof item !== "string"))
     throw new Error("limitations 必须是字符串数组");

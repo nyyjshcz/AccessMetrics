@@ -39,4 +39,6 @@
 | 2026-08-22 | 研究导出盲审边界复核 | AI | 待负责人 | 工作区当前自动化基线（未发布） | `pnpm typecheck`、`pnpm lint`、`pnpm exec vitest run tests/integration/core.test.ts tests/integration/study-chain.test.ts` | 通过；run `reviewRefs` 不再泄露未完成 formal 双人 verdict，ad-hoc/formal agreement/adjudication 分支有独立断言；study source 嵌套 run manifest 与过滤后的 reviewRefs 重新绑定 | R1–R5、真实站点/许可/标准、生产服务器/域名/密钥/镜像与渲染器 digest 仍需外部输入 |
 | 2026-08-22 | 盲审边界修复后的完整总门 | AI | 待负责人 | 工作区当前自动化基线（未发布） | `pnpm test:all`（依赖预检、负面 fixture、lint、format、typecheck、db/egress/contract/catalog/ops/hygiene/handoff、integration 6 files/19 tests、scoring 5 files/22 tests、全量 11 files/41 tests、Python 分析、Next build、E2E 3 passed） | 全部自动化门通过；新增 formal blind-review/adjudication 输出约束没有回归导出、研究链或公开权限测试 | R1–R5 真人 receipt、真实网站/许可/标准、生产服务器/域名/密钥/镜像与渲染器 digest 仍需外部输入；Next/Vite/tracing/standalone 仅为非失败提示 |
 
+| 2026-08-22 | 研究导出原子性、R4 hash 绑定、分析统计与 PDF 隔离打印复核 | AI | 待负责人 | 工作区当前自动化基线（未发布） | `pnpm contract:check`、`pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm test:integration`、`pnpm test:analysis`、`pnpm test:e2e` | 通过；study export 临时目录校验后原子改名，`export:verify` 检查 payload 完整性及 source/final 条件，R4 材料按私有证据 hash 精确绑定，分析输出含分布/类别/kappa/Spearman，PDF 使用共享 DTO + `page.setContent()` | R1–R5、真实研究站点/许可/标准、生产服务器/域名/密钥/镜像与文档渲染器 digest 仍需外部输入；正式 final/视觉 QA 不能伪造 |
+
 真人确认只能由对应 reviewer 会话提交；AI 不得把本表预填行改成“本人已复核”。

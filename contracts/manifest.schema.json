@@ -45,5 +45,97 @@
     "appGitCommit": { "type": ["string", "null"] },
     "databaseMigration": { "type": ["integer", "null"] },
     "runIds": { "type": "array", "items": { "type": "string" } }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "exportKind": { "const": "study_source" } },
+        "required": ["exportKind"]
+      },
+      "then": {
+        "required": [
+          "exportKind",
+          "kind",
+          "studyFreezeId",
+          "freezeDigest",
+          "populationDigest",
+          "campaignPlanHash",
+          "attemptLogHash",
+          "executionLogHash",
+          "runSetHash",
+          "sourceExportId",
+          "sourceManifestHash",
+          "outcomeDigest",
+          "reviewFreezeHash",
+          "reportLocalizationHash",
+          "modelDecisionHash",
+          "modelObservationsHash",
+          "r4EvidenceBundleHash",
+          "revision",
+          "runIds"
+        ],
+        "properties": {
+          "revision": { "const": 1 },
+          "sourceExportId": { "const": null },
+          "sourceManifestHash": { "const": null },
+          "outcomeDigest": { "const": null },
+          "reviewFreezeHash": { "const": null },
+          "reportLocalizationHash": { "const": null },
+          "modelDecisionHash": { "const": null },
+          "modelObservationsHash": { "const": null },
+          "r4EvidenceBundleHash": { "const": null }
+        },
+        "not": {
+          "properties": {
+            "files": {
+              "contains": {
+                "properties": {
+                  "path": { "pattern": "^(analysis/|configs/rule-localizations\\.report)" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "exportKind": { "const": "study_final" } },
+        "required": ["exportKind"]
+      },
+      "then": {
+        "required": [
+          "exportKind",
+          "kind",
+          "studyFreezeId",
+          "freezeDigest",
+          "populationDigest",
+          "campaignPlanHash",
+          "attemptLogHash",
+          "executionLogHash",
+          "runSetHash",
+          "sourceExportId",
+          "sourceManifestHash",
+          "outcomeDigest",
+          "reviewFreezeHash",
+          "reportLocalizationHash",
+          "modelDecisionHash",
+          "modelObservationsHash",
+          "r4EvidenceBundleHash",
+          "revision",
+          "runIds"
+        ],
+        "properties": {
+          "sourceExportId": { "type": "string", "minLength": 1 },
+          "sourceManifestHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "outcomeDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "reviewFreezeHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "reportLocalizationHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "modelDecisionHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "modelObservationsHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "r4EvidenceBundleHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    }
+  ]
 }

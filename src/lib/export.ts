@@ -34,7 +34,9 @@ export function exportRun(runId: string) {
     };
   const exportId = id("export");
   const target = path.join(config.privateEvidenceRoot, "exports", exportId);
-  fs.mkdirSync(target, { recursive: true });
+  const temporary = `${target}.tmp`;
+  if (fs.existsSync(temporary)) fs.rmSync(temporary, { recursive: true, force: true });
+  fs.mkdirSync(temporary, { recursive: true });
   const issues = getDb()
     .prepare(
       "SELECT rr.*,p.canonical_url FROM rule_results rr JOIN pages p ON p.id=rr.page_id WHERE rr.run_id=? ORDER BY p.canonical_url,rr.rule_id,rr.result_type",
@@ -195,7 +197,7 @@ export function exportRun(runId: string) {
     provenance,
   };
   const jsonBytes = Buffer.from(canonicalize(payload) + "\n", "utf8");
-  fs.writeFileSync(path.join(target, "scan.json"), jsonBytes);
+  fs.writeFileSync(path.join(temporary, "scan.json"), jsonBytes);
   const columns = [
     "canonical_url",
     "rule_id",
@@ -210,9 +212,9 @@ export function exportRun(runId: string) {
       columns.join(","),
       ...issues.map((row) => columns.map((column) => csvCell(row[column])).join(",")),
     ].join("\n") + "\n";
-  fs.writeFileSync(path.join(target, "issues.csv"), csv);
+  fs.writeFileSync(path.join(temporary, "issues.csv"), csv);
   const files = ["scan.json", "issues.csv"].map((file) => {
-    const bytes = fs.readFileSync(path.join(target, file));
+    const bytes = fs.readFileSync(path.join(temporary, file));
     return { path: file, size: bytes.length, sha256: sha256(bytes) };
   });
   const manifest = {
@@ -222,9 +224,10 @@ export function exportRun(runId: string) {
     generatedAt: new Date().toISOString(),
   };
   const manifestBytes = Buffer.from(canonicalize(manifest) + "\n");
-  fs.writeFileSync(path.join(target, "manifest.json"), manifestBytes);
-  fs.writeFileSync(path.join(target, "manifest.sha256"), `${sha256(manifestBytes)}\n`);
+  fs.writeFileSync(path.join(temporary, "manifest.json"), manifestBytes);
+  fs.writeFileSync(path.join(temporary, "manifest.sha256"), `${sha256(manifestBytes)}\n`);
   const manifestHash = sha256(manifestBytes);
+  fs.renameSync(temporary, target);
   getDb()
     .prepare("UPDATE scan_runs SET export_id=?,manifest_hash=? WHERE id=?")
     .run(exportId, manifestHash, runId);

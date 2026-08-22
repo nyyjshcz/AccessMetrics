@@ -33,4 +33,6 @@
 
 | 2026-08-22 | 生产 Web 启动 fail-closed 复核 | AI | 待负责人 | `b99f239689ef41363577f69105318a352274524d`（自动化基线，未发布） | `pnpm typecheck`、`pnpm lint`、`pnpm ops:check`、生产缺失私有根目录子进程拒绝测试、`pnpm test:all`（integration 6 files/19 tests、scoring 5 files/22 tests、全量 11 files/41 tests、Python 分析、Next build、E2E 3 passed） | 通过；生产配置模块在首个请求前检查私有证据根目录存在/0700/可读写、生产 secrets 和 egress proxy；缺失根目录时进程按预期失败；总门无回归 | 仍需真实服务器、域名/DNS/TLS、固定代理/Playwright/渲染器 digest、R1–R5 真人 evidence 和正式研究输入；未宣称公网部署或视觉 QA 完成 |
 
+| 2026-08-22 | 全部源码 API 路由契约覆盖复核 | AI | 待负责人 | `9860d8dc1b983e709ad101ac1fd94ebad9175869`（自动化基线，未发布） | `pnpm contract:check`、`pnpm typecheck`、`pnpm lint`、`pnpm test:all`（integration 6 files/19 tests、scoring 5 files/22 tests、全量 11 files/41 tests、Python 分析、Next build、E2E 3 passed） | 通过；OpenAPI 已登记源码下全部 API 路由，契约检查递归扫描实际 `route.ts` 并拒绝未登记路径；动态参数归一化、管理/认证/研究/报告/发布/reviewer 路由覆盖通过 | R1–R5、真实站点/许可/标准、生产服务器/域名/密钥/镜像与渲染器 digest 仍需外部输入；未宣称公网部署或视觉 QA 完成 |
+
 真人确认只能由对应 reviewer 会话提交；AI 不得把本表预填行改成“本人已复核”。

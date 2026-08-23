@@ -13,6 +13,21 @@ export function csvCell(value: unknown) {
   if (/^\s*[=+\-@]/.test(text)) text = `'${text}`;
   return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
+
+function isEverydayRunExport(pathname: string) {
+  try {
+    const payload = JSON.parse(fs.readFileSync(path.join(pathname, "scan.json"), "utf8")) as {
+      reviewRefs?: Array<{ resolutionSource?: string }>;
+    };
+    return (
+      Array.isArray(payload.reviewRefs) &&
+      payload.reviewRefs.every((reference) => reference.resolutionSource === "ad_hoc")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function exportRun(runId: string) {
   const run = getDb()
     .prepare(
@@ -25,7 +40,10 @@ export function exportRun(runId: string) {
       "SELECT id,path,manifest_hash FROM exports WHERE run_id=? AND kind='run' AND status='verified' ORDER BY created_at DESC LIMIT 1",
     )
     .get(runId) as { id: string; path: string; manifest_hash: string } | undefined;
-  if (existing && fs.existsSync(existing.path))
+  // A generic run export is an everyday evidence artifact. Formal double-review
+  // material is only permitted in a verified, frozen study_final export. Rebuild
+  // a legacy cached export if it was created before that boundary existed.
+  if (existing && fs.existsSync(existing.path) && isEverydayRunExport(existing.path))
     return {
       exportId: existing.id,
       target: existing.path,
@@ -66,7 +84,7 @@ export function exportRun(runId: string) {
          JOIN rule_results rr ON rr.id=n.rule_result_id
          LEFT JOIN manual_review_samples mrs ON mrs.id=mr.sample_id
          LEFT JOIN manual_review_batches mrb ON mrb.id=mrs.batch_id
-        WHERE rr.run_id=? AND mr.is_current=1
+        WHERE rr.run_id=? AND mr.review_context='ad_hoc' AND mr.is_current=1
         ORDER BY mr.result_node_id,mr.review_context,mr.reviewer`,
     )
     .all(runId) as Array<{
@@ -81,67 +99,12 @@ export function exportRun(runId: string) {
     source_manifest_hash: string | null;
   }>;
   const reviewRefs: Array<Record<string, unknown>> = [];
-  const formalGroups = new Map<string, typeof reviewRows>();
   for (const row of reviewRows) {
-    if (row.review_context === "formal" && row.sample_id) {
-      const group = formalGroups.get(row.sample_id) ?? [];
-      group.push(row);
-      formalGroups.set(row.sample_id, group);
-      continue;
-    }
-    if (row.review_context === "ad_hoc")
-      reviewRefs.push({
-        resultNodeId: row.result_node_id,
-        finalVerdict: row.verdict,
-        resolutionSource: "ad_hoc",
-        batchRef: null,
-      });
-  }
-  for (const rows of formalGroups.values()) {
-    const first = rows[0];
-    const batchRef = first.batch_id
-      ? {
-          batchId: first.batch_id,
-          sourceExportId: first.source_export_id,
-          sourceManifestHash: first.source_manifest_hash,
-          ...(first.batch_status &&
-          !["completed", "completed_no_eligible_items"].includes(first.batch_status)
-            ? { status: first.batch_status }
-            : {}),
-        }
-      : null;
-    if (
-      !first.batch_status ||
-      !["completed", "completed_no_eligible_items"].includes(first.batch_status)
-    ) {
-      reviewRefs.push({
-        resultNodeId: first.result_node_id,
-        finalVerdict: null,
-        resolutionSource: "agreement",
-        batchRef,
-      });
-      continue;
-    }
-    const verdicts = new Set(rows.map((row) => row.verdict));
-    if (verdicts.size === 1) {
-      reviewRefs.push({
-        resultNodeId: first.result_node_id,
-        finalVerdict: first.verdict,
-        resolutionSource: "agreement",
-        batchRef,
-      });
-      continue;
-    }
-    const adjudication = getDb()
-      .prepare(
-        "SELECT adjudicated_verdict FROM manual_review_adjudications WHERE sample_id=? AND status='approved' AND is_current=1 ORDER BY revision DESC LIMIT 1",
-      )
-      .get(first.sample_id) as { adjudicated_verdict: string } | undefined;
     reviewRefs.push({
-      resultNodeId: first.result_node_id,
-      finalVerdict: adjudication?.adjudicated_verdict ?? null,
-      resolutionSource: adjudication ? "adjudication" : "agreement",
-      batchRef,
+      resultNodeId: row.result_node_id,
+      finalVerdict: row.verdict,
+      resolutionSource: "ad_hoc",
+      batchRef: null,
     });
   }
   reviewRefs.sort((a, b) => String(a.resultNodeId).localeCompare(String(b.resultNodeId)));

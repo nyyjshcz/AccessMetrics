@@ -525,7 +525,7 @@ function canonicalRunsForFreeze(freeze: any) {
   });
 }
 
-function copyRunExports(target: string, runIds: string[], allowedReviewNodeIds: Set<string>) {
+function copyRunExports(target: string, runIds: string[]) {
   for (const runId of runIds) {
     const generated = exportRun(runId);
     const destination = path.join(target, "runs", runId);
@@ -534,9 +534,10 @@ function copyRunExports(target: string, runIds: string[], allowedReviewNodeIds: 
       fs.copyFileSync(path.join(generated.target, file), path.join(destination, file));
     const scanPath = path.join(destination, "scan.json");
     const scan = JSON.parse(fs.readFileSync(scanPath, "utf8")) as Record<string, unknown>;
-    scan.reviewRefs = (Array.isArray(scan.reviewRefs) ? scan.reviewRefs : []).filter((ref) =>
-      allowedReviewNodeIds.has(String((ref as Record<string, unknown>).resultNodeId)),
-    );
+    // Nested run exports are immutable automatic evidence. Everyday notes and
+    // formal double-review data live in separate, purpose-specific artifacts;
+    // never let a note from either workflow bleed into a study export.
+    scan.reviewRefs = [];
     const scanBytes = Buffer.from(`${canonicalize(scan)}\n`);
     fs.writeFileSync(scanPath, scanBytes);
     const nestedManifestPath = path.join(destination, "manifest.json");
@@ -905,9 +906,9 @@ export function createStudyExport(input: {
       throw new AppError("REVIEW_FREEZE_REQUIRED", "R2/R3 review freeze 尚未验证", 409);
     const batch = db
       .prepare(
-        "SELECT * FROM manual_review_batches WHERE study_freeze_id=? AND status IN ('completed','completed_no_eligible_items')",
+        "SELECT * FROM manual_review_batches WHERE id=? AND study_freeze_id=? AND status IN ('completed','completed_no_eligible_items')",
       )
-      .get(input.studyFreezeId) as any;
+      .get(reviewFreeze.batch_id, input.studyFreezeId) as any;
     if (!batch) throw new AppError("REVIEWS_NOT_COMPLETE", "R2/R3 尚未完成，不能生成 final", 409);
     const r4Evidence = db
       .prepare(
@@ -1026,30 +1027,18 @@ export function createStudyExport(input: {
     fs.mkdirSync(temporary, { recursive: true });
     let finalBatchId: string | null = null;
     if (input.kind === "study_final") {
-      const batch = db
-        .prepare(
-          "SELECT id FROM manual_review_batches WHERE study_freeze_id=? ORDER BY created_at DESC LIMIT 1",
-        )
-        .get(input.studyFreezeId) as { id: string };
-      finalBatchId = batch.id;
+      finalBatchId = String(reviewFreeze.batch_id);
       const reviews = db
         .prepare(
-          "SELECT mr.* FROM manual_reviews mr JOIN manual_review_samples ms ON ms.result_node_id=mr.result_node_id WHERE ms.batch_id=? ORDER BY mr.result_node_id,mr.revision",
+          "SELECT mr.* FROM manual_reviews mr JOIN manual_review_samples ms ON ms.id=mr.sample_id WHERE ms.batch_id=? AND mr.review_context='formal' ORDER BY mr.result_node_id,mr.revision",
         )
-        .all(batch.id);
+        .all(finalBatchId);
       fs.writeFileSync(path.join(temporary, "manual-reviews.json"), canonicalize(reviews) + "\n");
       if (!reviewFreeze.storage_relpath || !fs.existsSync(reviewFreeze.storage_relpath))
         throw new AppError("REVIEW_FREEZE_MISSING", "review-freeze artifact 缺失", 409);
       fs.copyFileSync(reviewFreeze.storage_relpath, path.join(temporary, "review-freeze.json"));
     }
-    const allowedReviewNodeIds = new Set<string>();
-    if (finalBatchId) {
-      for (const row of db
-        .prepare("SELECT result_node_id FROM manual_review_samples WHERE batch_id=?")
-        .all(finalBatchId) as Array<{ result_node_id: string }>)
-        allowedReviewNodeIds.add(row.result_node_id);
-    }
-    copyRunExports(temporary, canonicalRunIds, allowedReviewNodeIds);
+    copyRunExports(temporary, canonicalRunIds);
     writeStudyPayload(
       temporary,
       canonicalRunIds,

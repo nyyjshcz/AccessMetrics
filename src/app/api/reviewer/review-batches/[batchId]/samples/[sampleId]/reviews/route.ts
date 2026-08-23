@@ -58,35 +58,43 @@ export async function POST(
       throw new AppError("REVIEW_REVISION_CONFLICT", "首次审核不能提交修订字段", 409);
     }
     const reviewId = id("review");
-    getDb().transaction(() => {
-      if (previous) invalidateStudyReviewChain(getDb(), batchId);
-      if (previous) {
-        const retired = getDb()
+    try {
+      getDb().transaction(() => {
+        if (previous) invalidateStudyReviewChain(getDb(), batchId);
+        if (previous) {
+          const retired = getDb()
+            .prepare(
+              "UPDATE manual_reviews SET is_current=0 WHERE id=? AND is_current=1 AND revision=?",
+            )
+            .run(previous.id, previous.revision);
+          if (!retired.changes)
+            throw new AppError("REVIEW_REVISION_CONFLICT", "审核已被其他请求修订", 409);
+        }
+        getDb()
           .prepare(
-            "UPDATE manual_reviews SET is_current=0 WHERE id=? AND is_current=1 AND revision=?",
+            "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,supersedes_review_id,is_current,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
           )
-          .run(previous.id, previous.revision);
-        if (!retired.changes)
-          throw new AppError("REVIEW_REVISION_CONFLICT", "审核已被其他请求修订", 409);
-      }
-      getDb()
-        .prepare(
-          "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,supersedes_review_id,is_current,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        )
-        .run(
-          reviewId,
-          sample.result_node_id,
-          sampleId,
-          "formal",
-          reviewer,
-          verdict,
-          String(body.note ?? ""),
-          previous ? previous.revision + 1 : 1,
-          previous?.id ?? null,
-          1,
-          new Date().toISOString(),
-        );
-    })();
+          .run(
+            reviewId,
+            sample.result_node_id,
+            sampleId,
+            "formal",
+            reviewer,
+            verdict,
+            String(body.note ?? ""),
+            previous ? previous.revision + 1 : 1,
+            previous?.id ?? null,
+            1,
+            new Date().toISOString(),
+          );
+      })();
+    } catch (error) {
+      if (
+        String((error as { code?: string } | undefined)?.code ?? "").startsWith("SQLITE_CONSTRAINT")
+      )
+        throw new AppError("REVIEW_REVISION_CONFLICT", "审核已被其他请求提交，请刷新后重试", 409);
+      throw error;
+    }
     return NextResponse.json({ reviewId, sampleId, reviewer, verdict }, { status: 201 });
   } catch (error) {
     return NextResponse.json(errorEnvelope(error), {

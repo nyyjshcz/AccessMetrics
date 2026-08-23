@@ -64,6 +64,7 @@ export function migrate() {
     migration023,
     migration024,
     migration025,
+    migration026,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -886,6 +887,34 @@ function migration025(db: Database.Database) {
       ON r5_artifact_outbox(status);
     CREATE INDEX IF NOT EXISTS idx_r5_artifact_outbox_status
       ON r5_artifact_outbox(status,created_at);
+  `);
+}
+
+function migration026(db: Database.Database) {
+  // Formal reviews have a non-null sample_id and are covered by the v20
+  // partial uniqueness invariant. Ad-hoc reviews have NULL sample_id, which
+  // SQLite treats as distinct in a unique index. Reconcile any historical
+  // duplicate current ad-hoc rows before enforcing the equivalent invariant.
+  db.exec(`
+    UPDATE manual_reviews
+    SET is_current=0
+    WHERE sample_id IS NULL
+      AND review_context='ad_hoc'
+      AND is_current=1
+      AND id NOT IN (
+        SELECT winner.id
+        FROM manual_reviews AS winner
+        WHERE winner.sample_id IS NULL
+          AND winner.review_context='ad_hoc'
+          AND winner.is_current=1
+          AND winner.result_node_id=manual_reviews.result_node_id
+          AND winner.reviewer=manual_reviews.reviewer
+        ORDER BY winner.revision DESC,winner.reviewed_at DESC,winner.id DESC
+        LIMIT 1
+      );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_reviews_ad_hoc_current_unique
+      ON manual_reviews(result_node_id,reviewer,review_context)
+      WHERE is_current=1 AND sample_id IS NULL AND review_context='ad_hoc';
   `);
 }
 

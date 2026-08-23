@@ -156,6 +156,8 @@ test("admin, reviewers, publishing and exports complete the fixture flow", async
   }
   await expect(page.getByRole("heading", { name: "严重程度分布" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "WCAG 原则分布" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "正式研究审核尚未开始" })).toBeVisible();
+  await expect(page.getByText(/不会伪造输入或假装正式审核已经开始/)).toBeVisible();
   await page.goto(`/scans/${runId}/issues`);
   await expect(page.getByRole("heading", { name: "问题列表" })).toBeVisible();
   await page.getByLabel("严重程度").selectOption("critical");
@@ -183,18 +185,25 @@ test("admin, reviewers, publishing and exports complete the fixture flow", async
 
   const computerContext = await browser.newContext({ baseURL: baseUrl });
   const computerPage = await computerContext.newPage();
-  await computerPage.goto("/review/login");
+  const directReviewPath = `/scans/${runId}/review?nodeId=${encodeURIComponent(resultNodeId)}`;
+  await computerPage.goto(`/review/login?next=${encodeURIComponent(directReviewPath)}`);
   await computerPage.getByLabel("Reviewer token").fill("e2e-computer-token");
   await computerPage.getByRole("button", { name: "登录" }).click();
-  await expect(computerPage).toHaveURL(/\/research$/);
-  await computerPage.reload();
-  const computerCsrf = await reviewerCsrfCookie(computerPage);
-  const computerReview = await appRequest(computerPage, "/api/reviews/ad-hoc", {
-    headers: { Origin: baseUrl, "x-csrf-token": computerCsrf },
-    body: { resultNodeId, verdict: "confirmed", note: "computer review" },
-  });
-  expect(computerReview.status).toBe(201);
-  expect(JSON.parse(computerReview.body).reviewer).toBe("computer_lead");
+  await expect(computerPage).toHaveURL(
+    new RegExp(`/scans/${runId}/review\\?nodeId=${resultNodeId}$`),
+  );
+  await expect(computerPage.getByRole("heading", { name: "人工审核工作台" })).toBeVisible();
+  await expect(computerPage.getByText(/不是让你逐条点完/)).toBeVisible();
+  await expect(computerPage.getByText(/自动补入下一个还未覆盖的问题组/)).toBeVisible();
+  await expect(computerPage.getByText("写理由前，按这三点核对")).toBeVisible();
+  await expect(computerPage.getByText(/全部待核对自动证据/)).toBeVisible();
+  await computerPage.getByLabel("为什么这样判断？").fill("这个节点确实需要人工确认。");
+  const [computerReview] = await Promise.all([
+    computerPage.waitForResponse((response) => response.url().endsWith("/api/reviews/ad-hoc")),
+    computerPage.getByRole("button", { name: "确认存在问题" }).click(),
+  ]);
+  expect(computerReview.status()).toBe(201);
+  await expect(computerPage.getByText(/已更新这个代表节点的人工注记/)).toBeVisible();
   const computerStatus = await appRequest(computerPage, `/api/reviews/status?runId=${runId}`);
   expect(JSON.parse(computerStatus.body).counts).toEqual([{ reviewer: "computer_lead", count: 1 }]);
 

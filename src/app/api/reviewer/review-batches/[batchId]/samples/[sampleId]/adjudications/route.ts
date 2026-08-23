@@ -33,11 +33,19 @@ export async function POST(
         "SELECT reviewer,verdict FROM manual_reviews WHERE sample_id=? AND review_context='formal' AND is_current=1 ORDER BY reviewer",
       )
       .all(sampleId) as Array<{ reviewer: string; verdict: string }>;
+    const reviewers = new Set(reviewRows.map((row) => row.reviewer));
     if (
-      reviewRows.length === 2 &&
-      reviewRows[0].verdict === reviewRows[1].verdict &&
-      reviewRows[0].verdict !== "uncertain"
+      reviewRows.length !== 2 ||
+      reviewers.size !== 2 ||
+      !reviewers.has("computer_lead") ||
+      !reviewers.has("math_lead")
     )
+      throw new AppError(
+        "ADJUDICATION_NOT_READY",
+        "必须先有两位 reviewer 的当前正式审核，才能提出裁决",
+        409,
+      );
+    if (reviewRows[0].verdict === reviewRows[1].verdict)
       throw new AppError("ADJUDICATION_NOT_REQUIRED", "双方结论一致的样本无需裁决", 409);
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body))

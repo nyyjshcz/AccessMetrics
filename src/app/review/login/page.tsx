@@ -1,10 +1,13 @@
 "use client";
 import { FormEvent, useState } from "react";
-import { useRouter } from "next/navigation";
 export default function ReviewLoginPage() {
   const [token, setToken] = useState("");
   const [error, setError] = useState("");
-  const router = useRouter();
+
+  const safeNextPath = () => {
+    const candidate = new URLSearchParams(window.location.search).get("next") ?? "";
+    return candidate.startsWith("/") && !candidate.startsWith("//") ? candidate : "";
+  };
   async function submit(event: FormEvent) {
     event.preventDefault();
     const response = await fetch("/api/reviewer/login", {
@@ -17,7 +20,7 @@ export default function ReviewLoginPage() {
       setError(data.error?.message ?? "登录失败");
       return;
     }
-    router.push("/research");
+    window.location.assign(safeNextPath() || "/research");
   }
   return (
     <section className="card" style={{ maxWidth: 480, margin: "32px auto" }}>

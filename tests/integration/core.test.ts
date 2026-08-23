@@ -179,6 +179,40 @@ describe("database and evidence chain", () => {
       1,
       new Date().toISOString(),
     );
+    // A malformed legacy formal row must never cross into an ordinary run
+    // export. Formal data is only allowed in a frozen study_final artifact.
+    db.prepare(
+      "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,is_current,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ).run(
+      "formal-core-review",
+      nodeId,
+      null,
+      "formal",
+      "math_lead",
+      "confirmed",
+      "formal fixture",
+      1,
+      1,
+      new Date().toISOString(),
+    );
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,is_current,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        )
+        .run(
+          "duplicate-current-adhoc",
+          nodeId,
+          null,
+          "ad_hoc",
+          "computer_lead",
+          "confirmed",
+          "duplicate fixture",
+          1,
+          1,
+          new Date().toISOString(),
+        ),
+    ).toThrow();
     const exported = exportModule.exportRun(run.id);
     expect(fs.existsSync(path.join(exported.target, "manifest.json"))).toBe(true);
     const runExport = JSON.parse(fs.readFileSync(path.join(exported.target, "scan.json"), "utf8"));

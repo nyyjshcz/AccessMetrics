@@ -39,7 +39,7 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
     )
       throw new AppError("VALIDATION_ERROR", "page/pageSize 参数无效", 400);
     const resultType = url.searchParams.get("resultType") ?? "violation";
-    if (!["violation", "incomplete", "pass"].includes(resultType))
+    if (!["violation", "incomplete", "pass", "inapplicable"].includes(resultType))
       throw new AppError("VALIDATION_ERROR", "resultType 参数无效", 400);
     const principle = url.searchParams.get("principle");
     if (principle && !["perceivable", "operable", "understandable", "robust"].includes(principle))
@@ -74,9 +74,50 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
     }
     const rows = getDb()
       .prepare(
-        `SELECT rr.id,rr.page_id,rr.rule_id,rr.result_type,rr.impact,rr.description,rr.help,rr.help_url,rr.node_count,rr.tags_json,rr.principles_json,(SELECT n.id FROM result_nodes n WHERE n.rule_result_id=rr.id ORDER BY n.ordinal LIMIT 1) result_node_id,(SELECT mr.verdict FROM manual_reviews mr WHERE mr.result_node_id IN (SELECT n2.id FROM result_nodes n2 WHERE n2.rule_result_id=rr.id) AND mr.is_current=1 ORDER BY mr.reviewed_at DESC LIMIT 1) review_verdict FROM rule_results rr WHERE ${where.join(" AND ")}`,
+        `SELECT rr.id,rr.page_id,rr.rule_id,rr.result_type,rr.impact,rr.description,rr.help,rr.help_url,rr.node_count,rr.tags_json,rr.principles_json,
+                p.canonical_url page_url,p.title page_title,
+                (SELECT n.id FROM result_nodes n WHERE n.rule_result_id=rr.id ORDER BY n.ordinal LIMIT 1) result_node_id
+           FROM rule_results rr JOIN pages p ON p.id=rr.page_id
+          WHERE ${where.join(" AND ")}`,
       )
       .all(...args) as any[];
+    const coverageByResult = new Map<
+      string,
+      {
+        reviewedNodeCount: number;
+        confirmedCount: number;
+        notAnIssueCount: number;
+        uncertainCount: number;
+      }
+    >();
+    if (rows.length) {
+      const coverageRows = getDb()
+        .prepare(
+          `SELECT n.rule_result_id,
+                  COUNT(DISTINCT CASE WHEN mr.id IS NOT NULL THEN n.id END) reviewed_node_count,
+                  COUNT(DISTINCT CASE WHEN mr.verdict='confirmed' THEN n.id END) confirmed_count,
+                  COUNT(DISTINCT CASE WHEN mr.verdict='not_an_issue' THEN n.id END) not_an_issue_count,
+                  COUNT(DISTINCT CASE WHEN mr.verdict='uncertain' THEN n.id END) uncertain_count
+             FROM result_nodes n
+             LEFT JOIN manual_reviews mr ON mr.result_node_id=n.id AND mr.review_context='ad_hoc' AND mr.is_current=1
+            WHERE n.rule_result_id IN (${rows.map(() => "?").join(",")})
+            GROUP BY n.rule_result_id`,
+        )
+        .all(...rows.map((row) => row.id)) as Array<{
+        rule_result_id: string;
+        reviewed_node_count: number;
+        confirmed_count: number;
+        not_an_issue_count: number;
+        uncertain_count: number;
+      }>;
+      for (const row of coverageRows)
+        coverageByResult.set(row.rule_result_id, {
+          reviewedNodeCount: Number(row.reviewed_node_count ?? 0),
+          confirmedCount: Number(row.confirmed_count ?? 0),
+          notAnIssueCount: Number(row.not_an_issue_count ?? 0),
+          uncertainCount: Number(row.uncertain_count ?? 0),
+        });
+    }
     const filtered = rows
       .map((row) => {
         const tags = JSON.parse(row.tags_json ?? "[]") as string[];
@@ -86,11 +127,22 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
           ...row,
           principles,
           localization: getRuleLocalization(row.rule_id),
-          reviewVerdict: row.review_verdict ?? "unreviewed",
+          reviewCoverage: coverageByResult.get(row.id) ?? {
+            reviewedNodeCount: 0,
+            confirmedCount: 0,
+            notAnIssueCount: 0,
+            uncertainCount: 0,
+          },
         };
       })
       .filter((row) => !principle || row.principles.includes(principle))
-      .filter((row) => !reviewVerdict || row.reviewVerdict === reviewVerdict)
+      .filter((row) => {
+        if (!reviewVerdict) return true;
+        if (reviewVerdict === "unreviewed") return row.reviewCoverage.reviewedNodeCount === 0;
+        if (reviewVerdict === "confirmed") return row.reviewCoverage.confirmedCount > 0;
+        if (reviewVerdict === "not_an_issue") return row.reviewCoverage.notAnIssueCount > 0;
+        return row.reviewCoverage.uncertainCount > 0;
+      })
       .sort((a, b) => {
         if (sort === "rule_asc")
           return a.rule_id.localeCompare(b.rule_id) || a.page_id.localeCompare(b.page_id);

@@ -194,6 +194,7 @@ for (const indexName of [
   "idx_job_pages_normalized_url",
   "idx_scan_runs_job_unique",
   "idx_manual_reviews_current_unique",
+  "idx_manual_reviews_ad_hoc_current_unique",
   "idx_adjudications_current_unique",
   "idx_scan_jobs_status_created",
   "idx_job_pages_job_status_discovery",

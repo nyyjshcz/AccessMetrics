@@ -80,6 +80,8 @@ for (const route of [
   "/api/scans/{jobId}",
   "/api/runs/{runId}",
   "/api/runs/{runId}/issues",
+  "/api/runs/{runId}/review-workbench",
+  "/api/runs/{runId}/formal-review-status",
   "/api/admin/login",
   "/api/admin/session",
   "/api/reviewer/login",

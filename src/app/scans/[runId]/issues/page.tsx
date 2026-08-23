@@ -5,6 +5,8 @@ import { useEffect, useState } from "react";
 type Issue = {
   id: string;
   page_id: string;
+  page_url: string;
+  page_title: string | null;
   rule_id: string;
   result_type: string;
   impact: string | null;
@@ -13,7 +15,12 @@ type Issue = {
   help_url: string;
   node_count: number;
   principles: string[];
-  reviewVerdict: string;
+  reviewCoverage: {
+    reviewedNodeCount: number;
+    confirmedCount: number;
+    notAnIssueCount: number;
+    uncertainCount: number;
+  };
   nodes: Array<{
     id: string;
     ordinal: number;
@@ -39,21 +46,38 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
   const [principle, setPrinciple] = useState("");
   const [resultType, setResultType] = useState("violation");
   const [ruleId, setRuleId] = useState("");
+  const [pageId, setPageId] = useState("");
   const [reviewVerdict, setReviewVerdict] = useState("");
   const [sort, setSort] = useState("impact_desc");
   const [page, setPage] = useState(1);
   const [error, setError] = useState("");
+  const [queryReady, setQueryReady] = useState(false);
 
   useEffect(() => {
     params.then((value) => setRunId(value.runId));
   }, [params]);
 
   useEffect(() => {
-    if (!runId) return;
+    void Promise.resolve().then(() => {
+      const query = new URLSearchParams(window.location.search);
+      const requestedResultType = query.get("resultType");
+      if (["violation", "incomplete", "pass", "inapplicable"].includes(requestedResultType ?? ""))
+        setResultType(requestedResultType!);
+      const requestedRule = query.get("ruleId");
+      if (requestedRule) setRuleId(requestedRule);
+      const requestedPage = query.get("pageId");
+      if (requestedPage) setPageId(requestedPage);
+      setQueryReady(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!runId || !queryReady) return;
     const query = new URLSearchParams({ page: String(page), pageSize: "20", resultType, sort });
     if (impact) query.set("impact", impact);
     if (principle) query.set("principle", principle);
     if (ruleId) query.set("ruleId", ruleId);
+    if (pageId) query.set("pageId", pageId);
     if (reviewVerdict) query.set("reviewVerdict", reviewVerdict);
     fetch(`/api/runs/${runId}/issues?${query}`)
       .then(async (response) => {
@@ -69,14 +93,21 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
       .catch((reason: unknown) =>
         setError(reason instanceof Error ? reason.message : "问题列表读取失败"),
       );
-  }, [runId, page, impact, principle, resultType, ruleId, reviewVerdict, sort]);
+  }, [runId, page, impact, principle, resultType, ruleId, pageId, reviewVerdict, sort, queryReady]);
 
   if (error) return <p className="error">{error}</p>;
   return (
     <section>
       <div className="card">
         <h1>问题列表</h1>
-        <p className="muted">仅列出自动化结果；人工复核结论需以正式 review freeze 为准。</p>
+        <p className="muted">
+          这里保留全部自动化结果。只有 violation 和 incomplete 是可提交人工判断的异常证据；pass 和
+          inapplicable
+          可以浏览，但不是人工待办。一个问题组可能含多个节点；“人工覆盖”显示已实际记录判断的节点数，不会把一条人工判断扩大成整组结论。
+        </p>
+        <p>
+          <a href={`/scans/${runId}/review`}>先进入人工审核工作台（按问题组与代表样本）</a>
+        </p>
         <div className="filters" aria-label="问题筛选">
           <label>
             严重程度
@@ -106,6 +137,7 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
               <option value="violation">violation</option>
               <option value="incomplete">incomplete（人工检查）</option>
               <option value="pass">pass</option>
+              <option value="inapplicable">inapplicable（不适用）</option>
             </select>
           </label>
           <label>
@@ -120,7 +152,7 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
             />
           </label>
           <label>
-            人工状态
+            人工覆盖
             <select
               value={reviewVerdict}
               onChange={(event) => {
@@ -129,10 +161,10 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
               }}
             >
               <option value="">全部</option>
-              <option value="confirmed">confirmed</option>
-              <option value="not_an_issue">not_an_issue</option>
-              <option value="uncertain">uncertain</option>
-              <option value="unreviewed">unreviewed</option>
+              <option value="confirmed">至少有 1 个确认节点</option>
+              <option value="not_an_issue">至少有 1 个“不成立”节点</option>
+              <option value="uncertain">至少有 1 个不确定节点</option>
+              <option value="unreviewed">还没有人工记录</option>
             </select>
           </label>
           <label>
@@ -166,6 +198,19 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
             </select>
           </label>
         </div>
+        {pageId ? (
+          <p className="notice">
+            当前只显示一个页面中的问题组。{" "}
+            <button
+              type="button"
+              className="secondary"
+              style={{ width: "auto", marginLeft: 8 }}
+              onClick={() => setPageId("")}
+            >
+              查看全部页面
+            </button>
+          </p>
+        ) : null}
       </div>
       {items.length === 0 ? (
         <div className="card" style={{ marginTop: 16 }}>
@@ -181,7 +226,7 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
                 <th>严重程度</th>
                 <th>页面</th>
                 <th>节点数</th>
-                <th>复核状态</th>
+                <th>人工覆盖</th>
                 <th>说明</th>
               </tr>
             </thead>
@@ -195,10 +240,20 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
                   </td>
                   <td>{item.impact ?? "N/A"}</td>
                   <td>
-                    <code>{item.page_id}</code>
+                    <a href={item.page_url} target="_blank" rel="noreferrer">
+                      {item.page_title || item.page_url}
+                    </a>
                   </td>
                   <td>{item.node_count}</td>
-                  <td>{item.reviewVerdict}</td>
+                  <td>
+                    已审 {item.reviewCoverage.reviewedNodeCount}/{item.node_count}
+                    <br />
+                    <small>
+                      确认 {item.reviewCoverage.confirmedCount} · 不成立{" "}
+                      {item.reviewCoverage.notAnIssueCount} · 不确定{" "}
+                      {item.reviewCoverage.uncertainCount}
+                    </small>
+                  </td>
                   <td>
                     <strong>{item.localization?.zhName ?? "暂无人工校对中文说明"}</strong>
                     <br />
@@ -217,6 +272,13 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
                         item.nodes.map((node) => (
                           <div key={node.id} style={{ marginTop: 8 }}>
                             <strong>节点 {node.ordinal + 1}</strong>
+                            <div>
+                              <a
+                                href={`/scans/${runId}/review?nodeId=${encodeURIComponent(node.id)}`}
+                              >
+                                审核这个节点
+                              </a>
+                            </div>
                             <div>
                               <code>{JSON.stringify(node.target)}</code>
                               {node.targetHash ? (

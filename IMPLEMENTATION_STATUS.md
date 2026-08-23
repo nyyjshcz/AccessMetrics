@@ -10,7 +10,7 @@
 - 依赖基线与负面 fixture：Node 24.19.0、pnpm 11.19.0、Python 3.12.13、Next/Playwright/axe 精确版本检查。
 - 依赖预检会实际执行 `PYTHON_BIN`/系统 Python 并解析 `--version`；当前捆绑解释器为 Python 3.12.13，系统 Python 3.13.7 会按设计失败，不再信任伪造的 `PYTHON_VERSION`。
 - 依赖预检也会实际执行 pnpm（Windows 通过 `cmd.exe`，Unix 直接执行）并核对 11.19.0，不只检查 `package.json` 的声明。
-- SQLite 迁移 1–25：外键、WAL、job/page lease、恢复、幂等唯一键与索引、frame 覆盖、研究 campaign/freeze/export、人工 review/adjudication、门证据/outbox、发布 revision/CAS 字段、R5 双角色 artifact 会话、study export current 唯一约束、扫描时本地化 hash、frame 覆盖问题记录、axe 运行时证据快照，以及 R5 clean-clone exercise 草稿、revision artifact 路径、规范化 owner artifact/step/bundle 表和严格的 `artifact_kind/artifact_id/canonical_json` artifact outbox；迁移 18–25 补齐按任务/运行追溯的页面身份、精确/展示分数字段、结果节点 frame 证据、评审当前版本唯一性、R5 不可覆盖证据和恢复队列、正式 attempt 的替补启用时间、任务/结果/R5 全部计划索引，并重建旧版 pages 表以移除站点级 URL 唯一约束。
+- SQLite 迁移 1–26：外键、WAL、job/page lease、恢复、幂等唯一键与索引、frame 覆盖、研究 campaign/freeze/export、人工 review/adjudication、门证据/outbox、发布 revision/CAS 字段、R5 双角色 artifact 会话、study export current 唯一约束、扫描时本地化 hash、frame 覆盖问题记录、axe 运行时证据快照，以及 R5 clean-clone exercise 草稿、revision artifact 路径、规范化 owner artifact/step/bundle 表和严格的 `artifact_kind/artifact_id/canonical_json` artifact outbox；迁移 18–25 补齐按任务/运行追溯的页面身份、精确/展示分数字段、结果节点 frame 证据、评审当前版本唯一性、R5 不可覆盖证据和恢复队列、正式 attempt 的替补启用时间、任务/结果/R5 全部计划索引，并重建旧版 pages 表以移除站点级 URL 唯一约束；迁移 26 会收敛历史重复的当前 ad-hoc 注记，并以部分唯一索引阻止同一 reviewer 对同一节点并发留下两条当前日常结论。
 - URL 安全、robots、同站 BFS、页面深度/资源过滤、Playwright + 本地 axe 四类结果、同源/跨源 frame 尝试、节点清理和非 HTML 失败记录。
 - 本地开发环境新增可选 HTTPS DNS（DoH）解析：当系统 DNS 将公网域名合成为 `198.18.0.0/15` 或 ULA 时，可在 `.env.local` 设置 `DNS_RESOLVER_MODE=doh` 与受信任的 HTTPS resolver；DoH 返回的每个 A/AAAA 地址仍经过现有私网、保留地址和云元数据拦截，解析失败返回结构化 `DNS_LOOKUP_FAILED`，生产环境明确禁止 DoH 并保持 system DNS/egress proxy。
 - WCAG 2.2 方法目录、axe 4.13.0 完整规则目录生成器、中文目录、独立黄金快照、节点/规则严重程度来源和 `accesscheck-score-v1` TypeScript/Python 参考实现；多原则规则只计一次总体机会并分别归入原则分项。
@@ -35,13 +35,14 @@
 - 生产 Web 现在在服务端配置模块加载时即 fail-closed 检查私有证据根目录存在、0700（非 Windows）且可读写，并同时检查生产 secrets 与 egress proxy；缺失或不可写时不会接受首个请求，health endpoint 仍保留 503 作为运行态诊断。
 - `contracts/api.openapi.yaml` 已补齐源码下全部 API 路由（含管理、认证、研究、报告、发布和 reviewer 别名路由）；`contract:check` 会递归扫描 `src/app/api/**/route.ts`，用规范化动态参数逐条拒绝未登记路由，避免新增接口只写代码不更新契约。
 - OpenAPI 契约门现在同时逐个比对源码 route handler 的 HTTP 方法；新增或遗漏方法会在质量门直接失败。单次 run 导出补齐 `site/configSnapshot/ruleResults/resultNodes/pageScores/siteScore/reviewRefs/provenance` 等可追溯 DTO，`run-export.schema.json` 锁定这些字段；研究导出生成固定的 `data/study.json`、12 张 UTF-8 BOM/CRLF CSV、schema/config/research 目录，source 不带人工审核 payload，manifest 记录行数/字节/hash，`export:verify` 逐项复核原始字节和 CSV 行数。
-- run 导出的 `reviewRefs` 由服务端按上下文整理：ad-hoc 只显示自身最终判断，formal batch 在双方完成前只返回进度/`finalVerdict=null`，双方一致取 agreement，分歧只有 approved adjudication 才输出；研究 source/final 复制 run 文件时按允许的正式样本节点重新绑定嵌套 manifest，避免把 ad-hoc 或盲审答案带入研究总体。
+- 普通 run 导出的 `reviewRefs` 只包含 ad-hoc 日常注记；正式双人审核、分歧与裁决只存在于受 freeze 约束的正式研究产物。旧缓存若含正式引用会在下次导出时重建；研究 source/final 的嵌套 run 文件不携带任何人工注记，避免把日常笔记或盲审数据混入研究总体。
 - R5 artifact 现在由服务端按 canonical 字节写入 `gates/R5/artifacts/<role>/<type>.r<revision>.json`，三个 artifact schema 均强制要求 `artifactHash`；`artifactHash` 是省略自身后的 canonical JSON（含尾换行）的 SHA-256，数据库/bundle 绑定该语义 hash，outbox 的 `expected_file_hash` 单独绑定完整文件字节 hash。系统会在恢复、重复提交、归档、finalize 和 gate 展开时同时校验两种 hash，并通过严格的 `artifact_kind/artifact_id/canonical_json` DB outbox 恢复/校验磁盘 hash；跨 rcCommit 的同名旧文件按 commit 归档，绝不覆盖历史证据。修订会使共同 bundle 和双方 finalize 失效，缺失/篡改/冲突均 fail-closed。gate receipt 改为完整 receipt 字节 hash，outbox 幂等写入并有双角色 fixture 验证。
 - R5 规范化表已与旧 session read-model 同步：`r5_owner_artifacts` 保存角色/版本/当前状态，`r5_exercise_steps` 保存固定命令结果，`r5_artifact_bundles` 保存六份 passed hash；R5 gate 只接受服务端按 `rcCommit` 找到的 ready bundle，不能由请求体自报 artifacts。页面 worker 增加 10 秒 heartbeat、租约拥有者 CAS、崩溃恢复、重试上限、取消时批量终止剩余页面和每页事务提交。
 - 研究导出现在先写私有证据根下的隔离临时目录，校验 UTF-8 BOM/CRLF、固定列、CSV 外键、study.json runSet、manifest 条件约束和 payload hash 后才原子改名；校验失败只清理临时目录，不会留下可被当作正式导出的半成品。`export:verify` 同样检查 payload 完整清单、source/final 条件字段和研究绑定。
 - study_final 的报告中文目录、模型决策和模型观察文件必须从私有 R4 证据按冻结 SHA-256 精确找到并复制，工作区 `ai_draft` 文件不能冒充 human-reviewed；study source 明确拒绝 final/R4 材料。研究 sites CSV 同时保留站点类别，分析输出增加均值/中位数/四分位数、类别描述、Cohen kappa 和三套权重的 Spearman 排名相关，并在 provenance.calculationKeys 记录来源与筛选键。
 - HTML/PDF 报告共享 `AuthorizedRunReportDto` 和 `renderRunReportHtml`；PDF 只把授权后的自包含 HTML 通过 Playwright `page.setContent()` 打印，不访问扫描站点或 `file://` 报告 URL。
 - 本轮界面闭环已接入真实数据：首页显示已发布站点/成功页面/最近扫描统计，扫描任务页支持取消与错误状态，结果页展示页面状态和 coverage，问题页支持结果类型/规则/人工状态/影响/原则/排序筛选，报告页展示四原则、主要问题和边界，研究页展示版本/类别筛选后的数据表，reviewer 页按角色加载样本并提交正式复核；报告接口与 HTML/PDF 共用主要问题 DTO。
+- 人工审核界面已重构为“两层流程”：`/scans/<runId>/review` 先把全部 `violation`/`incomplete` 证据按“页面 × 规则”归组，并维持最多 12 个的连续建议队列；完成一个问题组的首条日常注记会自动补入下一组。问题列表仍能展开每一个原始节点并跳转到同一工作台逐条审核。保存后立即刷新该节点注记、实际覆盖率和首轮问题组覆盖，绝不把一条判断扩大成整组结论，也不改写自动分数；提交期间按钮锁定，数据库同时阻止并发双写。扫描结果页另有正式研究状态卡：没有真实 R1 时清楚显示等待原因，有 batch 后 reviewer 才会得到自己的入口。正式 batch 页面只显示本人进度，不显示另一人答案、进度、一致或分歧；正式研究仍保持每位 reviewer 最多 40 个节点、两人合计最多 80 次独立判断。
 - 本轮完成度审计又补齐结果页严重度/四原则分布、问题 API 与页面的节点定位/清理片段/失败原因、HTML/PDF/报告页代表性节点证据，以及研究总览的版本过滤、站点四原则分数、分布统计、类别比较、常见规则、严重度/原则图表和对应数据表；缺失版本三元组的历史 run 不会进入研究基线。
 - 在上述审计后的闭环复跑中，又补齐扫描任务的开始/结束/耗时/当前页面字段、研究总分排名与 10 档直方图数据、PDF 页眉页脚和 A4 打印边距；最终 `pnpm test:all` 覆盖这些改动并通过。
 - 本轮又补齐成果报告链：研究/应用候选与最终报告均输出计划要求的 15 个章节、数字/版本/hash 追溯、图表及相邻数据表；DOCX 使用标题和表格结构；最终成果临时目录原子落盘；候选/最终验证器拒绝缺章节、缺三件套、数字未追溯、manifest/hash 不一致或无法提取 PDF 文本的产物；渲染器生成逐页 PNG 和明确的 `WAITING_HUMAN_REVIEW` QA 记录。
@@ -66,7 +67,11 @@
 - study freeze 状态严格推进 `registered -> source_verified -> reviews_completed -> r4_verified -> final_verified`；R3 review-freeze 先进入 `awaiting_r3`，两份 R3 receipt 经 `project:resume` 才晋级，review/adjudication/R4 修订会在同一事务撤下旧 final 并回退到最早失效门。分析报告沿用冻结 manifest 的 populationDigest，不再产生另一套近似总体 hash。
 - `gates:verify`、`project:status` 和 `project:resume` 现在会核对 receipt artifact 当前 hash、数据库 current approved 记录、outbox=`written`、outbox 字节/目标路径/hash、R5 六项排序 bundle、共同 bundle hash、两份公共 artifact 集、前置门顺序及 R5 两份相同 40 位 bound commit；不会以文件存在代替数据库事实。
 
-## 最近自动化质量门（2026-08-22）
+## 最近自动化质量门
+
+### 人工审核工作台复核（2026-08-24）
+
+本轮已通过 `pnpm test:all`（迁移 1–26、integration 8 files/26 tests、scoring 7 files/28 tests、全量 15 files/54 tests、Next production build、3 个 Playwright 场景）。浏览器验收实际验证了：管理员能看见“正式研究审核尚未开始”和真实输入等待说明；reviewer 能从任意原始节点入口进入工作台，看到连续队列和三点核对清单，并提交人工判断。其余自动门覆盖 ad-hoc 并发唯一性、正式盲审隔离、普通 run 导出隔离和正式状态卡。`EXTERNAL_INPUTS.md` 仍保持 `WAITING_EXTERNAL_INPUT`：此次改动没有生成或伪造任何正式研究审核结论。
 
 以下命令已通过（最后一次完整质量门，2026-08-22）：
 
@@ -99,13 +104,13 @@ pnpm project:status       # 输出 WAITING_EXTERNAL_INPUT，自动实现 ready
 pnpm project:resume       # 当前按预期拒绝续跑，直到 R1–R5/外部输入齐全
 ```
 
-最后一次完整质量门（含 `pnpm docs:check`、`pnpm plan:check`）通过：迁移 1–25、integration 8 files/25 tests、scoring 5 files/22 tests、全量 13 files/47 tests、Python 分析、Next build、3 个 Playwright E2E；文档契约、计划 1–19 覆盖表、Compose 隔离、外部交付状态和计划兼容入口均纳入检查。
+历史完整质量门（含 `pnpm docs:check`、`pnpm plan:check`）通过时使用迁移 1–25、integration 8 files/25 tests、scoring 5 files/22 tests、全量 13 files/47 tests、Python 分析、Next build、3 个 Playwright E2E；当前数据库已升级到迁移 1–26，本轮新的完整质量门结果已记录于上节。
 
-本轮 R5 outbox/path 收敛后的完整质量门再次通过：迁移 1–25、integration 6 files/19 tests、scoring 5 files/22 tests、全量 11 files/41 tests、Python 分析、Next build、3 个 Playwright E2E；新增测试确认 outbox 仅含计划字段、固定 artifact 路径和跨 commit 归档行为。
+历史 R5 outbox/path 收敛后的完整质量门使用迁移 1–25；新增测试确认 outbox 仅含计划字段、固定 artifact 路径和跨 commit 归档行为。当前迁移版本见本文开头的 1–26 状态。
 
-在此基础上新增计划 CLI 参数分隔符回归测试后，完整质量门再次通过：迁移 1–25、integration 7 files/20 tests、scoring 5 files/22 tests、全量 11 files/42 tests、Python 分析、Next build、3 个 Playwright E2E；新增测试确认原样传入 `pnpm ... -- --参数` 会进入真实业务门，而不是被误判为缺少参数。
+在此基础上新增计划 CLI 参数分隔符回归测试后的历史完整质量门使用迁移 1–25；新增测试确认原样传入 `pnpm ... -- --参数` 会进入真实业务门，而不是被误判为缺少参数。
 
-在此基础上补齐 DOCX `zh-CN` 默认语言属性后，完整质量门再次通过：迁移 1–25、integration 7 files/20 tests、scoring 5 files/22 tests、全量 12 files/43 tests、Python 分析、Next build、3 个 Playwright E2E；候选报告结构测试同时验证 DOCX 语言属性。
+在此基础上补齐 DOCX `zh-CN` 默认语言属性后的历史完整质量门使用迁移 1–25；候选报告结构测试同时验证 DOCX 语言属性。
 
 在此基础上接入 `docs/templates/report-style.json` 后，候选报告测试和完整质量门再次通过；报告样式模板缺失、版本错误、非 A4 或非 `zh-CN` 时会在生成前停止。
 

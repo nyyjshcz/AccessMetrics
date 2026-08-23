@@ -45,7 +45,12 @@ paths:
         - {
             name: resultType,
             in: query,
-            schema: { type: string, enum: [violation, incomplete, pass], default: violation },
+            schema:
+              {
+                type: string,
+                enum: [violation, incomplete, pass, inapplicable],
+                default: violation,
+              },
           }
         - {
             name: reviewVerdict,
@@ -59,6 +64,21 @@ paths:
           }
       responses:
         "200": { description: paginated issues }
+  /api/runs/{runId}/review-workbench:
+    get:
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string } }
+        - { name: nodeId, in: query, schema: { type: string } }
+      responses:
+        "200": { description: authenticated grouped exploratory review workbench }
+        "401": { description: reviewer or administrator session required }
+  /api/runs/{runId}/formal-review-status:
+    get:
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: authenticated blind-safe formal review status and next step }
+        "401": { description: reviewer or administrator session required }
   /api/admin/login:
     post:
       requestBody:

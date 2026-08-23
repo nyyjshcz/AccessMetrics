@@ -79,4 +79,6 @@
 
 | 2026-08-23 | 本地公网 DNS 合成地址的开发 DoH fallback | AI | 待负责人 | 当前工作区自动化基线（未发布） | `pnpm exec vitest run tests/scoring/url-security.test.ts`（8 passed）；DoH `A/AAAA` 解析器单元测试、TTL 缓存/类型过滤、解析失败错误契约；公共 DNS smoke：`www.zjdpf.org.cn` 经 `https://dns.google/resolve` 返回公开 A/AAAA，系统 DNS 返回合成私网地址 | 代码通过；仅非生产允许 DoH，返回地址继续执行 SSRF/private-target 检查，run config snapshot 记录 resolver mode/endpoint；尚未宣称正式研究或公网部署 | R1–R5、真实站点许可/研究数据、生产 DNS/egress/渲染器环境仍需外部输入 |
 
+| 2026-08-23 | 浙江省残联官网本地端到端扫描 smoke | AI | 待负责人 | `job_f45b770dd1314043a59ac6a8c7b91a58` / `run_c9c95f29478441dd8772fc70f2bec1b0`（当前工作区，未发布） | Web + Worker 使用 `DNS_RESOLVER_MODE=doh` 扫描 `https://www.zjdpf.org.cn/`，最多 10 页；任务 48 秒完成，发现/成功 9/9，失败 0，HTTP 200 页面 9，评分 `87.6/100`（可感知 88.4、可操作 96.8、易理解 100、兼容性 86.6） | 通过；DoH fallback 解决本机合成 DNS 误判，扫描结果可在本地结果页查看；该 smoke 仅用于验证实现，不等同于已取得正式研究许可、人工复核或 WCAG 合规认证 | R1–R5、负责人确认的正式站点许可/采集窗口、生产 DNS/egress/渲染器环境仍需外部输入 |
+
 真人确认只能由对应 reviewer 会话提交；AI 不得把本表预填行改成“本人已复核”。

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { canonicalizeUrl, isPrivateIp, validateTargetUrl } from "@/lib/url-security";
+import {
+  canonicalizeUrl,
+  isPrivateIp,
+  parseDohAnswers,
+  validateTargetUrl,
+} from "@/lib/url-security";
 
 describe("target URL security", () => {
   it("rejects any private address returned by DNS policy", async () => {
@@ -60,5 +65,35 @@ describe("target URL security", () => {
         }),
       ).rejects.toMatchObject({ code: "PRIVATE_TARGET" });
     }
+  });
+
+  it("parses only typed DoH answers and preserves the shortest TTL", () => {
+    expect(
+      parseDohAnswers(
+        {
+          Status: 0,
+          Answer: [
+            { type: 1, data: "112.124.240.62", TTL: 600 },
+            { type: 1, data: "198.18.0.67", TTL: 120 },
+            { type: 28, data: "2408:4005:1011:1000::108", TTL: 300 },
+            { type: 1, data: "not-an-ip", TTL: 1 },
+          ],
+        },
+        1,
+      ),
+    ).toEqual({
+      addresses: ["112.124.240.62", "198.18.0.67"],
+      ttlMs: 120_000,
+    });
+  });
+
+  it("turns resolver failures into a safe client error", async () => {
+    await expect(
+      validateTargetUrl("https://example.test", {
+        lookupAll: async () => {
+          throw new Error("resolver unavailable");
+        },
+      }),
+    ).rejects.toMatchObject({ code: "DNS_LOOKUP_FAILED", status: 422 });
   });
 });

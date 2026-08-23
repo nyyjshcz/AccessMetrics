@@ -11,6 +11,7 @@
 - Node.js `24.19.0`、pnpm `11.19.0`、Python `3.12.13`；`pnpm dependency:preflight` 会执行真实解释器并核对固定基线。
 - 复制 `.env.example` 为 `.env.local`，由负责人提供管理、reviewer、CSRF、会话和加密备份密钥；密钥不进入 Git。
 - 若要运行容器形态，需要 Docker Compose；正式 PDF/DOCX 视觉 QA 还需要固定版本的 LibreOffice、Poppler 和渲染器镜像。当前仓库没有把缺失工具伪装成通过。
+- 如果本机网络把公网域名解析成 `198.18.0.0/15`、ULA 等合成地址，可在本地开发 `.env.local` 中设置 `DNS_RESOLVER_MODE=doh` 和 `DNS_OVER_HTTPS_URL=https://dns.google/resolve`；DoH 只在非生产环境允许，目标域名会发送给该 HTTPS DNS 服务，返回地址仍会经过私网/保留地址检查。生产必须保持 `DNS_RESOLVER_MODE=system` 并使用受控 egress proxy。
 
 ### 本地与 Docker 启动
 

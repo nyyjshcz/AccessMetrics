@@ -125,6 +125,9 @@ export function createRun(job: any) {
         maxSiteDurationMs: config.MAX_SITE_DURATION_MS,
         proxyConfigured: Boolean(config.EGRESS_PROXY_URL),
         proxyPolicyVersion: "destination-policy-v1",
+        dnsResolverMode: config.DNS_RESOLVER_MODE,
+        dnsOverHttpsEndpoint:
+          config.DNS_RESOLVER_MODE === "doh" ? (config.DNS_OVER_HTTPS_URL ?? null) : null,
       },
     }),
     viewport_json: JSON.stringify({ width: 1280, height: 720 }),

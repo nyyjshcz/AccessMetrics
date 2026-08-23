@@ -16,6 +16,8 @@ const envSchema = z.object({
   SCAN_RETRY_COUNT: z.coerce.number().int().min(0).max(3).default(1),
   MAX_CRAWL_DEPTH: z.coerce.number().int().min(0).max(10).default(2),
   MAX_SITE_DURATION_MS: z.coerce.number().int().min(1000).max(1800000).default(600000),
+  DNS_RESOLVER_MODE: z.enum(["system", "doh"]).default("system"),
+  DNS_OVER_HTTPS_URL: z.string().url().optional(),
   SCAN_ADMIN_TOKEN: z.string().optional(),
   COMPUTER_REVIEWER_TOKEN: z.string().optional(),
   MATH_REVIEWER_TOKEN: z.string().optional(),
@@ -88,6 +90,15 @@ export function assertProductionProxy() {
     throw new Error("production EGRESS_PROXY_URL is missing");
 }
 
+export function assertDnsResolver() {
+  if (config.DNS_RESOLVER_MODE !== "doh") return;
+  if (config.APP_ENV === "production")
+    throw new Error("DNS_RESOLVER_MODE=doh is not allowed in production");
+  if (!config.DNS_OVER_HTTPS_URL) throw new Error("DNS_OVER_HTTPS_URL is required for DoH");
+  if (new URL(config.DNS_OVER_HTTPS_URL).protocol !== "https:")
+    throw new Error("DNS_OVER_HTTPS_URL must use HTTPS");
+}
+
 // Refuse to load the server-side application in production when the private
 // evidence root, required secrets, or egress proxy is not ready. The worker
 // calls the same assertions explicitly; keeping this guard at module load
@@ -98,5 +109,6 @@ if (config.APP_ENV === "production") {
   assertProductionSecrets();
   assertProductionProxy();
 }
+assertDnsResolver();
 
 export type AppConfig = typeof config;

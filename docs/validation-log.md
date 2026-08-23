@@ -77,4 +77,6 @@
 
 | 2026-08-22 | 计划 1–19 逐步覆盖检查纳入最终总门 | AI | 待负责人 | 当前自动化基线（未发布） | `pnpm plan:check`（计划标题 1–19、19 行状态和等待规则通过）；`pnpm test:all`（integration 8 files/25 tests、scoring 5 files/22 tests、全量 13 files/47 tests、Python 分析、Next build、3 个 Playwright E2E） | 通过；逐步覆盖表、文档契约和完整代码质量门均通过；依赖预检基线时间戳已恢复为固定值 | Docker Compose 实际启动、真实代理/渲染器 digest、R1–R5、正式研究/交付仍需外部输入 |
 
+| 2026-08-23 | 本地公网 DNS 合成地址的开发 DoH fallback | AI | 待负责人 | 当前工作区自动化基线（未发布） | `pnpm exec vitest run tests/scoring/url-security.test.ts`（8 passed）；DoH `A/AAAA` 解析器单元测试、TTL 缓存/类型过滤、解析失败错误契约；公共 DNS smoke：`www.zjdpf.org.cn` 经 `https://dns.google/resolve` 返回公开 A/AAAA，系统 DNS 返回合成私网地址 | 代码通过；仅非生产允许 DoH，返回地址继续执行 SSRF/private-target 检查，run config snapshot 记录 resolver mode/endpoint；尚未宣称正式研究或公网部署 | R1–R5、真实站点许可/研究数据、生产 DNS/egress/渲染器环境仍需外部输入 |
+
 真人确认只能由对应 reviewer 会话提交；AI 不得把本表预填行改成“本人已复核”。

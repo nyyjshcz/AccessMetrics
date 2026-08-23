@@ -1,16 +1,67 @@
 import dns from "node:dns/promises";
 import net from "node:net";
 import { AppError } from "./errors";
+import { config } from "./config";
 
 export interface NetworkPolicy {
   lookupAll(host: string): Promise<string[]>;
   /** Test-only escape hatch. Production policy leaves this unset/false. */
   allowPrivateAddresses?: boolean;
 }
+
+type DohAnswer = { type?: number; data?: string; TTL?: number };
+type DohResponse = { Status?: number; Answer?: DohAnswer[] };
+
+const dohCache = new Map<string, { addresses: string[]; expiresAt: number }>();
+
+export function parseDohAnswers(payload: DohResponse, recordType: 1 | 28) {
+  const typedAnswers = (payload.Answer ?? [])
+    .filter((answer) => answer.type === recordType && typeof answer.data === "string")
+    .map((answer) => ({ ...answer, data: answer.data!.trim() }))
+    .filter((answer) => net.isIP(answer.data) !== 0);
+  const addresses = typedAnswers.map((answer) => answer.data);
+  const ttlSeconds = typedAnswers
+    .filter((answer) => Number.isFinite(answer.TTL))
+    .map((answer) => Math.max(1, Number(answer.TTL)))
+    .sort((a, b) => a - b)[0];
+  return { addresses, ttlMs: (ttlSeconds ?? 60) * 1000 };
+}
+
+async function queryDoh(hostname: string, recordType: 1 | 28) {
+  const endpoint = config.DNS_OVER_HTTPS_URL;
+  if (!endpoint) throw new Error("DNS_OVER_HTTPS_URL is not configured");
+  const url = new URL(endpoint);
+  url.searchParams.set("name", hostname);
+  url.searchParams.set("type", recordType === 1 ? "A" : "AAAA");
+  const response = await fetch(url, {
+    headers: { accept: "application/dns-json" },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`DoH request failed: ${response.status}`);
+  const payload = (await response.json()) as DohResponse;
+  if (payload.Status !== undefined && payload.Status !== 0) return { addresses: [], ttlMs: 60_000 };
+  return parseDohAnswers(payload, recordType);
+}
+
+async function dohLookupAll(hostname: string) {
+  const cached = dohCache.get(hostname);
+  if (cached && cached.expiresAt > Date.now()) return cached.addresses;
+  const answers = await Promise.all([queryDoh(hostname, 1), queryDoh(hostname, 28)]);
+  const addresses = [...new Set(answers.flatMap((answer) => answer.addresses))];
+  if (addresses.length === 0) throw new Error("DoH returned no address");
+  dohCache.set(hostname, {
+    addresses,
+    expiresAt: Date.now() + Math.min(...answers.map((answer) => answer.ttlMs)),
+  });
+  return addresses;
+}
+
+const systemLookupAll = async (host: string) =>
+  (await dns.lookup(host, { all: true })).map((item) => item.address);
 const defaultPolicy: NetworkPolicy = {
-  lookupAll: async (host) => (await dns.lookup(host, { all: true })).map((item) => item.address),
+  lookupAll: config.DNS_RESOLVER_MODE === "doh" ? dohLookupAll : systemLookupAll,
   allowPrivateAddresses:
-    process.env.APP_ENV === "test" && process.env.SCAN_TEST_ALLOW_PRIVATE_ADDRESSES === "1",
+    config.APP_ENV === "test" && process.env.SCAN_TEST_ALLOW_PRIVATE_ADDRESSES === "1",
 };
 
 export function isPrivateIp(address: string): boolean {
@@ -93,7 +144,12 @@ export async function validateTargetUrl(
   // on the returned DNS address would leave a rebinding/normalization gap.
   if (!policy.allowPrivateAddresses && isPrivateIp(hostname))
     throw new AppError("PRIVATE_TARGET", "目标地址是本机或云元数据地址", 422);
-  const addresses = await policy.lookupAll(hostname);
+  let addresses: string[];
+  try {
+    addresses = await policy.lookupAll(hostname);
+  } catch {
+    throw new AppError("DNS_LOOKUP_FAILED", "目标域名无法解析", 422);
+  }
   if (addresses.length === 0 || (!policy.allowPrivateAddresses && addresses.some(isPrivateIp)))
     throw new AppError("PRIVATE_TARGET", "目标地址解析到禁止的内网或本机地址", 422);
   url.hash = "";

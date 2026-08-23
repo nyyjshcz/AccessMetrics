@@ -20,6 +20,7 @@
 - 可复现分析管线：只接受带 `manifest.json`/`manifest.sha256` 的已验证导出，输出 `report-data-v1`、站点分数/常见规则/严重度/四原则/敏感性/人工样本边界、确定性图表和数据表；Jupyter notebook 在缺真实导出时明确等待，不生成假研究结论。
 - `analysis:run` 现在会执行并保存 `accesscheck_analysis.executed.ipynb`；优先使用 Jupyter/nbconvert，缺少该命令时使用仓库内标准库 runner，代码 cell 异常会使命令失败。
 - 扫描器对 HTTP/HTTPS、SSRF、robots 重定向、service worker、同源/跨源 frame、axe 超时和非 HTML 响应统一记录；coverage 状态使用 `full`、`no_child_frames`、`coverage_limited` 并保存原因。
+- 真实公开站点 smoke 复核发现并修复同一页面多个执行上下文返回同一 axe 规则时的唯一键冲突：现在会合并规则元数据、保留所有 frame 节点证据，避免把正常页面错误记成 `SQLITE_CONSTRAINT_UNIQUE`；新增集成回归覆盖该路径。丽水候选站点侦察和三份私有 run export 见 `docs/research/丽水市残联站点调研与人工审核说明.md`，不改变 `WAITING_EXTERNAL_INPUT`。
 - 任务完成页可直接进入结果页；结果与重算 API 将精确分数的 BigInt 序列化为字符串；输入页、结果页、研究页、HTML/PDF 报告均显示统一项目边界免责声明。
 - 本地 Compose Web 使用 standalone server 启动，生产 Caddy 使用外部 `CADDY_SITE`，仅在 HTTPS 请求上启用 HSTS；运维静态检查会拒绝误用 `next start` 的 compose 配置。
 - 仓库发布卫生门 `pnpm hygiene:check` 会检查密钥/证书模式、超大文件、符号链接、治理文件和 `.gitignore` 隔离；发行验证脚本会在外部输入齐全后执行 candidate 单 parent/白名单差异、manifest/gate hash、DB CAS、clean clone、镜像 provenance 和 publish-readiness 核验。

@@ -81,4 +81,10 @@
 
 | 2026-08-23 | 浙江省残联官网本地端到端扫描 smoke | AI | 待负责人 | `job_f45b770dd1314043a59ac6a8c7b91a58` / `run_c9c95f29478441dd8772fc70f2bec1b0`（当前工作区，未发布） | Web + Worker 使用 `DNS_RESOLVER_MODE=doh` 扫描 `https://www.zjdpf.org.cn/`，最多 10 页；任务 48 秒完成，发现/成功 9/9，失败 0，HTTP 200 页面 9，评分 `87.6/100`（可感知 88.4、可操作 96.8、易理解 100、兼容性 86.6） | 通过；DoH fallback 解决本机合成 DNS 误判，扫描结果可在本地结果页查看；该 smoke 仅用于验证实现，不等同于已取得正式研究许可、人工复核或 WCAG 合规认证 | R1–R5、负责人确认的正式站点许可/采集窗口、生产 DNS/egress/渲染器环境仍需外部输入 |
 
+| 2026-08-23 | 丽水候选站点侦察与结构化导出 | AI | 待负责人 | 当前工作区私有 `private-inputs/exports/`（未发布） | 重新扫描 `https://www.lishui.gov.cn/col/col1229820300/index.html`：`run_541f3b705bf74ea7ae5c58031a18cbfe`，10/10 成功，`86.3/100`；扫描 `https://data.lishui.gov.cn/`：`run_1aec21d683d241af87ffcedc7e36d5a9`，1/1 成功，`75.8/100`；两份 `scan.json`/`issues.csv` 均通过 `export:run` 写入带 manifest hash 的私有目录；浙江省残联 clean export 为 `run_e410612e547840859b6d960c48c8b448` | 通过探索性采集；新增人类可读调研和人工审核说明，明确 official/candidate/excluded 分类、incomplete 含义、R1–R3 审核顺序和后续 external inputs；未把候选站点写入正式 sample-frame 或 campaign | 负责人确认正式纳入/许可/采集窗口/替补顺序、R1–R5、生产环境仍需外部输入 |
+
+| 2026-08-23 | 同一页面多 frame axe 规则唯一键冲突修复 | AI | 待负责人 | 当前工作区（未发布） | `pnpm exec vitest run tests/integration/core.test.ts`（9 passed）；`mergeAxeRuleResults` 合并同页同规则的多个执行上下文并保留所有节点；丽水市政府门户重新扫描由原先 `SQLITE_CONSTRAINT_UNIQUE` 的部分失败变为 10/10 成功 | 代码回归通过；历史失败 run 仅保留为诊断事实，clean run 才进入调研说明；尚未在完整总门和生产环境宣称通过 | R1–R5、正式研究/生产部署和真实渲染器仍需外部输入 |
+
+| 2026-08-23 | 丽水站点侦察与 frame 合并修复后的完整质量门 | AI | 待负责人 | 当前工作区（未发布） | `pnpm test:all`（integration 8 files/26 tests、scoring 5 files/24 tests、全量 13 files/50 tests、Python 分析、Next build、3 个 Playwright E2E） | 通过；依赖预检、静态门、数据库/egress/契约/catalog/ops/hygiene/docs/plan/handoff、分析、构建和浏览器流程全部通过；候选站点原始导出与人类可读说明已落盘 | R1–R5、正式研究许可/样本确认、生产部署和真实渲染器仍需外部输入；Next middleware/tracing/standalone 仅为非失败提示 |
+
 真人确认只能由对应 reviewer 会话提交；AI 不得把本表预填行改成“本人已复核”。

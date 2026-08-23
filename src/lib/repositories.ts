@@ -289,6 +289,36 @@ export function leaseNextPage(jobId: string, workerId: string) {
     return changed.changes === 1 ? page : null;
   });
 }
+
+/**
+ * axe returns one rule object per execution context. A page can therefore
+ * contain the same rule in the top document and in one or more frames. The
+ * database stores one rule fact per page/result type, so combine those rule
+ * objects while retaining every node as frame-level evidence.
+ */
+export function mergeAxeRuleResults(axe: Record<string, any[]>) {
+  return Object.fromEntries(
+    Object.entries(axe).map(([type, rules]) => {
+      const merged = new Map<string, any>();
+      for (const rule of rules ?? []) {
+        const existing = merged.get(String(rule.id));
+        if (!existing) {
+          merged.set(String(rule.id), {
+            ...rule,
+            nodes: [...(rule.nodes ?? [])],
+            tags: [...new Set(rule.tags ?? [])],
+          });
+          continue;
+        }
+        existing.nodes.push(...(rule.nodes ?? []));
+        existing.tags = [...new Set([...(existing.tags ?? []), ...(rule.tags ?? [])])];
+        if (!existing.impact && rule.impact) existing.impact = rule.impact;
+      }
+      return [type, [...merged.values()]];
+    }),
+  ) as Record<string, any[]>;
+}
+
 export function savePageResult(
   runId: string,
   pageId: string,
@@ -362,7 +392,7 @@ export function savePageResult(
         "UPDATE scan_runs SET user_agent=? WHERE id=? AND (user_agent IS NULL OR user_agent='')",
       ).run(String(result.testEnvironment.userAgent), runId);
     }
-    for (const [type, rules] of Object.entries(result.axe))
+    for (const [type, rules] of Object.entries(mergeAxeRuleResults(result.axe)))
       for (const rule of rules as any[]) {
         const resultType =
           type === "violations"

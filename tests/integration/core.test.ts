@@ -210,6 +210,72 @@ describe("database and evidence chain", () => {
     expect(() => study.createCampaign({ targetSiteCount: 2, slots: [] })).toThrow("10–20");
   });
 
+  it("merges duplicate axe rules from multiple execution contexts", () => {
+    const db = dbModule.getDb();
+    const site = repositories.upsertSite("https://frame-merge.example");
+    const job = repositories.createScanJob("https://frame-merge.example", {
+      maxPages: 1,
+      sameOriginOnly: true,
+      respectRobots: true,
+    });
+    const run = repositories.createRun({ id: job.id, site_id: site.id });
+    const pageId = "page_frame_merge";
+    db.prepare("INSERT INTO pages(id,site_id,canonical_url,first_seen_at) VALUES (?,?,?,?)").run(
+      pageId,
+      site.id,
+      "https://frame-merge.example/",
+      new Date().toISOString(),
+    );
+    const rule = (target: string[], framePath?: string) => ({
+      id: "color-contrast",
+      impact: "serious",
+      tags: ["wcag143"],
+      description: "contrast",
+      help: "contrast",
+      helpUrl: "https://example.test/color-contrast",
+      nodes: [
+        {
+          framePath,
+          frameUrl: framePath ? "https://frame-merge.example/frame" : undefined,
+          target,
+          html: "<p>text</p>",
+          any: [],
+          all: [],
+          none: [],
+        },
+      ],
+    });
+    repositories.savePageResult(run.id, pageId, {
+      url: "https://frame-merge.example/",
+      finalUrl: "https://frame-merge.example/",
+      title: "fixture",
+      status: 200,
+      durationMs: 10,
+      axe: {
+        passes: [],
+        violations: [rule(["p"]), rule(["iframe", "p"], "frame-0")],
+        incomplete: [],
+        inapplicable: [],
+      },
+    });
+    expect(
+      (
+        db.prepare("SELECT COUNT(*) AS count FROM rule_results WHERE run_id=?").get(run.id) as {
+          count: number;
+        }
+      ).count,
+    ).toBe(1);
+    expect(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM result_nodes WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id=?)",
+          )
+          .get(run.id) as { count: number }
+      ).count,
+    ).toBe(2);
+  });
+
   it("writes idempotent schema-valid gate receipts through the outbox", () => {
     const artifactPath = path.join(testRoot, "private", "gates", "R1", "protocol.md");
     const artifactBytes = Buffer.from("protocol fixture\n");

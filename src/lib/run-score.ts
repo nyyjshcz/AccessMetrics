@@ -253,6 +253,7 @@ function serializeExactBreakdown(breakdown: ReturnType<typeof exactBreakdown>) {
   );
 }
 export function buildRunScore(runId: string, options?: { aiOverlay?: AiOverlay }) {
+  const hasAiOverlay = Boolean(options?.aiOverlay && options.aiOverlay.size > 0);
   const opportunities = loadRunOpportunities(runId, options);
   const coverageRows = getDb()
     .prepare(
@@ -289,11 +290,8 @@ export function buildRunScore(runId: string, options?: { aiOverlay?: AiOverlay }
   }
   const exact = exactBreakdown(opportunities);
   const display = (value: typeof exact.overall) => roundHalfUpTenths(value);
-  return {
-    modelVersion: options?.aiOverlay
-      ? "accesscheck-score-v1+ai-overlay-v1"
-      : "accesscheck-score-v1",
-    scoreSource: options?.aiOverlay ? "ai_overlay" : "axe",
+  const score = {
+    modelVersion: hasAiOverlay ? "accesscheck-score-v1+ai-overlay-v1" : "accesscheck-score-v1",
     pageCount: new Set(
       (getDb().prepare("SELECT page_id FROM rule_results WHERE run_id=?").all(runId) as any[]).map(
         (r) => r.page_id,
@@ -328,6 +326,7 @@ export function buildRunScore(runId: string, options?: { aiOverlay?: AiOverlay }
     robust: display(exact.robust),
     exact,
   };
+  return hasAiOverlay ? { ...score, scoreSource: "ai_overlay" as const } : score;
 }
 
 export function serializeRunScore(score: ReturnType<typeof buildRunScore>) {

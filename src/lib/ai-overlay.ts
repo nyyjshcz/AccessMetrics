@@ -275,6 +275,8 @@ function parseEvidence(value: string | null | undefined) {
   try {
     const parsed = JSON.parse(value) as {
       complete?: boolean;
+      version?: string;
+      target?: unknown;
       warnings?: unknown[];
       facts?: unknown;
     };
@@ -284,9 +286,30 @@ function parseEvidence(value: string | null | undefined) {
   }
 }
 
-function hasCompleteEvidence(value: string | null | undefined, hash: string | null | undefined) {
+function hasCompleteEvidence(
+  value: string | null | undefined,
+  hash: string | null | undefined,
+  version: string | null | undefined,
+) {
   const parsed = parseEvidence(value);
-  return Boolean(parsed && parsed.complete === true && hash);
+  const facts = parsed?.facts;
+  const target = parsed?.target;
+  const recognizableFacts =
+    facts &&
+    typeof facts === "object" &&
+    !Array.isArray(facts) &&
+    (typeof (facts as Record<string, unknown>).matchedSelector === "string" ||
+      typeof (facts as Record<string, unknown>).tagName === "string");
+  return Boolean(
+    parsed &&
+    parsed.complete === true &&
+    parsed.version === AI_EVIDENCE_VERSION &&
+    version === AI_EVIDENCE_VERSION &&
+    Array.isArray(target) &&
+    target.length > 0 &&
+    /^[a-f0-9]{64}$/.test(String(hash ?? "")) &&
+    recognizableFacts,
+  );
 }
 
 type IncompleteNodeRow = {
@@ -360,7 +383,8 @@ function queryIncompleteNodes(scope: {
 
 function ensureEvidence(rows: IncompleteNodeRow[]) {
   const missing = rows.filter(
-    (row) => !hasCompleteEvidence(row.ai_evidence_json, row.ai_evidence_hash),
+    (row) =>
+      !hasCompleteEvidence(row.ai_evidence_json, row.ai_evidence_hash, row.ai_evidence_version),
   );
   if (missing.length)
     throw new AppError(
@@ -396,7 +420,7 @@ export type AiBatchSummary = {
   resolutionCoverage: number;
 };
 
-function batchStats(batchId: string, denominator?: number): AiBatchSummary {
+function batchStats(batchId: string): AiBatchSummary {
   const row = getDb()
     .prepare(
       `SELECT COUNT(*) total,
@@ -410,7 +434,7 @@ function batchStats(batchId: string, denominator?: number): AiBatchSummary {
        FROM ai_review_items WHERE batch_id=?`,
     )
     .get(batchId) as any;
-  const total = denominator ?? Number(row.total ?? 0);
+  const total = Number(row.total ?? 0);
   const processed =
     Number(row.problem ?? 0) + Number(row.notProblem ?? 0) + Number(row.uncertain ?? 0);
   const resolved = Number(row.problem ?? 0) + Number(row.notProblem ?? 0);
@@ -617,7 +641,7 @@ function nodeContext(resultNodeId: string) {
   if (!row) throw new AppError("AI_NODE_NOT_FOUND", "AI 节点不存在", 404);
   if (row.result_type !== "incomplete")
     throw new AppError("AI_NODE_NOT_INCOMPLETE", "AI 只能处理 incomplete 节点", 409);
-  if (!hasCompleteEvidence(row.ai_evidence_json, row.ai_evidence_hash))
+  if (!hasCompleteEvidence(row.ai_evidence_json, row.ai_evidence_hash, row.ai_evidence_version))
     throw new AppError("RESCAN_REQUIRED", "节点缺少完整 AI evidence，请重新扫描", 409);
   return row;
 }
@@ -658,7 +682,12 @@ function buildMessages(node: any, evidence: any) {
   ];
 }
 
-async function callProvider(provider: AiProviderRow, node: any, evidence: any) {
+async function callProvider(
+  provider: AiProviderRow,
+  node: any,
+  evidence: any,
+  requestParams: typeof AI_REQUEST_PARAMS,
+) {
   const key = decryptSecret(provider.encrypted_api_key);
   const response = await fetch(providerEndpoint(provider.base_url, "/chat/completions"), {
     method: "POST",
@@ -669,7 +698,7 @@ async function callProvider(provider: AiProviderRow, node: any, evidence: any) {
     body: JSON.stringify({
       model: provider.model,
       messages: buildMessages(node, evidence),
-      ...AI_REQUEST_PARAMS,
+      ...requestParams,
     }),
     redirect: "error",
     signal: AbortSignal.timeout(120_000),
@@ -809,12 +838,16 @@ export async function processNextAiItem(workerId: string) {
   try {
     const provider = getProviderRow(item.provider_config_id, true);
     const snapshot = JSON.parse(item.provider_snapshot_json ?? "{}") as ProviderSnapshot;
-    if (provider.key_fingerprint !== snapshot.keyFingerprint)
+    if (
+      provider.key_fingerprint !== snapshot.keyFingerprint ||
+      sha256(canonicalize(snapshot)) !== item.provider_snapshot_hash
+    )
       throw new AppError(
         "AI_PROVIDER_CHANGED",
-        "provider API Key 已变化，当前 batch snapshot 不再匹配",
+        "provider key 或 batch snapshot 已变化，当前 batch 不能继续",
         409,
       );
+    const snapshotProvider = { ...provider, base_url: snapshot.baseUrl, model: snapshot.model };
     const node = nodeContext(item.result_node_id);
     if (
       node.ai_evidence_hash !== item.evidence_hash ||
@@ -826,7 +859,12 @@ export async function processNextAiItem(workerId: string) {
         409,
       );
     const evidence = JSON.parse(node.ai_evidence_json);
-    const result = await callProvider(provider, node, evidence);
+    const result = await callProvider(
+      snapshotProvider,
+      node,
+      evidence,
+      snapshot.requestParams ?? AI_REQUEST_PARAMS,
+    );
     completeItem(item, result);
   } catch (error) {
     failItem(item, error);
@@ -881,7 +919,7 @@ export function summarizeAiRun(runId: string, pageId?: string | null) {
     )
     .get(runId, pageId ?? null, pageId ?? null) as any;
   return {
-    batch: batch ? { ...batch, stats: batchStats(batch.id, Number(totalRow.count)) } : null,
+    batch: batch ? { ...batch, stats: batchStats(batch.id) } : null,
     totalIncomplete: Number(totalRow.count),
     overlay: loadAiOverlayForRun(runId, pageId),
   };

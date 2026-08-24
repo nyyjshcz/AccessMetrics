@@ -4,6 +4,7 @@ import { getDb, migrate } from "@/lib/db";
 import { buildRunScore, serializeRunScore } from "@/lib/run-score";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { catalogEntryWithTags } from "@/lib/wcag";
+import { summarizeAiRun } from "@/lib/ai-overlay";
 export async function GET(_request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
     migrate();
@@ -17,6 +18,10 @@ export async function GET(_request: Request, context: { params: Promise<{ runId:
     if (!run) throw new AppError("NOT_FOUND", "扫描不存在", 404);
     if (!session && !run.published) throw new AppError("NOT_FOUND", "扫描不存在", 404);
     const score = buildRunScore(runId);
+    const ai = summarizeAiRun(runId);
+    const aiScore = ai.overlay.size
+      ? serializeRunScore(buildRunScore(runId, { aiOverlay: ai.overlay }))
+      : null;
     const severityCounts = { critical: 0, serious: 0, moderate: 0, minor: 0 };
     const principleCounts = { perceivable: 0, operable: 0, understandable: 0, robust: 0 };
     const resultRows = getDb()
@@ -64,6 +69,11 @@ export async function GET(_request: Request, context: { params: Promise<{ runId:
     return NextResponse.json({
       run,
       score: serializeRunScore(score),
+      ai: {
+        ...ai,
+        overlay: undefined,
+      },
+      aiScore,
       pages,
       pageStatus,
       severityCounts,

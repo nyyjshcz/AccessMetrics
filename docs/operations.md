@@ -1,6 +1,7 @@
 # 运维
 
-- 本地：`pnpm db:migrate`、`pnpm dev`、`pnpm worker`。
+- 本地：`pnpm db:migrate`、`pnpm dev`、`pnpm worker`；启用 incomplete AI overlay 时另开 `pnpm ai:worker`。
+- AI：管理员只在 `/admin/settings/ai` 配置 OpenAI-compatible provider；API Key 服务端加密保存，batch snapshot 不保存明文。旧扫描缺少扫描时 evidence 时必须重新扫描，正式 `study_final_ai` 只接受 verified source 与同一 freeze 的 completed formal batch。
 - 检查：`pnpm test:all`、`pnpm test:e2e`、`pnpm project:status`。
 - 依赖基线：`pnpm dependency:preflight` 会实际执行 `PYTHON_BIN`（或系统 `python`/`python3`）；必须得到 Python 3.12.13，不能用 `PYTHON_VERSION` 环境变量冒充。
 - 备份：`pnpm backup:create -- --output <绝对目录>`；恢复到新副本后运行 `pnpm backup:restore <备份绝对目录> <新目标绝对目录>`、在新目标设置 `DATABASE_URL` 后运行 `pnpm db:check`，再对恢复的私有根运行 `pnpm gates:verify`。

@@ -6,7 +6,7 @@
   "properties": {
     "schemaVersion": { "const": "study-export-v1" },
     "exportId": { "type": "string" },
-    "exportKind": { "enum": ["study_source", "study_final"] },
+    "exportKind": { "enum": ["study_source", "study_final", "study_final_ai"] },
     "studyFreezeId": { "type": "string" },
     "runSet": { "type": "array", "items": { "type": "string" } },
     "outcomeDigest": { "type": ["string", "null"] }

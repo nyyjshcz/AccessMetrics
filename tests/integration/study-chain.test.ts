@@ -13,6 +13,7 @@ const dbModule = await import("@/lib/db");
 const repositories = await import("@/lib/repositories");
 const study = await import("@/lib/study");
 const studyExport = await import("@/lib/study-export");
+const ai = await import("@/lib/ai-overlay");
 
 describe("formal study freeze chain", () => {
   beforeAll(() => dbModule.migrate());
@@ -132,5 +133,53 @@ describe("formal study freeze chain", () => {
     expect(manifest.files.some((file: { path: string }) => file.path === "manifest.json")).toBe(
       false,
     );
+
+    const provider = ai.saveAiProvider({
+      label: "formal fixture provider",
+      baseUrl: "http://127.0.0.1:1234/v1",
+      model: "qwen-fixture",
+      apiKey: "fixture-key",
+    });
+    const formalBatch = ai.createAiBatch({
+      studyFreezeId: first.freezeId,
+      providerConfigId: provider.id,
+    });
+    expect(formalBatch.batch.run_id).toBeNull();
+    expect(formalBatch.batch.page_id).toBeNull();
+    expect(formalBatch.batch.status).toBe("completed");
+    const freezeStatusBeforeAiFinal = (
+      db.prepare("SELECT status FROM study_freezes WHERE id=?").get(first.freezeId) as {
+        status: string;
+      }
+    ).status;
+    const aiFinal = studyExport.createStudyExport({
+      studyFreezeId: first.freezeId,
+      kind: "study_final_ai",
+      expectedSourceExportId: exported.id,
+    });
+    expect(aiFinal.status).toBe("verified");
+    expect(
+      (
+        db.prepare("SELECT status FROM study_freezes WHERE id=?").get(first.freezeId) as {
+          status: string;
+        }
+      ).status,
+    ).toBe(freezeStatusBeforeAiFinal);
+    for (const file of [
+      "ai/reviews.csv",
+      "ai/evidence.jsonl",
+      "ai/summary.json",
+      "ai/score.json",
+      "ai/config.json",
+    ])
+      expect(fs.existsSync(path.join(aiFinal.storage_relpath, file))).toBe(true);
+    const summary = JSON.parse(
+      fs.readFileSync(path.join(aiFinal.storage_relpath, "ai/summary.json"), "utf8"),
+    );
+    expect(summary).toMatchObject({
+      total_incomplete: 0,
+      processed_coverage: 100,
+      resolution_coverage: 100,
+    });
   });
 });

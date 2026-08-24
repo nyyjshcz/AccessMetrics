@@ -21,7 +21,10 @@ export async function POST(request: Request) {
       )
     )
       throw new AppError("UNKNOWN_FIELD", "study export 请求包含未定义字段", 400);
-    if (!body.studyFreezeId || !["study_source", "study_final"].includes(body.kind))
+    if (
+      !body.studyFreezeId ||
+      !["study_source", "study_final", "study_final_ai"].includes(body.kind)
+    )
       throw new AppError("INVALID_INPUT", "studyFreezeId/kind 无效", 422);
     return NextResponse.json(createStudyExport(body), { status: 202 });
   } catch (error) {

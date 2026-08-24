@@ -40,6 +40,11 @@ export interface AxeRuleResult {
     any: unknown[];
     all: unknown[];
     none: unknown[];
+    aiEvidence?: {
+      json: string;
+      hash: string;
+      version: string;
+    };
   }>;
 }
 

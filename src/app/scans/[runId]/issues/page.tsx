@@ -34,6 +34,18 @@ type Issue = {
     effectiveImpact: string | null;
     severityWeight: number | null;
     severitySource: string | null;
+    aiEvidence?: {
+      complete?: boolean;
+      facts?: Record<string, unknown>;
+      warnings?: string[];
+      target?: string[];
+    } | null;
+    aiReview?: {
+      verdict: "problem" | "not_problem" | "uncertain";
+      reason: string | null;
+      impact: string | null;
+      updatedAt: string;
+    } | null;
   }>;
   localization?: { zhName: string; zhFix: string; translationStatus: string; fallback: boolean };
 };
@@ -286,6 +298,21 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
                               ) : null}
                             </div>
                             {node.failureSummary ? <div>{node.failureSummary}</div> : null}
+                            {node.aiReview ? (
+                              <div className="notice" style={{ marginTop: 8 }}>
+                                <strong>AI 复核：</strong> {node.aiReview.verdict}
+                                {node.aiReview.impact ? ` · 动态影响：${node.aiReview.impact}` : ""}
+                                {node.aiReview.reason ? ` · ${node.aiReview.reason}` : ""}
+                              </div>
+                            ) : null}
+                            {node.aiEvidence ? (
+                              <details style={{ marginTop: 8 }}>
+                                <summary>查看 AI evidence（扫描时采集）</summary>
+                                <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                                  {JSON.stringify(node.aiEvidence, null, 2)}
+                                </pre>
+                              </details>
+                            ) : null}
                             {node.frameOriginRelation && node.frameOriginRelation !== "top" ? (
                               <div className="muted">
                                 frame：{node.frameOriginRelation} {node.frameUrl ?? ""}

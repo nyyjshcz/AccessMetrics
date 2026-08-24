@@ -331,7 +331,7 @@ export function savePageResult(
     "INSERT INTO rule_results(id,run_id,page_id,rule_id,result_type,impact,description,help,help_url,tags_json,node_count,raw_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
   );
   const nodeInsert = db.prepare(
-    "INSERT INTO result_nodes(id,rule_result_id,ordinal,frame_path_json,frame_url,frame_origin_relation,target_json,html_sanitized,failure_summary,any_json,all_json,none_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO result_nodes(id,rule_result_id,ordinal,frame_path_json,frame_url,frame_origin_relation,target_json,html_sanitized,failure_summary,any_json,all_json,none_json,ai_evidence_json,ai_evidence_hash,ai_evidence_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
   );
   transaction((tx) => {
     const run = tx.prepare("SELECT job_id FROM scan_runs WHERE id=?").get(runId) as
@@ -409,11 +409,17 @@ export function savePageResult(
             ? { ...rule, nodes: undefined }
             : {
                 ...rule,
-                nodes: (rule.nodes ?? []).map((node: any) => ({
-                  ...node,
-                  frameUrl: sanitizeFrameUrl(node.frameUrl),
-                  html: typeof node.html === "string" ? node.html.slice(0, 300) : "",
-                })),
+                nodes: (rule.nodes ?? []).map((node: any) => {
+                  const { aiEvidence: _aiEvidence, ...storedNode } = node;
+                  // AI evidence is a separate overlay column. Keep it out of
+                  // the immutable axe raw snapshot and the existing study
+                  // CSV contract.
+                  return {
+                    ...storedNode,
+                    frameUrl: sanitizeFrameUrl(node.frameUrl),
+                    html: typeof node.html === "string" ? node.html.slice(0, 300) : "",
+                  };
+                }),
               };
         insert.run(
           rr,
@@ -458,6 +464,9 @@ export function savePageResult(
               JSON.stringify(node.any),
               JSON.stringify(node.all),
               JSON.stringify(node.none),
+              resultType === "incomplete" ? (node.aiEvidence?.json ?? null) : null,
+              resultType === "incomplete" ? (node.aiEvidence?.hash ?? null) : null,
+              resultType === "incomplete" ? (node.aiEvidence?.version ?? null) : null,
             );
             const isViolation = resultType === "violation";
             const effectiveImpact = isViolation ? (node.impact ?? rule.impact ?? "minor") : null;

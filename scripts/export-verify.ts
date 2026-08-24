@@ -34,6 +34,10 @@ const manifest = JSON.parse(manifestBytes.toString("utf8")) as {
   modelDecisionHash?: string | null;
   modelObservationsHash?: string | null;
   r4EvidenceBundleHash?: string | null;
+  aiBatchId?: string | null;
+  aiProviderSnapshotHash?: string | null;
+  aiPromptHash?: string | null;
+  aiSummaryHash?: string | null;
 };
 if (manifest.schemaVersion !== "canonical-manifest-json-v1" || !manifest.exportId)
   throw new Error("manifest schemaVersion/exportId 无效");
@@ -104,8 +108,9 @@ if (manifest.exportKind === "study_source") {
     throw new Error("study_source 不得包含 R4/final 材料");
 }
 if (manifest.exportKind === "study_final") {
+  if (typeof manifest.sourceExportId !== "string" || !manifest.sourceExportId)
+    throw new Error("study_final 缺少有效 sourceExportId");
   for (const [field, value] of [
-    ["sourceExportId", manifest.sourceExportId],
     ["sourceManifestHash", manifest.sourceManifestHash],
     ["outcomeDigest", manifest.outcomeDigest],
     ["reviewFreezeHash", manifest.reviewFreezeHash],
@@ -123,6 +128,29 @@ if (manifest.exportKind === "study_final") {
   ])
     if (!seen.has(required)) throw new Error(`study_final 缺少 ${required}`);
 }
+if (manifest.exportKind === "study_final_ai") {
+  if (typeof manifest.sourceExportId !== "string" || !manifest.sourceExportId)
+    throw new Error("study_final_ai 缺少有效 sourceExportId");
+  for (const [field, value] of [
+    ["sourceManifestHash", manifest.sourceManifestHash],
+    ["outcomeDigest", manifest.outcomeDigest],
+    ["aiProviderSnapshotHash", manifest.aiProviderSnapshotHash],
+    ["aiPromptHash", manifest.aiPromptHash],
+    ["aiSummaryHash", manifest.aiSummaryHash],
+  ] as const)
+    if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value))
+      throw new Error(`study_final_ai 缺少有效冻结字段 ${field}`);
+  if (typeof manifest.aiBatchId !== "string" || !manifest.aiBatchId)
+    throw new Error("study_final_ai 缺少 aiBatchId");
+  for (const required of [
+    "ai/reviews.csv",
+    "ai/evidence.jsonl",
+    "ai/summary.json",
+    "ai/score.json",
+    "ai/config.json",
+  ])
+    if (!seen.has(required)) throw new Error(`study_final_ai 缺少 ${required}`);
+}
 const studyJson = path.join(directory, "data", "study.json");
 if (fs.existsSync(studyJson)) {
   const value = JSON.parse(fs.readFileSync(studyJson, "utf8")) as Record<string, unknown>;
@@ -130,7 +158,7 @@ if (fs.existsSync(studyJson)) {
     value.schemaVersion !== "study-export-v1" ||
     typeof value.exportId !== "string" ||
     value.exportId !== manifest.exportId ||
-    !["study_source", "study_final"].includes(String(value.exportKind)) ||
+    !["study_source", "study_final", "study_final_ai"].includes(String(value.exportKind)) ||
     !Array.isArray(value.runSet)
   )
     throw new Error("data/study.json schema 或 manifest 绑定无效");

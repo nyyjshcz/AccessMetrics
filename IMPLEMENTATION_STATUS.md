@@ -1,6 +1,7 @@
 # 实施状态
 
 - 当前状态：`WAITING_EXTERNAL_INPUT`
+- 薄 AI Overlay 自动化实现：已完成；不改变原始 axe、原始 score、人工审核、WCAG catalog、human `study_final` 或现有 CSV contract。迁移 27 增加 `result_nodes` 三个 evidence 字段与 `ai_provider_configs`、`ai_review_batches`、`ai_review_items` 三张表；AI worker、OpenAI-compatible provider 设置、动态三值评分映射、formal `study_final_ai` 导出和现有页面 AI 卡片已接入。旧扫描缺 evidence 时只返回 `RESCAN_REQUIRED`。
 - 当前自动化基线 commit：本提交（以 `git rev-parse HEAD` 获取完整 SHA；未创建 release tag，未公网发布）。
 - 自动化实现：已完成计划步骤 1–17，以及步骤 18/19 所有不依赖真人或外部单位的代码、契约、脚手架、fixture、报告生成器、可复现分析管线和 fail-closed 校验。
 - 真实阻塞：R1–R5 真人确认、真实研究站点/许可/标准来源、生产服务器/域名/密钥/镜像与渲染器 digest。详见 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。
@@ -10,7 +11,7 @@
 - 依赖基线与负面 fixture：Node 24.19.0、pnpm 11.19.0、Python 3.12.13、Next/Playwright/axe 精确版本检查。
 - 依赖预检会实际执行 `PYTHON_BIN`/系统 Python 并解析 `--version`；当前捆绑解释器为 Python 3.12.13，系统 Python 3.13.7 会按设计失败，不再信任伪造的 `PYTHON_VERSION`。
 - 依赖预检也会实际执行 pnpm（Windows 通过 `cmd.exe`，Unix 直接执行）并核对 11.19.0，不只检查 `package.json` 的声明。
-- SQLite 迁移 1–26：外键、WAL、job/page lease、恢复、幂等唯一键与索引、frame 覆盖、研究 campaign/freeze/export、人工 review/adjudication、门证据/outbox、发布 revision/CAS 字段、R5 双角色 artifact 会话、study export current 唯一约束、扫描时本地化 hash、frame 覆盖问题记录、axe 运行时证据快照，以及 R5 clean-clone exercise 草稿、revision artifact 路径、规范化 owner artifact/step/bundle 表和严格的 `artifact_kind/artifact_id/canonical_json` artifact outbox；迁移 18–25 补齐按任务/运行追溯的页面身份、精确/展示分数字段、结果节点 frame 证据、评审当前版本唯一性、R5 不可覆盖证据和恢复队列、正式 attempt 的替补启用时间、任务/结果/R5 全部计划索引，并重建旧版 pages 表以移除站点级 URL 唯一约束；迁移 26 会收敛历史重复的当前 ad-hoc 注记，并以部分唯一索引阻止同一 reviewer 对同一节点并发留下两条当前日常结论。
+- SQLite 迁移 1–27：外键、WAL、job/page lease、恢复、幂等唯一键与索引、frame 覆盖、研究 campaign/freeze/export、人工 review/adjudication、门证据/outbox、发布 revision/CAS 字段、R5 双角色 artifact 会话、study export current 唯一约束、扫描时本地化 hash、frame 覆盖问题记录、axe 运行时证据快照、薄 AI overlay 的 evidence/provider/batch/item 表，以及 R5 clean-clone exercise 草稿、revision artifact 路径、规范化 owner artifact/step/bundle 表和严格的 `artifact_kind/artifact_id/canonical_json` artifact outbox；迁移 18–25 补齐按任务/运行追溯的页面身份、精确/展示分数字段、结果节点 frame 证据、评审当前版本唯一性、R5 不可覆盖证据和恢复队列、正式 attempt 的替补启用时间、任务/结果/R5 全部计划索引，并重建旧版 pages 表以移除站点级 URL 唯一约束；迁移 26 会收敛历史重复的当前 ad-hoc 注记，并以部分唯一索引阻止同一 reviewer 对同一节点并发留下两条当前日常结论。
 - URL 安全、robots、同站 BFS、页面深度/资源过滤、Playwright + 本地 axe 四类结果、同源/跨源 frame 尝试、节点清理和非 HTML 失败记录。
 - 本地开发环境新增可选 HTTPS DNS（DoH）解析：当系统 DNS 将公网域名合成为 `198.18.0.0/15` 或 ULA 时，可在 `.env.local` 设置 `DNS_RESOLVER_MODE=doh` 与受信任的 HTTPS resolver；DoH 返回的每个 A/AAAA 地址仍经过现有私网、保留地址和云元数据拦截，解析失败返回结构化 `DNS_LOOKUP_FAILED`，生产环境明确禁止 DoH 并保持 system DNS/egress proxy。
 - WCAG 2.2 方法目录、axe 4.13.0 完整规则目录生成器、中文目录、独立黄金快照、节点/规则严重程度来源和 `accesscheck-score-v1` TypeScript/Python 参考实现；多原则规则只计一次总体机会并分别归入原则分项。

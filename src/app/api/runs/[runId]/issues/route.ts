@@ -4,6 +4,7 @@ import { getDb, migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { catalogEntryWithTags } from "@/lib/wcag";
 import { getRuleLocalization } from "@/lib/localization";
+import { aiImpactForResolvedIncomplete, type AiVerdict } from "@/lib/ai-overlay";
 export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
     migrate();
@@ -165,7 +166,7 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
     const nodeRows = items.length
       ? (getDb()
           .prepare(
-            `SELECT id,rule_result_id,ordinal,target_json,html_sanitized,failure_summary,frame_path_json,frame_url,frame_origin_relation,target_hash,impact,effective_impact,severity_weight,severity_source FROM result_nodes WHERE rule_result_id IN (${items.map(() => "?").join(",")}) ORDER BY rule_result_id,ordinal`,
+            `SELECT id,rule_result_id,ordinal,target_json,html_sanitized,failure_summary,frame_path_json,frame_url,frame_origin_relation,target_hash,impact,effective_impact,severity_weight,severity_source,ai_evidence_json FROM result_nodes WHERE rule_result_id IN (${items.map(() => "?").join(",")}) ORDER BY rule_result_id,ordinal`,
           )
           .all(...items.map((item) => item.id)) as Array<{
           id: string;
@@ -182,9 +183,34 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
           effective_impact: string | null;
           severity_weight: number | null;
           severity_source: string | null;
+          ai_evidence_json: string | null;
         }>)
       : [];
+    const aiByNode = new Map<
+      string,
+      { verdict: AiVerdict; reason: string | null; updated_at: string }
+    >();
+    if (session && nodeRows.length) {
+      const aiRows = getDb()
+        .prepare(
+          `SELECT i.result_node_id,i.verdict,i.reason,i.updated_at
+             FROM ai_review_items i
+             JOIN ai_review_batches b ON b.id=i.batch_id
+            WHERE i.result_node_id IN (${nodeRows.map(() => "?").join(",")})
+              AND i.status='completed' AND i.verdict IS NOT NULL
+            ORDER BY i.updated_at DESC,i.id DESC`,
+        )
+        .all(...nodeRows.map((node) => node.id)) as Array<{
+        result_node_id: string;
+        verdict: AiVerdict;
+        reason: string | null;
+        updated_at: string;
+      }>;
+      for (const row of aiRows)
+        if (!aiByNode.has(row.result_node_id)) aiByNode.set(row.result_node_id, row);
+    }
     const nodesByResult = new Map<string, unknown[]>();
+    const itemByResult = new Map(items.map((item) => [item.id, item]));
     for (const node of nodeRows) {
       const target = (() => {
         try {
@@ -217,6 +243,34 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
         effectiveImpact: node.effective_impact,
         severityWeight: node.severity_weight,
         severitySource: node.severity_source,
+        ...(session
+          ? {
+              aiEvidence: node.ai_evidence_json
+                ? (() => {
+                    try {
+                      return JSON.parse(node.ai_evidence_json);
+                    } catch {
+                      return null;
+                    }
+                  })()
+                : null,
+              aiReview: (() => {
+                const review = aiByNode.get(node.id);
+                if (!review) return null;
+                return {
+                  verdict: review.verdict,
+                  reason: review.reason,
+                  impact:
+                    review.verdict === "problem"
+                      ? aiImpactForResolvedIncomplete(node, {
+                          impact: itemByResult.get(node.rule_result_id)?.impact,
+                        })
+                      : null,
+                  updatedAt: review.updated_at,
+                };
+              })(),
+            }
+          : {}),
       });
       nodesByResult.set(node.rule_result_id, list);
     }

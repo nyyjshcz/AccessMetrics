@@ -21,8 +21,8 @@
       }
     },
     "generatedAt": { "type": "string" },
-    "exportKind": { "enum": ["run", "study_source", "study_final"] },
-    "kind": { "enum": ["run", "study_source", "study_final"] },
+    "exportKind": { "enum": ["run", "study_source", "study_final", "study_final_ai"] },
+    "kind": { "enum": ["run", "study_source", "study_final", "study_final_ai"] },
     "studyFreezeId": { "type": "string" },
     "freezeDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "populationDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
@@ -39,6 +39,10 @@
     "modelDecisionHash": { "type": ["string", "null"] },
     "modelObservationsHash": { "type": ["string", "null"] },
     "r4EvidenceBundleHash": { "type": ["string", "null"] },
+    "aiBatchId": { "type": ["string", "null"] },
+    "aiProviderSnapshotHash": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "aiPromptHash": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+    "aiSummaryHash": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
     "revision": { "type": "integer", "minimum": 1 },
     "supersedesExportId": { "type": ["string", "null"] },
     "publicationStatus": { "type": "string" },
@@ -47,6 +51,48 @@
     "runIds": { "type": "array", "items": { "type": "string" } }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": { "exportKind": { "const": "study_final_ai" } },
+        "required": ["exportKind"]
+      },
+      "then": {
+        "required": [
+          "exportKind",
+          "kind",
+          "studyFreezeId",
+          "freezeDigest",
+          "populationDigest",
+          "campaignPlanHash",
+          "attemptLogHash",
+          "executionLogHash",
+          "runSetHash",
+          "sourceExportId",
+          "sourceManifestHash",
+          "outcomeDigest",
+          "aiBatchId",
+          "aiProviderSnapshotHash",
+          "aiPromptHash",
+          "aiSummaryHash",
+          "revision",
+          "runIds"
+        ],
+        "properties": {
+          "sourceExportId": { "type": "string", "minLength": 1 },
+          "sourceManifestHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "outcomeDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "aiBatchId": { "type": "string", "minLength": 1 },
+          "aiProviderSnapshotHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "aiPromptHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "aiSummaryHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "reviewFreezeHash": { "const": null },
+          "reportLocalizationHash": { "const": null },
+          "modelDecisionHash": { "const": null },
+          "modelObservationsHash": { "const": null },
+          "r4EvidenceBundleHash": { "const": null }
+        }
+      }
+    },
     {
       "if": {
         "properties": { "exportKind": { "const": "study_source" } },

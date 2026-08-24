@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import AiOverlayCard from "@/components/ai-overlay-card";
 export default function RunPage({ params }: { params: Promise<{ runId: string }> }) {
   const [data, setData] = useState<any>();
   const [id, setId] = useState("");
@@ -227,6 +228,7 @@ export default function RunPage({ params }: { params: Promise<{ runId: string }>
           </>
         )}
       </div>
+      {isAdmin ? <AiOverlayCard runId={id} pages={pages} /> : null}
       <div className="grid" style={{ marginTop: 16 }}>
         {[
           ["可感知", s.perceivable],

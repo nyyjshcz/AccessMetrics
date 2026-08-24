@@ -20,6 +20,27 @@ paths:
     get:
       responses:
         "200": { description: run and score }
+  /api/runs/{runId}/ai-review:
+    get:
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string } }
+        - { name: pageId, in: query, schema: { type: string } }
+      responses:
+        "200": { description: AI overlay batch and dynamic statistics }
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [providerConfigId]
+              additionalProperties: false
+              properties:
+                providerConfigId: { type: string }
+                pageId: { type: string }
+      responses:
+        "201": { description: idempotently created AI overlay batch }
   /api/runs/{runId}/issues:
     get:
       parameters:
@@ -292,6 +313,93 @@ paths:
     get:
       responses:
         "200": { description: admin scan job status }
+  /api/admin/ai/providers:
+    get:
+      responses:
+        "200": { description: configured OpenAI-compatible providers }
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, baseUrl, model]
+              additionalProperties: false
+              properties:
+                id: { type: string }
+                label: { type: string, minLength: 1, maxLength: 200 }
+                baseUrl: { type: string, format: uri }
+                model: { type: string, minLength: 1, maxLength: 200 }
+                apiKey: { type: string, maxLength: 4096 }
+                enabled: { type: boolean }
+      responses:
+        "201": { description: provider created }
+        "200": { description: provider updated }
+  /api/admin/ai/providers/{providerId}:
+    patch:
+      parameters:
+        - { name: providerId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: provider updated }
+    delete:
+      parameters:
+        - { name: providerId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: provider disabled }
+  /api/admin/ai/providers/{providerId}/models:
+    get:
+      parameters:
+        - { name: providerId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: models returned by OpenAI-compatible provider }
+  /api/admin/ai/providers/{providerId}/test:
+    post:
+      parameters:
+        - { name: providerId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: provider connection test }
+  /api/admin/ai/formal-batches:
+    get:
+      parameters:
+        - { name: studyFreezeId, in: query, required: true, schema: { type: string } }
+      responses:
+        "200": { description: formal AI batch status for a study freeze }
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [studyFreezeId, providerConfigId]
+              additionalProperties: false
+              properties:
+                studyFreezeId: { type: string }
+                providerConfigId: { type: string }
+      responses:
+        "201": { description: idempotently created formal AI batch }
+  /api/ai/batches/{batchId}:
+    get:
+      parameters:
+        - { name: batchId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: AI batch and dynamic item statistics }
+    post:
+      parameters:
+        - { name: batchId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              additionalProperties: false
+              properties:
+                action: { type: string, enum: [pause, resume, retry] }
+      responses:
+        "200": { description: AI batch action applied }
   /api/admin/publication-preflight:
     post:
       responses:

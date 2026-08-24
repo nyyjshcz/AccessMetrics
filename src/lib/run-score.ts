@@ -1,6 +1,7 @@
 import { getDb } from "./db";
 import { catalogEntryWithTags, classifyImpact } from "./wcag";
 import { exactBreakdown, roundHalfUpTenths, type ScoreOpportunity } from "./score";
+import { aiImpactForResolvedIncomplete, type AiOverlay } from "./ai-overlay";
 
 function impactWeight(impact: ScoreOpportunity["impact"]): number {
   return impact === "critical"
@@ -14,24 +15,43 @@ function impactWeight(impact: ScoreOpportunity["impact"]): number {
           : 0;
 }
 
-export function loadRunOpportunities(runId: string): ScoreOpportunity[] {
+export function loadRunOpportunities(
+  runId: string,
+  options?: { aiOverlay?: AiOverlay },
+): ScoreOpportunity[] {
   const rows = getDb()
     .prepare(
-      "SELECT rr.result_type,rr.impact,rr.rule_id,rr.node_count,rr.tags_json,n.effective_impact FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id WHERE rr.run_id=? ORDER BY rr.id,n.ordinal",
+      "SELECT n.id AS node_id,rr.result_type,rr.impact,rr.rule_id,rr.node_count,rr.tags_json,n.effective_impact FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id WHERE rr.run_id=? ORDER BY rr.id,n.ordinal",
     )
     .all(runId) as any[];
   const opportunities: ScoreOpportunity[] = [];
   for (const row of rows) {
-    if (row.result_type !== "pass" && row.result_type !== "violation") continue;
+    const overlayVerdict =
+      row.result_type === "incomplete" && row.node_id
+        ? options?.aiOverlay?.get(String(row.node_id))
+        : undefined;
+    const resolvedType =
+      overlayVerdict === "problem"
+        ? "violation"
+        : overlayVerdict === "not_problem"
+          ? "pass"
+          : overlayVerdict === "uncertain"
+            ? "incomplete"
+            : row.result_type;
+    if (resolvedType !== "pass" && resolvedType !== "violation") continue;
     const entry = catalogEntryWithTags(row.rule_id, JSON.parse(row.tags_json ?? "[]"));
     if (!entry.scoringEligible) continue;
-    const impacts =
-      row.result_type === "violation" && row.effective_impact
+    const aiResolved = row.result_type === "incomplete" && overlayVerdict === "problem";
+    const impacts = aiResolved
+      ? [aiImpactForResolvedIncomplete(row, { impact: row.impact })]
+      : resolvedType === "violation" && row.effective_impact
         ? [row.effective_impact]
-        : Array.from({ length: row.node_count }, () => row.impact);
+        : resolvedType === "pass" && row.result_type === "incomplete"
+          ? [row.impact]
+          : Array.from({ length: row.node_count }, () => row.impact);
     for (const impact of impacts)
       opportunities.push({
-        passed: row.result_type === "pass",
+        passed: resolvedType === "pass",
         impact: classifyImpact(impact),
         // Keep one opportunity per rule node. A rule may map to several
         // principles, but it must only count once in the overall score.
@@ -40,24 +60,44 @@ export function loadRunOpportunities(runId: string): ScoreOpportunity[] {
   }
   return opportunities;
 }
-export function loadPageOpportunities(runId: string, pageId: string): ScoreOpportunity[] {
+export function loadPageOpportunities(
+  runId: string,
+  pageId: string,
+  options?: { aiOverlay?: AiOverlay },
+): ScoreOpportunity[] {
   const rows = getDb()
     .prepare(
-      "SELECT rr.result_type,rr.impact,rr.rule_id,rr.node_count,rr.tags_json,n.effective_impact FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id WHERE rr.run_id=? AND rr.page_id=? ORDER BY rr.id,n.ordinal",
+      "SELECT n.id AS node_id,rr.result_type,rr.impact,rr.rule_id,rr.node_count,rr.tags_json,n.effective_impact FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id WHERE rr.run_id=? AND rr.page_id=? ORDER BY rr.id,n.ordinal",
     )
     .all(runId, pageId) as any[];
   const opportunities: ScoreOpportunity[] = [];
   for (const row of rows) {
-    if (row.result_type !== "pass" && row.result_type !== "violation") continue;
+    const overlayVerdict =
+      row.result_type === "incomplete" && row.node_id
+        ? options?.aiOverlay?.get(String(row.node_id))
+        : undefined;
+    const resolvedType =
+      overlayVerdict === "problem"
+        ? "violation"
+        : overlayVerdict === "not_problem"
+          ? "pass"
+          : overlayVerdict === "uncertain"
+            ? "incomplete"
+            : row.result_type;
+    if (resolvedType !== "pass" && resolvedType !== "violation") continue;
     const entry = catalogEntryWithTags(row.rule_id, JSON.parse(row.tags_json ?? "[]"));
     if (!entry.scoringEligible) continue;
-    const impacts =
-      row.result_type === "violation" && row.effective_impact
+    const aiResolved = row.result_type === "incomplete" && overlayVerdict === "problem";
+    const impacts = aiResolved
+      ? [aiImpactForResolvedIncomplete(row, { impact: row.impact })]
+      : resolvedType === "violation" && row.effective_impact
         ? [row.effective_impact]
-        : Array.from({ length: row.node_count }, () => row.impact);
+        : resolvedType === "pass" && row.result_type === "incomplete"
+          ? [row.impact]
+          : Array.from({ length: row.node_count }, () => row.impact);
     for (const impact of impacts)
       opportunities.push({
-        passed: row.result_type === "pass",
+        passed: resolvedType === "pass",
         impact: classifyImpact(impact),
         principles: entry.principles,
       });
@@ -212,8 +252,8 @@ function serializeExactBreakdown(breakdown: ReturnType<typeof exactBreakdown>) {
     ]),
   );
 }
-export function buildRunScore(runId: string) {
-  const opportunities = loadRunOpportunities(runId);
+export function buildRunScore(runId: string, options?: { aiOverlay?: AiOverlay }) {
+  const opportunities = loadRunOpportunities(runId, options);
   const coverageRows = getDb()
     .prepare(
       "SELECT result_type,rule_id,tags_json,node_count FROM rule_results WHERE run_id=? ORDER BY id",
@@ -250,7 +290,10 @@ export function buildRunScore(runId: string) {
   const exact = exactBreakdown(opportunities);
   const display = (value: typeof exact.overall) => roundHalfUpTenths(value);
   return {
-    modelVersion: "accesscheck-score-v1",
+    modelVersion: options?.aiOverlay
+      ? "accesscheck-score-v1+ai-overlay-v1"
+      : "accesscheck-score-v1",
+    scoreSource: options?.aiOverlay ? "ai_overlay" : "axe",
     pageCount: new Set(
       (getDb().prepare("SELECT page_id FROM rule_results WHERE run_id=?").all(runId) as any[]).map(
         (r) => r.page_id,

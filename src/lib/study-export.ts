@@ -5,8 +5,17 @@ import { config } from "./config";
 import { canonicalize, sha256 } from "./canonical";
 import { exportRun } from "./export";
 import { AppError } from "./errors";
+import {
+  aiConfigForBatch,
+  aiEvidenceRowsForBatch,
+  aiReviewRowsForBatch,
+  formalBatchForStudy,
+  getAiBatch,
+  loadAiOverlayForBatch,
+} from "./ai-overlay";
+import { buildRunScore, serializeRunScore } from "./run-score";
 
-type ExportKind = "study_source" | "study_final";
+export type ExportKind = "study_source" | "study_final" | "study_final_ai";
 
 const CSV_TABLES = {
   "sites.csv": ["id", "origin", "name", "category", "created_at", "updated_at", "status"],
@@ -484,9 +493,10 @@ function validateManifestDocument(target: string, kind: ExportKind, exportId: st
       )
     )
       throw new AppError("SOURCE_MANIFEST_CONTAMINATED", "study_source 不得包含 final 材料", 500);
-  } else {
+  } else if (kind === "study_final") {
+    if (typeof manifest.sourceExportId !== "string" || !manifest.sourceExportId)
+      throw new AppError("FINAL_MANIFEST_INCOMPLETE", "study_final 缺少 sourceExportId", 500);
     for (const field of [
-      "sourceExportId",
       "sourceManifestHash",
       "outcomeDigest",
       "reviewFreezeHash",
@@ -503,6 +513,29 @@ function validateManifestDocument(target: string, kind: ExportKind, exportId: st
       !paths.has("analysis/model-observations.md")
     )
       throw new AppError("FINAL_MANIFEST_INCOMPLETE", "study_final 缺少 R4 冻结材料", 500);
+  } else if (kind === "study_final_ai") {
+    if (typeof manifest.sourceExportId !== "string" || !manifest.sourceExportId)
+      throw new AppError("AI_FINAL_MANIFEST_INCOMPLETE", "study_final_ai 缺少 sourceExportId", 500);
+    for (const field of ["sourceManifestHash", "outcomeDigest"])
+      if (typeof manifest[field] !== "string" || !/^[a-f0-9]{64}$/.test(manifest[field]))
+        throw new AppError(
+          "AI_FINAL_MANIFEST_INCOMPLETE",
+          `study_final_ai 缺少冻结字段 ${field}`,
+          500,
+        );
+    if (typeof manifest.aiBatchId !== "string" || !/^[A-Za-z0-9_-]+$/.test(manifest.aiBatchId))
+      throw new AppError("AI_FINAL_MANIFEST_INCOMPLETE", "study_final_ai 缺少 aiBatchId", 500);
+    for (const required of [
+      "ai/reviews.csv",
+      "ai/evidence.jsonl",
+      "ai/summary.json",
+      "ai/score.json",
+      "ai/config.json",
+    ])
+      if (!paths.has(required))
+        throw new AppError("AI_FINAL_MANIFEST_INCOMPLETE", `study_final_ai 缺少 ${required}`, 500);
+  } else {
+    throw new AppError("EXPORT_KIND_INVALID", `不支持的 study export kind: ${kind}`, 500);
   }
 }
 
@@ -802,6 +835,101 @@ function writeStudyPayload(
   return rows;
 }
 
+function writeAiStudyArtifacts(target: string, batchId: string, runIds: string[]) {
+  const aiDir = path.join(target, "ai");
+  fs.mkdirSync(aiDir, { recursive: true });
+  const rows = aiReviewRowsForBatch(batchId);
+  const evidenceRows = aiEvidenceRowsForBatch(batchId);
+  if (evidenceRows.some((row) => row.item_evidence_hash !== row.ai_evidence_hash))
+    throw new AppError(
+      "AI_EVIDENCE_CHANGED",
+      "formal AI batch 引用的 evidence 已变化，不能导出",
+      409,
+    );
+  const configSnapshot = aiConfigForBatch(batchId);
+  const batch = getAiBatch(batchId);
+  const overlay = loadAiOverlayForBatch(batchId);
+  const score = {
+    modelVersion: "accesscheck-score-v1+ai-overlay-v1",
+    runs: runIds.map((runId) => ({
+      runId,
+      original: serializeRunScore(buildRunScore(runId)),
+      aiOverlay: serializeRunScore(buildRunScore(runId, { aiOverlay: overlay })),
+    })),
+  };
+  const summary = {
+    batchId,
+    total_incomplete: batch.stats.total,
+    problem_count: batch.stats.problem,
+    not_problem_count: batch.stats.notProblem,
+    uncertain_count: batch.stats.uncertain,
+    failed_count: batch.stats.failed,
+    processed_coverage: batch.stats.processedCoverage,
+    resolution_coverage: batch.stats.resolutionCoverage,
+  };
+  const reviewColumns = [
+    "result_node_id",
+    "run_id",
+    "page_id",
+    "canonical_url",
+    "rule_id",
+    "status",
+    "verdict",
+    "reason",
+    "evidence_hash",
+    "attempt_count",
+    "response_hash",
+    "last_error",
+    "created_at",
+    "updated_at",
+    "completed_at",
+  ] as const;
+  writeCsv(
+    path.join(aiDir, "reviews.csv"),
+    reviewColumns,
+    rows.map((row) => ({
+      result_node_id: row.result_node_id,
+      run_id: row.run_id,
+      page_id: row.page_id,
+      canonical_url: row.canonical_url,
+      rule_id: row.rule_id,
+      status: row.status,
+      verdict: row.verdict,
+      reason: row.reason,
+      evidence_hash: row.evidence_hash,
+      attempt_count: row.attempt_count,
+      response_hash: row.response_hash,
+      last_error: row.last_error,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      completed_at: row.completed_at,
+    })),
+  );
+  const evidenceBytes = evidenceRows
+    .map((row) =>
+      canonicalize({
+        resultNodeId: row.result_node_id,
+        runId: row.run_id,
+        pageId: row.page_id,
+        ruleId: row.rule_id,
+        verdict: row.verdict,
+        reason: row.reason,
+        evidenceHash: row.item_evidence_hash,
+        evidenceVersion: row.ai_evidence_version,
+        evidence: row.ai_evidence_json ? JSON.parse(row.ai_evidence_json) : null,
+      }),
+    )
+    .join("\n");
+  fs.writeFileSync(path.join(aiDir, "evidence.jsonl"), evidenceBytes ? `${evidenceBytes}\n` : "");
+  fs.writeFileSync(path.join(aiDir, "summary.json"), `${canonicalize(summary)}\n`);
+  fs.writeFileSync(path.join(aiDir, "score.json"), `${canonicalize(score)}\n`);
+  fs.writeFileSync(
+    path.join(aiDir, "config.json"),
+    `${canonicalize({ batchId, batchKey: batch.batch.batch_key, ...configSnapshot })}\n`,
+  );
+  return { summary, configSnapshot, batch: batch.batch };
+}
+
 function verifyExpectedDigest(expected: string | null | undefined, actual: string | null) {
   if (expected !== undefined && expected !== null && expected !== actual)
     throw new AppError(
@@ -837,22 +965,22 @@ export function createStudyExport(input: {
   }
   if (input.kind === "study_final" && !["r4_verified", "final_verified"].includes(freeze.status))
     throw new AppError("FINAL_FREEZE_STATE", "study_final 必须在 R4 通过后生成", 409);
-  if (input.kind === "study_final" && !input.expectedSourceExportId)
-    throw new AppError("SOURCE_REQUIRED", "study_final 必须引用 study_source", 422);
+  if (["study_final", "study_final_ai"].includes(input.kind) && !input.expectedSourceExportId)
+    throw new AppError("SOURCE_REQUIRED", `${input.kind} 必须引用 study_source`, 422);
 
   const source =
-    input.kind === "study_final"
+    input.kind === "study_final" || input.kind === "study_final_ai"
       ? (db
           .prepare(
             "SELECT * FROM study_exports WHERE id=? AND study_freeze_id=? AND kind='study_source' AND status='verified' AND is_current=1",
           )
           .get(input.expectedSourceExportId, input.studyFreezeId) as any)
       : null;
-  if (input.kind === "study_final" && !source)
+  if (["study_final", "study_final_ai"].includes(input.kind) && !source)
     throw new AppError("SOURCE_MISMATCH", "source export 不匹配或未验证", 409);
-  if (input.kind === "study_final" && !source.manifest_hash)
+  if (["study_final", "study_final_ai"].includes(input.kind) && !source.manifest_hash)
     throw new AppError("SOURCE_MANIFEST_MISSING", "source manifest hash 缺失", 409);
-  if (input.kind === "study_final") {
+  if (["study_final", "study_final_ai"].includes(input.kind)) {
     const manifestPath = path.join(source.storage_relpath, "manifest.json");
     const digestPath = path.join(source.storage_relpath, "manifest.sha256");
     if (
@@ -895,6 +1023,7 @@ export function createStudyExport(input: {
     throw new AppError("NO_CANONICAL_RUNS", "没有 canonical run，不能导出", 409);
 
   let reviewFreeze: any = null;
+  let formalAiBatch: any = null;
   let outcomeDigest: string | null = null;
   if (input.kind === "study_final") {
     reviewFreeze = db
@@ -932,25 +1061,73 @@ export function createStudyExport(input: {
     const existingFinal = currentStudyExport(input.studyFreezeId, "study_final");
     if (existingFinal && existingFinal.outcome_digest === outcomeDigest) return existingFinal;
   }
+  if (input.kind === "study_final_ai") {
+    formalAiBatch = formalBatchForStudy(input.studyFreezeId);
+    if (!formalAiBatch)
+      throw new AppError(
+        "AI_FORMAL_BATCH_REQUIRED",
+        "study_final_ai 必须先创建 formal AI batch",
+        409,
+      );
+    if (formalAiBatch.run_id !== null || formalAiBatch.page_id !== null)
+      throw new AppError(
+        "AI_FORMAL_BATCH_SCOPE_INVALID",
+        "formal AI batch 必须不绑定 run/page",
+        409,
+      );
+    const aiBatch = getAiBatch(formalAiBatch.id);
+    if (
+      formalAiBatch.status !== "completed" ||
+      aiBatch.stats.failed > 0 ||
+      aiBatch.stats.completed !== aiBatch.stats.total
+    )
+      throw new AppError(
+        "AI_REVIEWS_NOT_COMPLETE",
+        "formal AI batch 尚未完成；failed 会阻止正式导出",
+        409,
+        aiBatch.stats,
+      );
+    outcomeDigest = sha256(
+      canonicalize({
+        studyFreezeId: input.studyFreezeId,
+        sourceManifestHash: source.manifest_hash,
+        formalAiBatchId: formalAiBatch.id,
+        batchKey: formalAiBatch.batch_key,
+        providerSnapshotHash: formalAiBatch.provider_snapshot_hash,
+        promptHash: formalAiBatch.prompt_hash,
+        total: aiBatch.stats.total,
+        problem: aiBatch.stats.problem,
+        notProblem: aiBatch.stats.notProblem,
+        uncertain: aiBatch.stats.uncertain,
+      }),
+    );
+    verifyExpectedDigest(input.expectedOutcomeDigest, outcomeDigest);
+    const existingAiFinal = currentStudyExport(input.studyFreezeId, "study_final_ai");
+    if (existingAiFinal && existingAiFinal.outcome_digest === outcomeDigest) return existingAiFinal;
+  }
 
   const previous =
-    input.kind === "study_final"
+    input.kind === "study_final" || input.kind === "study_final_ai"
       ? (db
           .prepare(
-            "SELECT * FROM study_exports WHERE study_freeze_id=? AND kind='study_final' ORDER BY revision DESC LIMIT 1",
+            "SELECT * FROM study_exports WHERE study_freeze_id=? AND kind=? ORDER BY revision DESC LIMIT 1",
           )
-          .get(input.studyFreezeId) as any)
+          .get(input.studyFreezeId, input.kind) as any)
       : null;
   let revision = previous ? previous.revision + 1 : 1;
   const exportId =
     input.kind === "study_source"
       ? `study-source-${input.studyFreezeId}`
-      : `study-final-${(outcomeDigest as string).slice(0, 32)}`;
+      : input.kind === "study_final_ai"
+        ? `study-final-ai-${(outcomeDigest as string).slice(0, 32)}`
+        : `study-final-${(outcomeDigest as string).slice(0, 32)}`;
   const exportRoot = path.join(config.privateEvidenceRoot, "study-exports");
   const target = path.join(exportRoot, exportId);
   const temporary = path.join(exportRoot, `.tmp-${exportId}`);
   const now = new Date().toISOString();
-  const sourceManifestHash = input.kind === "study_final" ? source.manifest_hash : null;
+  const sourceManifestHash = ["study_final", "study_final_ai"].includes(input.kind)
+    ? source.manifest_hash
+    : null;
   const priorGenerating = db.prepare("SELECT * FROM study_exports WHERE id=?").get(exportId) as any;
   if (priorGenerating && ["generating", "invalidated"].includes(priorGenerating.status))
     revision = priorGenerating.revision;
@@ -958,7 +1135,9 @@ export function createStudyExport(input: {
     id: exportId,
     study_freeze_id: input.studyFreezeId,
     kind: input.kind,
-    source_export_id: input.kind === "study_final" ? input.expectedSourceExportId : null,
+    source_export_id: ["study_final", "study_final_ai"].includes(input.kind)
+      ? input.expectedSourceExportId
+      : null,
     revision,
     outcome_digest: outcomeDigest,
     supersedes_export_id: previous?.id && previous.id !== exportId ? previous.id : null,
@@ -1026,6 +1205,7 @@ export function createStudyExport(input: {
   try {
     fs.mkdirSync(temporary, { recursive: true });
     let finalBatchId: string | null = null;
+    let aiArtifacts: { summary: any; configSnapshot: any; batch: any } | null = null;
     if (input.kind === "study_final") {
       finalBatchId = String(reviewFreeze.batch_id);
       const reviews = db
@@ -1048,6 +1228,8 @@ export function createStudyExport(input: {
       exportId,
       outcomeDigest,
     );
+    if (input.kind === "study_final_ai")
+      aiArtifacts = writeAiStudyArtifacts(temporary, formalAiBatch.id, canonicalRunIds);
     const localizationHashes = db
       .prepare(
         `SELECT DISTINCT scan_time_localization_hash AS hash FROM scan_runs WHERE id IN (${canonicalRunIds.map(() => "?").join(",")})`,
@@ -1077,7 +1259,9 @@ export function createStudyExport(input: {
       attemptLogHash: freeze.attempt_log_hash,
       executionLogHash: freeze.execution_log_hash,
       runSetHash,
-      sourceExportId: input.kind === "study_final" ? input.expectedSourceExportId : null,
+      sourceExportId: ["study_final", "study_final_ai"].includes(input.kind)
+        ? input.expectedSourceExportId
+        : null,
       sourceManifestHash,
       outcomeDigest,
       supersedesExportId: previous?.id ?? null,
@@ -1095,6 +1279,14 @@ export function createStudyExport(input: {
       reviewFreezeHash: reviewFreeze?.artifact_hash ?? null,
       reportLocalizationHash: input.kind === "study_final" ? freeze.report_localization_hash : null,
       r4EvidenceBundleHash: input.kind === "study_final" ? freeze.r4_evidence_bundle_hash : null,
+      aiBatchId: input.kind === "study_final_ai" ? formalAiBatch.id : null,
+      aiProviderSnapshotHash:
+        input.kind === "study_final_ai" ? formalAiBatch.provider_snapshot_hash : null,
+      aiPromptHash: input.kind === "study_final_ai" ? formalAiBatch.prompt_hash : null,
+      aiSummaryHash:
+        input.kind === "study_final_ai" && aiArtifacts
+          ? sha256(fs.readFileSync(path.join(temporary, "ai", "summary.json")))
+          : null,
       revision,
       runIds: canonicalRunIds,
       files: fileManifest(temporary),

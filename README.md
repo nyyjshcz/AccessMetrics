@@ -15,7 +15,7 @@
 
 ### 本地与 Docker 启动
 
-本地启动顺序是 `pnpm install` → `pnpm db:migrate` → `pnpm dev`，另开终端运行 `pnpm worker`。Docker 本地形态使用 `compose.yaml`（或兼容的 `docker-compose.yml`）：先准备 `.env.local`，再执行 `docker compose up --build`；它会同时启动 Web、Worker 和 egress-proxy，Worker 只加入隔离网络并通过显式代理出站。首次启动后检查 Web 健康端点、Worker 日志和迁移状态。生产形态使用 `compose.prod.yaml` 与 `Caddyfile`，必须先替换真实域名、密钥和固定镜像 digest。没有 Docker、服务器或域名时，只能运行静态配置检查，不能声称已部署。
+本地启动顺序是 `pnpm install` → `pnpm db:migrate` → `pnpm dev`，另开终端运行 `pnpm worker`。需要 AI 解析 incomplete 时，再开一个终端运行 `pnpm ai:worker`；管理员在 `/admin/settings/ai` 保存 OpenAI-compatible provider 后，扫描结果页的 AI 卡片可创建、暂停、继续和重试批次。API Key 只在服务端加密保存，不写入仓库；没有扫描时保存的完整 AI evidence 的旧 run 会明确返回 `RESCAN_REQUIRED`。Docker 本地形态使用 `compose.yaml`（或兼容的 `docker-compose.yml`）：先准备 `.env.local`，再执行 `docker compose up --build`；它会同时启动 Web、Worker 和 egress-proxy，Worker 只加入隔离网络并通过显式代理出站。首次启动后检查 Web 健康端点、Worker 日志和迁移状态。生产形态使用 `compose.prod.yaml` 与 `Caddyfile`，必须先替换真实域名、密钥和固定镜像 digest。没有 Docker、服务器或域名时，只能运行静态配置检查，不能声称已部署。
 
 ### 管理、迁移、Web/Worker 和安全边界
 

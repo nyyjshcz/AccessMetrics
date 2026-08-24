@@ -65,6 +65,7 @@ export function migrate() {
     migration024,
     migration025,
     migration026,
+    migration027,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -915,6 +916,84 @@ function migration026(db: Database.Database) {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_reviews_ad_hoc_current_unique
       ON manual_reviews(result_node_id,reviewer,review_context)
       WHERE is_current=1 AND sample_id IS NULL AND review_context='ad_hoc';
+  `);
+}
+
+function migration027(db: Database.Database) {
+  const addColumn = (table: string, column: string, definition: string) => {
+    const present = (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).some(
+      (row) => row.name === column,
+    );
+    if (!present) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+
+  addColumn("result_nodes", "ai_evidence_json", "TEXT");
+  addColumn("result_nodes", "ai_evidence_hash", "TEXT");
+  addColumn("result_nodes", "ai_evidence_version", "TEXT");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_provider_configs (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      base_url TEXT NOT NULL,
+      model TEXT NOT NULL,
+      encrypted_api_key TEXT,
+      key_fingerprint TEXT NOT NULL DEFAULT '',
+      enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ai_review_batches (
+      id TEXT PRIMARY KEY,
+      batch_key TEXT NOT NULL UNIQUE,
+      run_id TEXT REFERENCES scan_runs(id) ON DELETE RESTRICT,
+      page_id TEXT REFERENCES pages(id) ON DELETE RESTRICT,
+      study_freeze_id TEXT REFERENCES study_freezes(id) ON DELETE RESTRICT,
+      provider_config_id TEXT NOT NULL REFERENCES ai_provider_configs(id) ON DELETE RESTRICT,
+      provider_snapshot_json TEXT NOT NULL,
+      provider_snapshot_hash TEXT NOT NULL,
+      prompt_version TEXT NOT NULL,
+      prompt_hash TEXT NOT NULL,
+      evidence_version TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('queued','running','paused','completed','failed','cancelled')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT,
+      CHECK (
+        (study_freeze_id IS NOT NULL AND run_id IS NULL AND page_id IS NULL)
+        OR (study_freeze_id IS NULL AND run_id IS NOT NULL)
+      )
+    );
+    CREATE TABLE IF NOT EXISTS ai_review_items (
+      id TEXT PRIMARY KEY,
+      batch_id TEXT NOT NULL REFERENCES ai_review_batches(id) ON DELETE RESTRICT,
+      result_node_id TEXT NOT NULL REFERENCES result_nodes(id) ON DELETE RESTRICT,
+      status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed')),
+      verdict TEXT CHECK(verdict IN ('problem','not_problem','uncertain') OR verdict IS NULL),
+      reason TEXT,
+      evidence_hash TEXT,
+      lease_owner TEXT,
+      lease_until TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      response_hash TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT,
+      UNIQUE(batch_id,result_node_id),
+      CHECK(status <> 'completed' OR verdict IS NOT NULL)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_formal_batch_study_freeze
+      ON ai_review_batches(study_freeze_id)
+      WHERE study_freeze_id IS NOT NULL AND run_id IS NULL AND page_id IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_ai_batches_scope
+      ON ai_review_batches(run_id,page_id,study_freeze_id,status,updated_at);
+    CREATE INDEX IF NOT EXISTS idx_ai_items_status_lease
+      ON ai_review_items(status,lease_until,updated_at);
+    CREATE INDEX IF NOT EXISTS idx_ai_items_batch
+      ON ai_review_items(batch_id,status,result_node_id);
+    CREATE INDEX IF NOT EXISTS idx_ai_items_node
+      ON ai_review_items(result_node_id,status,updated_at);
   `);
 }
 

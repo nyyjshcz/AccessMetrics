@@ -25,6 +25,9 @@ const requiredTables = [
   "r5_exercise_steps",
   "r5_artifact_bundles",
   "r5_artifact_outbox",
+  "ai_provider_configs",
+  "ai_review_batches",
+  "ai_review_items",
 ];
 const tableSet = new Set(tables.map((row) => row.name));
 const missingTables = requiredTables.filter((name) => !tableSet.has(name));
@@ -99,6 +102,9 @@ const requiredColumns = {
     "severity_source",
     "html_excerpt",
     "checks_json",
+    "ai_evidence_json",
+    "ai_evidence_hash",
+    "ai_evidence_version",
     "created_at",
   ],
   page_scores: [
@@ -216,6 +222,11 @@ for (const indexName of [
   "idx_r5_exercise_steps_artifact_status",
   "idx_r5_artifact_bundles_commit_status",
   "idx_r5_artifact_outbox_status_only",
+  "idx_ai_formal_batch_study_freeze",
+  "idx_ai_batches_scope",
+  "idx_ai_items_status_lease",
+  "idx_ai_items_batch",
+  "idx_ai_items_node",
 ]) {
   const row = db
     .prepare("SELECT 1 AS present FROM sqlite_master WHERE type='index' AND name=?")

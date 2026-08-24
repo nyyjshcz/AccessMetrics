@@ -299,13 +299,14 @@ export default function ReviewWorkbench({ params }: { params: Promise<{ runId: s
           </p>
         </div>
         <div className="card">
-          <h2>日常首轮覆盖</h2>
+          <h2>日常首轮覆盖（可选）</h2>
           <div className="score">
             {workbench.summary.dailyReviewedFindingCount}/{workbench.summary.findingCount}
           </div>
           <p className="muted">
             你已查看 {workbench.summary.dailyReviewedNodeCount} 个节点；还有{" "}
-            {workbench.summary.dailyRemainingFindingCount} 个问题组尚未留下首条日常注记。
+            {workbench.summary.dailyRemainingFindingCount}{" "}
+            个问题组尚未留下首条日常注记。这里不是硬性待办，处理完当前建议批次即可停止；剩余问题组仍可从下方完整目录进入。
           </p>
         </div>
       </div>

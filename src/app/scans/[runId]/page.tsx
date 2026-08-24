@@ -160,15 +160,16 @@ export default function RunPage({ params }: { params: Promise<{ runId: string }>
                 {reviewWorkbench.summary.contextFindingCount} 个“页面 × 规则”问题组。
               </div>
               <div>
-                <strong>日常核对建议</strong>
+                <strong>日常核对建议（可选）</strong>
                 <br />
-                已完成 {reviewWorkbench.summary.dailyReviewedFindingCount}/
-                {reviewWorkbench.summary.findingCount} 个问题组的首轮核对；当前建议{" "}
-                {reviewWorkbench.summary.prioritySampleCount} 个代表样本。
+                当前先看 {
+                  reviewWorkbench.summary.prioritySampleCount
+                } 个代表样本；已留下首条注记 {reviewWorkbench.summary.dailyReviewedFindingCount}/
+                {reviewWorkbench.summary.findingCount} 个问题组。
               </div>
             </div>
             <p className="muted" style={{ marginTop: 16 }}>
-              日常核对只更新“已查看覆盖率”和人工注记；不会覆盖原始扫描证据，也不会擅自改写自动分数。正式研究另有固定的最多{" "}
+              这不是必须完成的全部任务：处理完当前建议批次即可停止，剩余问题组和原始节点仍保留在完整证据目录中，需要时再核查。日常核对只更新“已查看覆盖率”和人工注记；不会覆盖原始扫描证据，也不会擅自改写自动分数。正式研究另有固定的最多{" "}
               {reviewWorkbench.summary.formalReview.maxSamplesPerReviewer} 条分层样本，由两位
               reviewer 独立审核。
             </p>

@@ -131,4 +131,48 @@ describe("worker lease recovery", () => {
         .scan_status,
     ).toBe("success");
   });
+
+  it("renews the job heartbeat and active page lease together", () => {
+    const site = repositories.upsertSite("https://heartbeat.example");
+    const job = repositories.createScanJob(
+      site.origin,
+      { maxPages: 1, sameOriginOnly: true, respectRobots: true },
+      "test",
+      "heartbeat-job",
+    );
+    expect(repositories.leaseNextJob("heartbeat-worker")?.id).toBe(job.id);
+    repositories.addDiscoveredPages(job.id, site.id, ["https://heartbeat.example/"]);
+    const page = repositories.leaseNextPage(job.id, "heartbeat-worker");
+    expect(page).not.toBeNull();
+    const db = dbModule.getDb();
+    db.prepare("UPDATE scan_jobs SET heartbeat_at=? WHERE id=?").run(
+      new Date(Date.now() - 10 * 1000).toISOString(),
+      job.id,
+    );
+    // Keep the lease close to expiry while leaving enough margin for a busy CI
+    // runner; the heartbeat must still extend it in the same transaction.
+    db.prepare("UPDATE job_pages SET lease_expires_at=? WHERE job_id=? AND page_id=?").run(
+      new Date(Date.now() + 10 * 1000).toISOString(),
+      job.id,
+      page!.page_id,
+    );
+    const before = db.prepare("SELECT heartbeat_at FROM scan_jobs WHERE id=?").get(job.id) as {
+      heartbeat_at: string | null;
+    };
+    const beforeLease = db
+      .prepare("SELECT lease_expires_at FROM job_pages WHERE job_id=? AND page_id=?")
+      .get(job.id, page!.page_id) as { lease_expires_at: string | null };
+    const result = repositories.heartbeatJobAndPage(job.id, "heartbeat-worker", page!.page_id);
+    expect(result).toEqual({ jobChanged: true, pageChanged: true });
+    const after = db.prepare("SELECT heartbeat_at FROM scan_jobs WHERE id=?").get(job.id) as {
+      heartbeat_at: string | null;
+    };
+    const afterLease = db
+      .prepare("SELECT lease_expires_at FROM job_pages WHERE job_id=? AND page_id=?")
+      .get(job.id, page!.page_id) as { lease_expires_at: string | null };
+    expect(after.heartbeat_at).not.toBe(before.heartbeat_at);
+    expect(new Date(afterLease.lease_expires_at!).getTime()).toBeGreaterThan(
+      new Date(beforeLease.lease_expires_at!).getTime(),
+    );
+  });
 });

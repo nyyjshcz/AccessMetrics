@@ -195,6 +195,22 @@ describe("thin AI overlay", () => {
     expect(batch.stats.resolutionCoverage).toBe(100);
   });
 
+  it("scores from scan-time frozen eligibility and principles, with null violation impact as minor", () => {
+    const item = fixture(1, true);
+    const db = dbModule.getDb();
+    db.prepare(
+      "UPDATE rule_results SET result_type='violation',impact=NULL,scoring_eligible=1,principles_json=? WHERE run_id=?",
+    ).run('["operable"]', item.run.id);
+    db.prepare(
+      "UPDATE result_nodes SET impact=NULL,effective_impact=NULL WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id=?)",
+    ).run(item.run.id);
+    expect(runScore.loadRunOpportunities(item.run.id)).toMatchObject([
+      { passed: false, impact: "minor", principles: ["operable"] },
+    ]);
+    db.prepare("UPDATE rule_results SET scoring_eligible=0 WHERE run_id=?").run(item.run.id);
+    expect(runScore.loadRunOpportunities(item.run.id)).toHaveLength(0);
+  });
+
   it("creates one formal batch per study freeze with null run and page scope", () => {
     const item = fixture(1, true);
     const config = provider();

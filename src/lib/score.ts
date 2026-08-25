@@ -1,12 +1,19 @@
 import type { Impact, Principle, ScoreBreakdown } from "./domain";
+import scoringConfig from "../../scoring/scoring-config.v1.json";
 
 export const SCORE_MODEL_VERSION = "accesscheck-score-v1";
-export const DEFAULT_WEIGHTS: Record<Impact, number> = {
-  critical: 40,
-  serious: 30,
-  moderate: 20,
-  minor: 10,
+const impactScale = Number(scoringConfig.impactWeightScale ?? 10);
+const maximumImpactWeight = Number(scoringConfig.maximumImpactWeight ?? 4);
+export const IMPACT_ORDINAL_WEIGHTS: Record<Impact, number> = {
+  critical: Number(scoringConfig.impactWeights.critical),
+  serious: Number(scoringConfig.impactWeights.serious),
+  moderate: Number(scoringConfig.impactWeights.moderate),
+  minor: Number(scoringConfig.impactWeights.minor),
 };
+export const DEFAULT_WEIGHTS: Record<Impact, number> = Object.fromEntries(
+  Object.entries(IMPACT_ORDINAL_WEIGHTS).map(([impact, weight]) => [impact, weight * impactScale]),
+) as Record<Impact, number>;
+export const MAX_WEIGHT = maximumImpactWeight * impactScale;
 
 export interface ScoreOpportunity {
   principle?: Principle;
@@ -33,7 +40,7 @@ export interface ExactScore {
 export function exactScore(
   opportunities: ScoreOpportunity[],
   weights: Readonly<Record<Impact, number>> = DEFAULT_WEIGHTS,
-  maxWeight = 40,
+  maxWeight = MAX_WEIGHT,
 ): ExactScore | null {
   const judged = opportunities.filter((item) => item.passed || Boolean(item.impact));
   if (judged.length === 0) return null;
@@ -67,10 +74,10 @@ export function scoreOpportunities(opportunities: ScoreOpportunity[]): ScoreBrea
     overall: score(all),
     totalViolations: judged.filter((item) => !item.passed).length,
     weightedDefects: judged.reduce(
-      (sum, item) => sum + (item.passed ? 0 : DEFAULT_WEIGHTS[item.impact ?? "minor"]),
+      (sum, item) => sum + (item.passed ? 0 : IMPACT_ORDINAL_WEIGHTS[item.impact ?? "minor"]),
       0,
     ),
-    denominator: judged.length * 40,
+    denominator: judged.length * MAX_WEIGHT,
     modelVersion: SCORE_MODEL_VERSION,
   };
 }

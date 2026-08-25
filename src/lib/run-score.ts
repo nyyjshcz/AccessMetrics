@@ -1,18 +1,31 @@
 import { getDb } from "./db";
 import { catalogEntryWithTags, classifyImpact } from "./wcag";
-import { exactBreakdown, roundHalfUpTenths, type ScoreOpportunity } from "./score";
+import {
+  exactBreakdown,
+  IMPACT_ORDINAL_WEIGHTS,
+  roundHalfUpTenths,
+  SCORE_MODEL_VERSION,
+  type ScoreOpportunity,
+} from "./score";
 import { aiImpactForResolvedIncomplete, type AiOverlay } from "./ai-overlay";
 
 function impactWeight(impact: ScoreOpportunity["impact"]): number {
-  return impact === "critical"
-    ? 4
-    : impact === "serious"
-      ? 3
-      : impact === "moderate"
-        ? 2
-        : impact === "minor"
-          ? 1
-          : 0;
+  return impact ? IMPACT_ORDINAL_WEIGHTS[impact] : 0;
+}
+
+const PRINCIPLES = new Set(["perceivable", "operable", "understandable", "robust"]);
+function frozenPrinciples(value: unknown): ScoreOpportunity["principles"] {
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is NonNullable<ScoreOpportunity["principles"]>[number] =>
+          PRINCIPLES.has(item),
+        )
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 export function loadRunOpportunities(
@@ -21,7 +34,7 @@ export function loadRunOpportunities(
 ): ScoreOpportunity[] {
   const rows = getDb()
     .prepare(
-      "SELECT n.id AS node_id,rr.result_type,rr.impact,rr.rule_id,rr.node_count,rr.tags_json,n.effective_impact FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id WHERE rr.run_id=? ORDER BY rr.id,n.ordinal",
+      "SELECT n.id AS node_id,rr.result_type,rr.impact,rr.rule_id,rr.node_count,rr.principles_json,rr.scoring_eligible,n.effective_impact FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id WHERE rr.run_id=? ORDER BY rr.id,n.ordinal",
     )
     .all(runId) as any[];
   const opportunities: ScoreOpportunity[] = [];
@@ -39,23 +52,22 @@ export function loadRunOpportunities(
             ? "incomplete"
             : row.result_type;
     if (resolvedType !== "pass" && resolvedType !== "violation") continue;
-    const entry = catalogEntryWithTags(row.rule_id, JSON.parse(row.tags_json ?? "[]"));
-    if (!entry.scoringEligible) continue;
+    if (Number(row.scoring_eligible) !== 1) continue;
     const aiResolved = row.result_type === "incomplete" && overlayVerdict === "problem";
     const impacts = aiResolved
       ? [aiImpactForResolvedIncomplete(row, { impact: row.impact })]
-      : resolvedType === "violation" && row.effective_impact
-        ? [row.effective_impact]
+      : resolvedType === "violation"
+        ? [classifyImpact(row.effective_impact ?? row.impact) ?? "minor"]
         : resolvedType === "pass" && row.result_type === "incomplete"
           ? [row.impact]
-          : Array.from({ length: row.node_count }, () => row.impact);
+          : Array.from({ length: row.node_count }, () => classifyImpact(row.impact));
     for (const impact of impacts)
       opportunities.push({
         passed: resolvedType === "pass",
         impact: classifyImpact(impact),
         // Keep one opportunity per rule node. A rule may map to several
         // principles, but it must only count once in the overall score.
-        principles: entry.principles,
+        principles: frozenPrinciples(row.principles_json),
       });
   }
   return opportunities;
@@ -67,7 +79,7 @@ export function loadPageOpportunities(
 ): ScoreOpportunity[] {
   const rows = getDb()
     .prepare(
-      "SELECT n.id AS node_id,rr.result_type,rr.impact,rr.rule_id,rr.node_count,rr.tags_json,n.effective_impact FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id WHERE rr.run_id=? AND rr.page_id=? ORDER BY rr.id,n.ordinal",
+      "SELECT n.id AS node_id,rr.result_type,rr.impact,rr.rule_id,rr.node_count,rr.principles_json,rr.scoring_eligible,n.effective_impact FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id WHERE rr.run_id=? AND rr.page_id=? ORDER BY rr.id,n.ordinal",
     )
     .all(runId, pageId) as any[];
   const opportunities: ScoreOpportunity[] = [];
@@ -85,21 +97,20 @@ export function loadPageOpportunities(
             ? "incomplete"
             : row.result_type;
     if (resolvedType !== "pass" && resolvedType !== "violation") continue;
-    const entry = catalogEntryWithTags(row.rule_id, JSON.parse(row.tags_json ?? "[]"));
-    if (!entry.scoringEligible) continue;
+    if (Number(row.scoring_eligible) !== 1) continue;
     const aiResolved = row.result_type === "incomplete" && overlayVerdict === "problem";
     const impacts = aiResolved
       ? [aiImpactForResolvedIncomplete(row, { impact: row.impact })]
-      : resolvedType === "violation" && row.effective_impact
-        ? [row.effective_impact]
+      : resolvedType === "violation"
+        ? [classifyImpact(row.effective_impact ?? row.impact) ?? "minor"]
         : resolvedType === "pass" && row.result_type === "incomplete"
           ? [row.impact]
-          : Array.from({ length: row.node_count }, () => row.impact);
+          : Array.from({ length: row.node_count }, () => classifyImpact(row.impact));
     for (const impact of impacts)
       opportunities.push({
         passed: resolvedType === "pass",
         impact: classifyImpact(impact),
-        principles: entry.principles,
+        principles: frozenPrinciples(row.principles_json),
       });
   }
   return opportunities;
@@ -151,7 +162,7 @@ export function persistRunScores(runId: string) {
       all.den,
       opportunities.reduce((sum, item) => sum + (item.passed ? 0 : impactWeight(item.impact)), 0),
       opportunities.filter((item) => !item.passed).length,
-      "accesscheck-score-v1",
+      SCORE_MODEL_VERSION,
       allFields.score,
       allFields.tenths,
       allFields.numerator,
@@ -215,7 +226,7 @@ export function persistRunScores(runId: string) {
     all.num,
     all.den,
     runPages.length,
-    "accesscheck-score-v1",
+    SCORE_MODEL_VERSION,
     allFields.score,
     allFields.tenths,
     allFields.numerator,
@@ -291,7 +302,7 @@ export function buildRunScore(runId: string, options?: { aiOverlay?: AiOverlay }
   const exact = exactBreakdown(opportunities);
   const display = (value: typeof exact.overall) => roundHalfUpTenths(value);
   const score = {
-    modelVersion: hasAiOverlay ? "accesscheck-score-v1+ai-overlay-v1" : "accesscheck-score-v1",
+    modelVersion: hasAiOverlay ? `${SCORE_MODEL_VERSION}+ai-overlay-v1` : SCORE_MODEL_VERSION,
     pageCount: new Set(
       (getDb().prepare("SELECT page_id FROM rule_results WHERE run_id=?").all(runId) as any[]).map(
         (r) => r.page_id,

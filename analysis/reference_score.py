@@ -1,14 +1,31 @@
 from __future__ import annotations
 from fractions import Fraction
 from typing import Iterable
+import json
+from pathlib import Path
 
-WEIGHTS = {"critical": 40, "serious": 30, "moderate": 20, "minor": 10}
+_CONFIG = json.loads(
+    (Path(__file__).resolve().parents[1] / "scoring" / "scoring-config.v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+_SCALE = int(_CONFIG.get("impactWeightScale", 10))
+WEIGHTS = {key: int(value) * _SCALE for key, value in _CONFIG["impactWeights"].items()}
+MAX_WEIGHT = int(_CONFIG.get("maximumImpactWeight", 4)) * _SCALE
 
-def exact_score(opportunities: Iterable[dict], weights=WEIGHTS, max_weight=40):
-    judged = [item for item in opportunities if item.get("passed") or item.get("impact")]
+
+def _impact(item: dict):
+    impact = item.get("impact")
+    if item.get("result_type", item.get("resultType")) == "violation" and not impact:
+        return "minor"
+    return impact
+
+def exact_score(opportunities: Iterable[dict], weights=WEIGHTS, max_weight=MAX_WEIGHT):
+    rows = list(opportunities)
+    judged = [item for item in rows if item.get("passed") or _impact(item)]
     if not judged:
         return None
-    failed = sum(0 if item.get("passed") else weights[item.get("impact", "minor")] for item in judged)
+    failed = sum(0 if item.get("passed") else weights[_impact(item) or "minor"] for item in judged)
     denominator = max_weight * len(judged)
     numerator = 100 * (denominator - failed)
     if not 0 <= numerator <= 100 * denominator:

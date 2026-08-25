@@ -293,6 +293,54 @@ export default function ResearchPage() {
           </div>
         </>
       )}
+      {value?.ordinary?.baseline && value.ordinary.summary && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h2>普通已发布结果（不计入正式研究总体）</h2>
+          <p className="muted">
+            这些是普通扫描的已发布结果，只用于日常查看，不会与正式 study campaign 混合统计。
+          </p>
+          <h2>总分分布</h2>
+          <p>
+            有效站点 {value.ordinary.summary.distribution.count}；平均数{" "}
+            {value.ordinary.summary.distribution.mean ?? "N/A"}；中位数{" "}
+            {value.ordinary.summary.distribution.median ?? "N/A"}；范围{" "}
+            {value.ordinary.summary.distribution.min ?? "N/A"}–
+            {value.ordinary.summary.distribution.max ?? "N/A"}。
+          </p>
+          {renderBars(
+            value.ordinary.summary.distribution.histogram.map((item: any) => [
+              item.label,
+              item.count,
+            ]),
+            {},
+          )}
+          <table>
+            <caption className="sr-only">普通已发布结果列表</caption>
+            <thead>
+              <tr>
+                <th scope="col">排名</th>
+                <th scope="col">网站</th>
+                <th scope="col">总分</th>
+                <th scope="col">需要进一步判断</th>
+                <th scope="col">run</th>
+              </tr>
+            </thead>
+            <tbody>
+              {value.ordinary.items.map((item: any, index: number) => (
+                <tr key={item.runId}>
+                  <td>{item.overall === null ? "N/A" : index + 1}</td>
+                  <td>{item.name}</td>
+                  <td>{item.overall === null ? "N/A" : item.overall}</td>
+                  <td>{item.incomplete}</td>
+                  <td>
+                    <a href={`/scans/${item.runId}`}>{item.runId}</a>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   );
 }

@@ -8,6 +8,7 @@ import { catalogEntryWithTags } from "./wcag";
 import { AppError } from "./errors";
 import { canonicalize, sha256 } from "./canonical";
 import { config } from "./config";
+import { SCORE_MODEL_VERSION } from "./score";
 
 const now = () => new Date().toISOString();
 export function upsertSite(origin: string, name = origin, category?: string, candidateId?: string) {
@@ -109,7 +110,7 @@ export function createRun(job: any) {
     scanner_version: "accesscheck-scanner-v1",
     axe_version: "4.13.0",
     catalog_version: "wcag-2.2-axe-4.13.0-v1",
-    score_model_version: "accesscheck-score-v1",
+    score_model_version: SCORE_MODEL_VERSION,
     rule_catalog_hash: crypto
       .createHash("sha256")
       .update(fs.readFileSync(path.join(process.cwd(), "scoring", "axe-rule-catalog.json")))
@@ -287,6 +288,30 @@ export function leaseNextPage(jobId: string, workerId: string) {
         new Date().toISOString(),
       );
     return changed.changes === 1 ? page : null;
+  });
+}
+
+/**
+ * Refresh the job heartbeat and, when a page is active, the page lease in one
+ * transaction. Keeping both updates together prevents a worker from looking
+ * alive at the job level while its current page lease expires underneath it.
+ */
+export function heartbeatJobAndPage(jobId: string, workerId: string, pageId?: string | null) {
+  return transaction((db) => {
+    const timestamp = now();
+    const leaseUntil = new Date(Date.now() + 60 * 1000).toISOString();
+    const job = db
+      .prepare(
+        "UPDATE scan_jobs SET heartbeat_at=? WHERE id=? AND status='running' AND worker_id=?",
+      )
+      .run(timestamp, jobId, workerId);
+    if (!pageId) return { jobChanged: job.changes === 1, pageChanged: true };
+    const page = db
+      .prepare(
+        "UPDATE job_pages SET lease_expires_at=?,updated_at=? WHERE job_id=? AND page_id=? AND status='scanning' AND lease_owner=? AND lease_expires_at>?",
+      )
+      .run(leaseUntil, timestamp, jobId, pageId, workerId, timestamp);
+    return { jobChanged: job.changes === 1, pageChanged: page.changes === 1 };
   });
 }
 

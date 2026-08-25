@@ -66,6 +66,7 @@ export function migrate() {
     migration025,
     migration026,
     migration027,
+    migration028,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -995,6 +996,20 @@ function migration027(db: Database.Database) {
     CREATE INDEX IF NOT EXISTS idx_ai_items_node
       ON ai_review_items(result_node_id,status,updated_at);
   `);
+}
+
+function migration028(db: Database.Database) {
+  const addColumn = (table: string, column: string, definition: string) => {
+    const present = (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).some(
+      (row) => row.name === column,
+    );
+    if (!present) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+  // A study freeze must carry the exact scan-time rule catalog identity used
+  // by its canonical runs. Historical freezes remain readable but cannot be
+  // treated as catalog-complete until recreated.
+  addColumn("study_freezes", "catalog_version", "TEXT");
+  addColumn("study_freezes", "rule_catalog_hash", "TEXT");
 }
 
 export type Db = Database.Database;

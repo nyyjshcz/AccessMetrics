@@ -99,16 +99,4 @@ export function assertDnsResolver() {
     throw new Error("DNS_OVER_HTTPS_URL must use HTTPS");
 }
 
-// Refuse to load the server-side application in production when the private
-// evidence root, required secrets, or egress proxy is not ready. The worker
-// calls the same assertions explicitly; keeping this guard at module load
-// also prevents the Web process from accepting a first request and only then
-// discovering a deployment misconfiguration through the health endpoint.
-if (config.APP_ENV === "production") {
-  assertPrivateEvidenceRoot();
-  assertProductionSecrets();
-  assertProductionProxy();
-}
-assertDnsResolver();
-
 export type AppConfig = typeof config;

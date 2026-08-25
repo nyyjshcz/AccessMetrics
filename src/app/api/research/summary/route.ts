@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDb, migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
-import { catalogEntryWithTags } from "@/lib/wcag";
 import { buildRunScore } from "@/lib/run-score";
 
 function median(values: number[]) {
@@ -25,6 +24,49 @@ function round(value: number | null) {
   return value === null ? null : Math.round(value * 100) / 100;
 }
 
+function frozenPrinciples(value: string | null) {
+  if (!value) return [] as string[];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+  } catch {
+    return [] as string[];
+  }
+}
+
+type ResearchRow = {
+  id: string;
+  name: string;
+  origin: string;
+  category: string | null;
+  runId: string;
+  status: string;
+  scannerVersion: string;
+  axeVersion: string;
+  modelVersion: string;
+  published: number;
+};
+
+function scoreDistribution(values: number[]) {
+  const histogram = Array.from({ length: 10 }, (_, index) => ({
+    label: `${index * 10}–${index === 9 ? 100 : index * 10 + 9}`,
+    count: 0,
+  }));
+  for (const score of values) histogram[Math.min(9, Math.floor(score / 10))].count += 1;
+  return {
+    count: values.length,
+    mean: round(
+      values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null,
+    ),
+    median: round(median(values)),
+    q1: round(quantile(values, 0.25)),
+    q3: round(quantile(values, 0.75)),
+    min: values.length ? Math.min(...values) : null,
+    max: values.length ? Math.max(...values) : null,
+    histogram,
+  };
+}
+
 export async function GET(request: Request) {
   try {
     migrate();
@@ -42,7 +84,12 @@ export async function GET(request: Request) {
       );
     const versions = getDb()
       .prepare(
-        "SELECT DISTINCT scanner_version scannerVersion,axe_version axeVersion,score_model_version modelVersion FROM scan_runs WHERE status='completed' AND published=1 AND COALESCE(scanner_version,'')<>'' AND COALESCE(axe_version,'')<>'' AND COALESCE(score_model_version,'')<>'' ORDER BY scanner_version,axe_version,score_model_version",
+        "SELECT DISTINCT r.scanner_version scannerVersion,r.axe_version axeVersion,r.score_model_version modelVersion FROM scan_runs r JOIN scan_jobs j ON j.id=r.job_id WHERE r.status='completed' AND r.published=1 AND j.study_campaign_id IS NOT NULL AND COALESCE(r.scanner_version,'')<>'' AND COALESCE(r.axe_version,'')<>'' AND COALESCE(r.score_model_version,'')<>'' ORDER BY r.scanner_version,r.axe_version,r.score_model_version",
+      )
+      .all() as Array<{ scannerVersion: string; axeVersion: string; modelVersion: string }>;
+    const ordinaryVersions = getDb()
+      .prepare(
+        "SELECT DISTINCT r.scanner_version scannerVersion,r.axe_version axeVersion,r.score_model_version modelVersion FROM scan_runs r JOIN scan_jobs j ON j.id=r.job_id WHERE r.status='completed' AND r.published=1 AND j.study_campaign_id IS NULL AND COALESCE(r.scanner_version,'')<>'' AND COALESCE(r.axe_version,'')<>'' AND COALESCE(r.score_model_version,'')<>'' ORDER BY r.scanner_version,r.axe_version,r.score_model_version",
       )
       .all() as Array<{ scannerVersion: string; axeVersion: string; modelVersion: string }>;
     const selected =
@@ -55,41 +102,96 @@ export async function GET(request: Request) {
       throw new AppError("VERSION_SELECTION_REQUIRED", "存在多个版本三元组，请完整指定版本", 409, {
         options: versions,
       });
-    if (!selected)
-      return NextResponse.json({
-        baseline: null,
-        items: [],
-        options: versions,
-        note: "未发布或版本不完整的数据不会进入研究汇总",
-      });
-    const clauses = [
-      "r.status='completed'",
-      "r.published=1",
-      "r.scanner_version=?",
-      "r.axe_version=?",
-      "r.score_model_version=?",
-    ];
-    const args: unknown[] = [selected.scannerVersion, selected.axeVersion, selected.modelVersion];
-    if (category) {
+    const ordinarySelected =
+      supplied === 3
+        ? { scannerVersion, axeVersion, modelVersion }
+        : (selected ?? (ordinaryVersions.length === 1 ? ordinaryVersions[0] : null));
+    const clauses = selected
+      ? [
+          "r.status='completed'",
+          "r.published=1",
+          "j.study_campaign_id IS NOT NULL",
+          "r.scanner_version=?",
+          "r.axe_version=?",
+          "r.score_model_version=?",
+        ]
+      : [];
+    const args: unknown[] = selected
+      ? [selected.scannerVersion, selected.axeVersion, selected.modelVersion]
+      : [];
+    if (category && selected) {
       clauses.push("s.category=?");
       args.push(category);
     }
-    const rows = getDb()
-      .prepare(
-        `SELECT s.id,s.name,s.origin,s.category,r.id runId,r.status,r.scanner_version scannerVersion,r.axe_version axeVersion,r.score_model_version modelVersion,r.published FROM scan_runs r JOIN sites s ON s.id=r.site_id WHERE ${clauses.join(" AND ")} ORDER BY s.name`,
-      )
-      .all(...args) as Array<{
-      id: string;
-      name: string;
-      origin: string;
-      category: string | null;
-      runId: string;
-      status: string;
-      scannerVersion: string;
-      axeVersion: string;
-      modelVersion: string;
-      published: number;
-    }>;
+    const rows = selected
+      ? (getDb()
+          .prepare(
+            `SELECT s.id,s.name,s.origin,s.category,r.id runId,r.status,r.scanner_version scannerVersion,r.axe_version axeVersion,r.score_model_version modelVersion,r.published FROM scan_runs r JOIN scan_jobs j ON j.id=r.job_id JOIN sites s ON s.id=r.site_id WHERE ${clauses.join(" AND ")} ORDER BY s.name`,
+          )
+          .all(...args) as Array<{
+          id: string;
+          name: string;
+          origin: string;
+          category: string | null;
+          runId: string;
+          status: string;
+          scannerVersion: string;
+          axeVersion: string;
+          modelVersion: string;
+          published: number;
+        }>)
+      : [];
+    const ordinaryClauses = ordinarySelected
+      ? [
+          "r.status='completed'",
+          "r.published=1",
+          "j.study_campaign_id IS NULL",
+          "r.scanner_version=?",
+          "r.axe_version=?",
+          "r.score_model_version=?",
+        ]
+      : [];
+    const ordinaryArgs: unknown[] = ordinarySelected
+      ? [
+          ordinarySelected.scannerVersion,
+          ordinarySelected.axeVersion,
+          ordinarySelected.modelVersion,
+        ]
+      : [];
+    if (category && ordinarySelected) {
+      ordinaryClauses.push("s.category=?");
+      ordinaryArgs.push(category);
+    }
+    const ordinaryRows = ordinarySelected
+      ? (getDb()
+          .prepare(
+            `SELECT s.id,s.name,s.origin,s.category,r.id runId,r.status,r.scanner_version scannerVersion,r.axe_version axeVersion,r.score_model_version modelVersion,r.published FROM scan_runs r JOIN scan_jobs j ON j.id=r.job_id JOIN sites s ON s.id=r.site_id WHERE ${ordinaryClauses.join(" AND ")} ORDER BY s.name`,
+          )
+          .all(...ordinaryArgs) as ResearchRow[])
+      : [];
+    const ordinaryItems = ordinaryRows
+      .map((row) => {
+        const score = buildRunScore(row.runId);
+        return {
+          ...row,
+          overall: score.overall,
+          perceivable: score.perceivable,
+          operable: score.operable,
+          understandable: score.understandable,
+          robust: score.robust,
+          incomplete: score.resultNodeCounts.incomplete,
+        };
+      })
+      .sort((left, right) => {
+        if (left.overall === null && right.overall !== null) return 1;
+        if (left.overall !== null && right.overall === null) return -1;
+        if (left.overall !== null && right.overall !== null && left.overall !== right.overall)
+          return right.overall - left.overall;
+        return left.name.localeCompare(right.name);
+      });
+    const ordinaryValues = ordinaryItems
+      .map((item) => item.overall)
+      .filter((value): value is number => typeof value === "number");
     const severity = { critical: 0, serious: 0, moderate: 0, minor: 0 };
     const principles = { perceivable: 0, operable: 0, understandable: 0, robust: 0 };
     const ruleCounts = new Map<string, number>();
@@ -99,23 +201,25 @@ export async function GET(request: Request) {
       const runPrinciples = { perceivable: 0, operable: 0, understandable: 0, robust: 0 };
       const runRules = getDb()
         .prepare(
-          "SELECT result_type,impact,rule_id,tags_json,node_count FROM rule_results WHERE run_id=? AND result_type IN ('violation','incomplete') ORDER BY id",
+          "SELECT result_type,impact,rule_id,principles_json,node_count FROM rule_results WHERE run_id=? AND result_type IN ('violation','incomplete') ORDER BY id",
         )
         .all(row.runId) as Array<{
         result_type: string;
         impact: string | null;
         rule_id: string;
-        tags_json: string;
+        principles_json: string | null;
         node_count: number;
       }>;
       for (const result of runRules) {
         const count = Math.max(0, Number(result.node_count) || 0);
-        if (result.result_type === "violation" && result.impact && result.impact in runSeverity) {
-          runSeverity[result.impact as keyof typeof runSeverity] += count;
-          severity[result.impact as keyof typeof severity] += count;
+        if (result.result_type === "violation") {
+          const impact = result.impact ?? "minor";
+          if (impact in runSeverity) {
+            runSeverity[impact as keyof typeof runSeverity] += count;
+            severity[impact as keyof typeof severity] += count;
+          }
         }
-        const entry = catalogEntryWithTags(result.rule_id, JSON.parse(result.tags_json ?? "[]"));
-        for (const principle of entry.principles) {
+        for (const principle of frozenPrinciples(result.principles_json)) {
           if (principle in runPrinciples) {
             runPrinciples[principle as keyof typeof runPrinciples] += count;
             principles[principle as keyof typeof principles] += count;
@@ -196,7 +300,14 @@ export async function GET(request: Request) {
           median: round(median(group.values)),
         })),
       },
-      note: "未发布或版本不完整的数据不会进入研究汇总",
+      ordinary: {
+        baseline: ordinarySelected,
+        options: ordinaryVersions,
+        items: ordinaryItems,
+        summary: ordinarySelected ? { distribution: scoreDistribution(ordinaryValues) } : null,
+        note: "普通已发布 run 仅供日常查看，不计入正式研究总体。",
+      },
+      note: "仅正式 study campaign 的已发布 run 进入研究汇总；普通发布 run 保留在日常结果页，不混入研究总体",
     });
   } catch (error) {
     return NextResponse.json(errorEnvelope(error), {

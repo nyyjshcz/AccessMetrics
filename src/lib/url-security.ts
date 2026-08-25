@@ -76,6 +76,7 @@ export function isPrivateIp(address: string): boolean {
   if (net.isIPv4(address)) {
     const [a, b] = address.split(".").map(Number);
     return (
+      a === 0 ||
       a === 10 ||
       a === 127 ||
       (a === 172 && b >= 16 && b <= 31) ||
@@ -100,7 +101,14 @@ export function isPrivateIp(address: string): boolean {
     )
       return true;
     const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
-    return mapped ? isPrivateIp(mapped) : false;
+    if (mapped) return isPrivateIp(mapped);
+    const mappedHex = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (mappedHex) {
+      const high = Number.parseInt(mappedHex[1], 16);
+      const low = Number.parseInt(mappedHex[2], 16);
+      return isPrivateIp([high >>> 8, high & 255, low >>> 8, low & 255].join("."));
+    }
+    return false;
   }
   // Node's URL parser accepts decimal/hex/octal IPv4 spellings. Normalize those
   // spellings before the DNS policy is consulted so they cannot bypass checks.

@@ -43,7 +43,8 @@ export default function ReportPage({ params }: { params: Promise<{ runId: string
       <div className="card">
         <h1>自动检查报告：{data.run.name}</h1>
         <p className="muted">
-          {data.run.origin} · {data.run.finished_at ?? data.run.created_at ?? "时间未记录"} ·{" "}
+          {data.run.origin} · 扫描完成时间：
+          {data.run.finished_at ?? data.run.started_at ?? data.run.created_at ?? "未记录"} ·{" "}
           {data.pages?.length ?? 0} 页
         </p>
         <p className="score">

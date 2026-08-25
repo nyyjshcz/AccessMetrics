@@ -7,6 +7,12 @@ import { config } from "./config";
 export type AuthorizedRunReportDto = {
   runId: string;
   site: { name: string; origin: string };
+  run: {
+    status: string;
+    startedAt: string | null;
+    finishedAt: string | null;
+    createdAt: string | null;
+  };
   score: ReturnType<typeof buildRunScore>;
   generatedAt: string;
   pages: Array<{
@@ -45,9 +51,19 @@ export type AuthorizedRunReportDto = {
 export function buildRunReportDto(runId: string): AuthorizedRunReportDto {
   const run = getDb()
     .prepare(
-      "SELECT r.id,s.origin,s.name FROM scan_runs r JOIN sites s ON s.id=r.site_id WHERE r.id=?",
+      "SELECT r.id,r.status,r.started_at,r.finished_at,r.created_at,s.origin,s.name FROM scan_runs r JOIN sites s ON s.id=r.site_id WHERE r.id=?",
     )
-    .get(runId) as { id: string; origin: string; name: string } | undefined;
+    .get(runId) as
+    | {
+        id: string;
+        status: string;
+        started_at: string | null;
+        finished_at: string | null;
+        created_at: string | null;
+        origin: string;
+        name: string;
+      }
+    | undefined;
   if (!run) throw new Error("run not found");
   const score = buildRunScore(runId);
   const pages = getDb()
@@ -151,6 +167,12 @@ export function buildRunReportDto(runId: string): AuthorizedRunReportDto {
   return {
     runId,
     site: { name: run.name, origin: run.origin },
+    run: {
+      status: run.status,
+      startedAt: run.started_at,
+      finishedAt: run.finished_at,
+      createdAt: run.created_at,
+    },
     score,
     generatedAt: new Date().toISOString(),
     pages: pages.map((page) => ({
@@ -215,13 +237,13 @@ export function renderRunReportHtml(dto: AuthorizedRunReportDto) {
     )
     .join("");
   const failedRows = dto.pages
-    .filter((page) => page.scanStatus !== "completed" || page.errorCode)
+    .filter((page) => page.scanStatus !== "success" || page.errorCode)
     .map(
       (page) =>
-        `<tr><td>${escapeHtml(page.canonicalUrl)}</td><td>${escapeHtml(page.scanStatus)}</td><td>${escapeHtml(page.errorCode ?? "")}</td><td>${page.httpStatus ?? "N/A"}</td></tr>`,
+        `<tr><td>${escapeHtml(page.canonicalUrl)}</td><td>${escapeHtml(pageStatusLabel(page.scanStatus))}</td><td>${escapeHtml(page.errorCode ?? "")}</td><td>${page.httpStatus ?? "N/A"}</td></tr>`,
     )
     .join("");
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>AccessCheck 报告 - ${escapeHtml(dto.site.name)}</title><style>:root{color-scheme:light}body{font-family:system-ui,"Noto Sans CJK SC",sans-serif;max-width:960px;margin:40px auto;padding:0 24px;color:#172033;line-height:1.55}h1{margin-bottom:4px}.muted{color:#526173}.score{font-size:42px;font-weight:700;margin:24px 0 8px}table{border-collapse:collapse;width:100%;margin:20px 0}th,td{border:1px solid #ccd6e0;padding:8px;text-align:left}caption{text-align:left;font-weight:700;padding-bottom:8px}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}.disclaimer{border-left:4px solid #527da5;padding:12px 16px;background:#f1f6fa}.provenance{font-size:12px;color:#526173}@page{size:A4;margin:18mm}@media print{body{margin:0;max-width:none}.disclaimer{break-inside:avoid}}</style></head><body><main><h1>${escapeHtml(dto.site.name)}</h1><p class="muted">${escapeHtml(dto.site.origin)}</p><p class="muted">扫描时间：${escapeHtml(dto.generatedAt)}；页数：${dto.pages.length}；覆盖受限页：${dto.pages.filter((page) => page.frameCoverageStatus === "coverage_limited").length}</p><div class="score">${score.overall === null ? "无可计算数据" : `${score.overall} / 100`}</div><p>模型：${escapeHtml(score.modelVersion)}；规则 ${score.ruleCount}；自动通过节点 ${score.automaticPassNodes}；自动失败节点 ${score.automaticFailNodes}；需要人工检查 ${score.resultNodeCounts.incomplete}；不适用 ${score.resultNodeCounts.inapplicable}。</p><table><caption>四项原则分数</caption><thead><tr><th scope="col">原则</th><th scope="col">分数</th></tr></thead><tbody>${rows}</tbody></table><h2>主要问题与修改入口</h2><table><caption>按严重程度排序的自动结果</caption><thead><tr><th scope="col">规则</th><th scope="col">影响</th><th scope="col">类型</th><th scope="col">节点数</th><th scope="col">帮助</th></tr></thead><tbody>${issueRows || '<tr><td colspan="5">没有 violation/incomplete 结果</td></tr>'}</tbody></table><h2>代表性节点证据</h2><table><caption>问题页面、元素定位与清理片段</caption><thead><tr><th scope="col">规则</th><th scope="col">页面</th><th scope="col">定位</th><th scope="col">清理后的元素与原因</th></tr></thead><tbody>${representativeRows || '<tr><td colspan="4">没有可展示的节点证据</td></tr>'}</tbody></table><h2>失败或部分成功页面</h2><table><caption>页面状态和结构化错误</caption><thead><tr><th scope="col">页面</th><th scope="col">状态</th><th scope="col">错误</th><th scope="col">HTTP</th></tr></thead><tbody>${failedRows || '<tr><td colspan="4">没有失败页面</td></tr>'}</tbody></table><h2>日常人工核对汇总</h2><p>已覆盖 ${dto.reviewSummary.reviewed} 个节点；confirmed ${dto.reviewSummary.confirmed}；not_an_issue ${dto.reviewSummary.notAnIssue}；uncertain ${dto.reviewSummary.uncertain}；尚未日常核对 ${dto.reviewSummary.unreviewed}。一个节点若有不同 reviewer 的独立日常注记，可能同时出现在多个判断类别中；正式双人抽样在冻结前不会在这里公开。自动分数始终不变。</p><p class="disclaimer">本项目仅评价 axe-core 能够自动判断的网页无障碍检查项。分数不等同于完整人工审计、官方 WCAG 合规认证或“符合 WCAG 的百分比”。需要人工判断的项目会单独列出。</p><p class="provenance">run：${escapeHtml(dto.runId)}</p></main></body></html>`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>AccessCheck 报告 - ${escapeHtml(dto.site.name)}</title><style>:root{color-scheme:light}body{font-family:system-ui,"Noto Sans CJK SC",sans-serif;max-width:960px;margin:40px auto;padding:0 24px;color:#172033;line-height:1.55}h1{margin-bottom:4px}.muted{color:#526173}.score{font-size:42px;font-weight:700;margin:24px 0 8px}table{border-collapse:collapse;width:100%;margin:20px 0}th,td{border:1px solid #ccd6e0;padding:8px;text-align:left}caption{text-align:left;font-weight:700;padding-bottom:8px}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}.disclaimer{border-left:4px solid #527da5;padding:12px 16px;background:#f1f6fa}.provenance{font-size:12px;color:#526173}@page{size:A4;margin:18mm}@media print{body{margin:0;max-width:none}.disclaimer{break-inside:avoid}}</style></head><body><main><h1>${escapeHtml(dto.site.name)}</h1><p class="muted">${escapeHtml(dto.site.origin)}</p><p class="muted">扫描完成时间：${escapeHtml(dto.run.finishedAt ?? dto.run.startedAt ?? dto.run.createdAt ?? "未记录")}; 报告生成时间：${escapeHtml(dto.generatedAt)}；页数：${dto.pages.length}；覆盖受限页：${dto.pages.filter((page) => page.frameCoverageStatus === "coverage_limited").length}</p><div class="score">${score.overall === null ? "无可计算数据" : `${score.overall} / 100`}</div><p>模型：${escapeHtml(score.modelVersion)}；规则 ${score.ruleCount}；自动通过节点 ${score.automaticPassNodes}；自动失败节点 ${score.automaticFailNodes}；需要进一步判断 ${score.resultNodeCounts.incomplete}；不适用 ${score.resultNodeCounts.inapplicable}。</p><table><caption>四项原则分数</caption><thead><tr><th scope="col">原则</th><th scope="col">分数</th></tr></thead><tbody>${rows}</tbody></table><h2>主要问题与修改入口</h2><table><caption>按严重程度排序的自动结果</caption><thead><tr><th scope="col">规则</th><th scope="col">影响</th><th scope="col">类型</th><th scope="col">节点数</th><th scope="col">帮助</th></tr></thead><tbody>${issueRows || '<tr><td colspan="5">没有 violation/incomplete 结果</td></tr>'}</tbody></table><h2>代表性节点证据</h2><table><caption>问题页面、元素定位与清理片段</caption><thead><tr><th scope="col">规则</th><th scope="col">页面</th><th scope="col">定位</th><th scope="col">清理后的元素与原因</th></tr></thead><tbody>${representativeRows || '<tr><td colspan="4">没有可展示的节点证据</td></tr>'}</tbody></table><h2>失败或未完成页面</h2><table><caption>页面状态和结构化错误</caption><thead><tr><th scope="col">页面</th><th scope="col">状态</th><th scope="col">错误</th><th scope="col">HTTP</th></tr></thead><tbody>${failedRows || '<tr><td colspan="4">没有失败或未完成页面</td></tr>'}</tbody></table><h2>日常人工核对汇总</h2><p>已覆盖 ${dto.reviewSummary.reviewed} 个节点；confirmed ${dto.reviewSummary.confirmed}；not_an_issue ${dto.reviewSummary.notAnIssue}；uncertain ${dto.reviewSummary.uncertain}；尚未日常核对 ${dto.reviewSummary.unreviewed}。一个节点若有不同 reviewer 的独立日常注记，可能同时出现在多个判断类别中；正式双人抽样在冻结前不会在这里公开。自动分数始终不变。</p><p class="disclaimer">本项目仅评价 axe-core 能够自动判断的网页无障碍检查结果。分数不等同于完整人工审计、官方 WCAG 合规认证或“符合 WCAG 的百分比”。需要进一步判断的项目会单独列出。</p><p class="provenance">run：${escapeHtml(dto.runId)}；运行状态：${escapeHtml(dto.run.status)}</p></main></body></html>`;
 }
 
 export function renderRunReport(runId: string) {
@@ -237,4 +259,8 @@ function escapeHtml(value: string) {
     /[&<>"']/g,
     (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!,
   );
+}
+
+function pageStatusLabel(status: string) {
+  return status === "success" ? "成功" : status === "failed" ? "失败" : status;
 }

@@ -1,8 +1,9 @@
 # 实施状态
 
 - 当前状态：`WAITING_EXTERNAL_INPUT`
-- 薄 AI Overlay 自动化实现：已完成；不改变原始 axe、原始 score、人工审核、WCAG catalog、human `study_final` 或现有 CSV contract。迁移 27 增加 `result_nodes` 三个 evidence 字段与 `ai_provider_configs`、`ai_review_batches`、`ai_review_items` 三张表；AI worker、OpenAI-compatible provider 设置、动态三值评分映射、formal `study_final_ai` 导出和现有页面 AI 卡片已接入。旧扫描缺 evidence 时只返回 `RESCAN_REQUIRED`。
+- 薄 AI Overlay 自动化实现：已完成；不改变原始 axe、原始 score、人工审核、WCAG catalog、human `study_final` 或现有 CSV contract。迁移 27 增加 `result_nodes` 三个 evidence 字段与 `ai_provider_configs`、`ai_review_batches`、`ai_review_items` 三张表；迁移 28 增加 study freeze 的 catalog/rule-catalog 版本快照；AI worker、OpenAI-compatible provider 设置、动态三值评分映射、formal `study_final_ai` 导出和现有页面 AI 卡片已接入。旧扫描缺 evidence 时只返回 `RESCAN_REQUIRED`。
 - 2026-08-25 按《AccessMetrics 薄 AI Overlay：最终实施计划》逐条自审并收紧：formal batch 创建前重新校验 frozen population digest/数量；终态 `failed` batch 必须走“重试失败项”后才能继续；页面范围优先读取页面 batch 并显示已冻结模型；新增真实 Playwright incomplete evidence 断言、population 失配和失败续跑测试。详细核对表见 [docs/ai-overlay-plan-audit.md](docs/ai-overlay-plan-audit.md)。
+- 2026-08-26 按最终 15 项收敛清单完成实现与自审：CI 先安装 pnpm；Web/Scan Worker 启动检查拆分；Caddy CSP 去重；discover 与 page scan 均有 job/page heartbeat；评分读取扫描时冻结的 `scoring_eligible`/principles；study freeze 保存 `catalogVersion`/`ruleCatalogHash`；TypeScript/Python/导出统一评分语义；研究汇总与普通已发布 run 分区；报告完成状态/时间文案修正；URL 安全覆盖 mapped IPv6 与 0/8。`pnpm test:all` 最终全绿，详见下方 2026-08-26 质量门记录。
 - 当前自动化基线 commit：本提交（以 `git rev-parse HEAD` 获取完整 SHA；未创建 release tag，未公网发布）。
 - 自动化实现：已完成计划步骤 1–17，以及步骤 18/19 所有不依赖真人或外部单位的代码、契约、脚手架、fixture、报告生成器、可复现分析管线和 fail-closed 校验。
 - 真实阻塞：R1–R5 真人确认、真实研究站点/许可/标准来源、生产服务器/域名/密钥/镜像与渲染器 digest。详见 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。
@@ -12,7 +13,7 @@
 - 依赖基线与负面 fixture：Node 24.19.0、pnpm 11.19.0、Python 3.12.13、Next/Playwright/axe 精确版本检查。
 - 依赖预检会实际执行 `PYTHON_BIN`/系统 Python 并解析 `--version`；当前捆绑解释器为 Python 3.12.13，系统 Python 3.13.7 会按设计失败，不再信任伪造的 `PYTHON_VERSION`。
 - 依赖预检也会实际执行 pnpm（Windows 通过 `cmd.exe`，Unix 直接执行）并核对 11.19.0，不只检查 `package.json` 的声明。
-- SQLite 迁移 1–27：外键、WAL、job/page lease、恢复、幂等唯一键与索引、frame 覆盖、研究 campaign/freeze/export、人工 review/adjudication、门证据/outbox、发布 revision/CAS 字段、R5 双角色 artifact 会话、study export current 唯一约束、扫描时本地化 hash、frame 覆盖问题记录、axe 运行时证据快照、薄 AI overlay 的 evidence/provider/batch/item 表，以及 R5 clean-clone exercise 草稿、revision artifact 路径、规范化 owner artifact/step/bundle 表和严格的 `artifact_kind/artifact_id/canonical_json` artifact outbox；迁移 18–25 补齐按任务/运行追溯的页面身份、精确/展示分数字段、结果节点 frame 证据、评审当前版本唯一性、R5 不可覆盖证据和恢复队列、正式 attempt 的替补启用时间、任务/结果/R5 全部计划索引，并重建旧版 pages 表以移除站点级 URL 唯一约束；迁移 26 会收敛历史重复的当前 ad-hoc 注记，并以部分唯一索引阻止同一 reviewer 对同一节点并发留下两条当前日常结论。
+- SQLite 迁移 1–28：外键、WAL、job/page lease、恢复、幂等唯一键与索引、frame 覆盖、研究 campaign/freeze/export、人工 review/adjudication、门证据/outbox、发布 revision/CAS 字段、R5 双角色 artifact 会话、study export current 唯一约束、扫描时本地化 hash、frame 覆盖问题记录、axe 运行时证据快照、薄 AI overlay 的 evidence/provider/batch/item 表，以及 R5 clean-clone exercise 草稿、revision artifact 路径、规范化 owner artifact/step/bundle 表和严格的 `artifact_kind/artifact_id/canonical_json` artifact outbox；迁移 18–25 补齐按任务/运行追溯的页面身份、精确/展示分数字段、结果节点 frame 证据、评审当前版本唯一性、R5 不可覆盖证据和恢复队列、正式 attempt 的替补启用时间、任务/结果/R5 全部计划索引，并重建旧版 pages 表以移除站点级 URL 唯一约束；迁移 26 收敛历史重复的当前 ad-hoc 注记并阻止同一 reviewer 对同一节点并发双写，迁移 28 为 study freeze 记录 `catalog_version` 与 `rule_catalog_hash`。
 - URL 安全、robots、同站 BFS、页面深度/资源过滤、Playwright + 本地 axe 四类结果、同源/跨源 frame 尝试、节点清理和非 HTML 失败记录。
 - 本地开发环境新增可选 HTTPS DNS（DoH）解析：当系统 DNS 将公网域名合成为 `198.18.0.0/15` 或 ULA 时，可在 `.env.local` 设置 `DNS_RESOLVER_MODE=doh` 与受信任的 HTTPS resolver；DoH 返回的每个 A/AAAA 地址仍经过现有私网、保留地址和云元数据拦截，解析失败返回结构化 `DNS_LOOKUP_FAILED`，生产环境明确禁止 DoH 并保持 system DNS/egress proxy。
 - WCAG 2.2 方法目录、axe 4.13.0 完整规则目录生成器、中文目录、独立黄金快照、节点/规则严重程度来源和 `accesscheck-score-v1` TypeScript/Python 参考实现；多原则规则只计一次总体机会并分别归入原则分项。
@@ -70,6 +71,28 @@
 - `gates:verify`、`project:status` 和 `project:resume` 现在会核对 receipt artifact 当前 hash、数据库 current approved 记录、outbox=`written`、outbox 字节/目标路径/hash、R5 六项排序 bundle、共同 bundle hash、两份公共 artifact 集、前置门顺序及 R5 两份相同 40 位 bound commit；不会以文件存在代替数据库事实。
 
 ## 最近自动化质量门
+
+### 15 项工程收敛清单复核（2026-08-26）
+
+本轮按用户给出的 15 项清单逐项自审并落地：CI 安装顺序、Web/Scan Worker 启动检查、CSP 去重、discover/page scan 双 heartbeat 与 page lease 续租、扫描时冻结评分字段、study freeze catalog/rule-catalog 快照、统一评分语义与唯一 scoring-config、Python null-impact parity、正式研究与普通发布结果分区、报告状态/时间文案、mapped IPv6/0/8 安全测试均已覆盖。没有新增平行评分引擎、AI 表或 study 状态机。
+
+最终使用仓库规定的捆绑运行时（Node 24.19.0、pnpm 11.19.0、Python 3.12.13）通过：
+
+```text
+pnpm test:all
+  dependency preflight + negative fixture
+  lint / format:check / typecheck
+  db:check / egress:check / contract:check / catalog:check / ops:check
+  hygiene:check / docs:check / plan:check / handoff:check
+  test:integration       # 8 files, 27 tests
+  test:scoring-parity    # 8 files, 41 tests
+  test                   # 16 files, 68 tests
+  test:analysis
+  build                  # Next production build
+  test:e2e               # 3 Playwright tests passed
+```
+
+构建只保留 Next middleware、动态 tracing 和 standalone 启动提示，均非失败项。当前仍是 `WAITING_EXTERNAL_INPUT`：本轮没有伪造 Qwen provider、正式站点许可、R1–R5 真人证据、生产部署或渲染器 QA。
 
 ### 人工审核工作台复核（2026-08-24）
 

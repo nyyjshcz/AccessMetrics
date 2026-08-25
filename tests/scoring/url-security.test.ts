@@ -41,6 +41,8 @@ describe("target URL security", () => {
   it("blocks carrier-grade, link-local, multicast and encoded IPv4 ranges", () => {
     for (const address of [
       "100.64.0.1",
+      "0.0.0.1",
+      "0.255.255.255",
       "192.0.2.1",
       "198.18.0.1",
       "198.51.100.1",
@@ -49,6 +51,8 @@ describe("target URL security", () => {
       "fe80::1",
       "ff02::1",
       "2001:db8::1",
+      "::ffff:127.0.0.1",
+      "::ffff:7f00:1",
       "2130706433",
       "0x7f000001",
       "017700000001",
@@ -65,6 +69,15 @@ describe("target URL security", () => {
         }),
       ).rejects.toMatchObject({ code: "PRIVATE_TARGET" });
     }
+  });
+
+  it("rejects mapped IPv6 addresses and every 0/8 IPv4 address", async () => {
+    await expect(
+      validateTargetUrl("http://[::ffff:7f00:1]/", {
+        lookupAll: async () => ["93.184.216.34"],
+      }),
+    ).rejects.toMatchObject({ code: "PRIVATE_TARGET" });
+    for (const address of ["0.0.0.1", "0.255.255.255"]) expect(isPrivateIp(address)).toBe(true);
   });
 
   it("parses only typed DoH answers and preserves the shortest TTL", () => {

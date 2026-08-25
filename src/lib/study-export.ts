@@ -14,6 +14,7 @@ import {
   loadAiOverlayForBatch,
 } from "./ai-overlay";
 import { buildRunScore, serializeRunScore } from "./run-score";
+import { SCORE_MODEL_VERSION } from "./score";
 
 export type ExportKind = "study_source" | "study_final" | "study_final_ai";
 
@@ -784,9 +785,9 @@ function writeStudyPayload(
     path.join(process.cwd(), "scoring", "wcag-criteria.v2.2.json"),
     path.join(configDir, "wcag-criteria.v2.2.json"),
   );
-  fs.writeFileSync(
+  fs.copyFileSync(
+    path.join(process.cwd(), "scoring", "scoring-config.v1.json"),
     path.join(configDir, "scoring-config.v1.json"),
-    `${canonicalize({ schemaVersion: "accesscheck-scoring-config-v1", modelVersion: "accesscheck-score-v1", weights: { critical: 40, serious: 30, moderate: 20, minor: 10 }, maximumWeight: 40 })}\n`,
   );
   fs.copyFileSync(
     path.join(process.cwd(), "scoring", "rule-localizations.zh-CN.json"),
@@ -850,7 +851,7 @@ function writeAiStudyArtifacts(target: string, batchId: string, runIds: string[]
   const batch = getAiBatch(batchId);
   const overlay = loadAiOverlayForBatch(batchId);
   const score = {
-    modelVersion: "accesscheck-score-v1+ai-overlay-v1",
+    modelVersion: `${SCORE_MODEL_VERSION}+ai-overlay-v1`,
     runs: runIds.map((runId) => ({
       runId,
       original: serializeRunScore(buildRunScore(runId)),
@@ -1258,6 +1259,8 @@ export function createStudyExport(input: {
       campaignPlanHash: campaign.campaign_plan_hash,
       attemptLogHash: freeze.attempt_log_hash,
       executionLogHash: freeze.execution_log_hash,
+      catalogVersion: freeze.catalog_version,
+      ruleCatalogHash: freeze.rule_catalog_hash,
       runSetHash,
       sourceExportId: ["study_final", "study_final_ai"].includes(input.kind)
         ? input.expectedSourceExportId

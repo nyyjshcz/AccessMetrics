@@ -55,6 +55,7 @@ const requiredColumns = {
     "user_agent",
     "created_at",
   ],
+  study_freezes: ["catalog_version", "rule_catalog_hash"],
   pages: [
     "content_type",
     "frame_coverage_status",

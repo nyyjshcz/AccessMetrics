@@ -101,6 +101,8 @@ describe("formal study freeze chain", () => {
     expect(stored.status).toBe("registered");
     expect(stored.population_digest).toBe(sha256(canonicalize([])));
     expect(stored.run_set_hash).toBe(sha256(canonicalize(first.canonicalRuns)));
+    expect(stored.catalog_version).toBe("wcag-2.2-axe-4.13.0-v1");
+    expect(stored.rule_catalog_hash).toMatch(/^[a-f0-9]{64}$/);
 
     const exported = studyExport.createStudyExport({
       studyFreezeId: first.freezeId,
@@ -126,6 +128,12 @@ describe("formal study freeze chain", () => {
     ])
       expect(fs.existsSync(path.join(exported.storage_relpath, file))).toBe(true);
     expect(fs.existsSync(path.join(exported.storage_relpath, "manual-reviews.json"))).toBe(false);
+    expect(
+      fs.readFileSync(
+        path.join(exported.storage_relpath, "configs/scoring-config.v1.json"),
+        "utf8",
+      ),
+    ).toBe(fs.readFileSync(path.join(process.cwd(), "scoring/scoring-config.v1.json"), "utf8"));
     const manifest = JSON.parse(
       fs.readFileSync(path.join(exported.storage_relpath, "manifest.json"), "utf8"),
     );

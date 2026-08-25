@@ -29,6 +29,8 @@
     "campaignPlanHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "attemptLogHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "executionLogHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "catalogVersion": { "type": ["string", "null"] },
+    "ruleCatalogHash": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
     "runSetHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "sourceExportId": { "type": ["string", "null"] },
     "sourceManifestHash": { "type": ["string", "null"] },

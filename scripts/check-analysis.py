@@ -35,6 +35,11 @@ for path in sorted(golden.glob("*.json")):
 tie = half_up_tenths(exact_score([{"passed": True}] * 39 + [{"passed": False, "impact": "minor"}]))
 if tie is None:
     raise SystemExit("half-up fixture unexpectedly returned N/A")
+null_impact = half_up_tenths(
+    exact_score([{"passed": False, "result_type": "violation", "impact": None}])
+)
+if null_impact != 75.0:
+    raise SystemExit(f"null-impact violation parity failed: {null_impact}")
 print("analysis fixtures and Python reference scoring passed")
 
 # Exercise the same export-boundary checks used by ``analysis:run`` without

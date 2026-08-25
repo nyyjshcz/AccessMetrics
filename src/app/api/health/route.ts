@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import { migrate, getDb } from "@/lib/db";
-import { assertPrivateEvidenceRoot, assertProductionSecrets } from "@/lib/config";
+import { assertWebStartup } from "@/lib/startup";
 export async function GET() {
   try {
     migrate();
-    assertPrivateEvidenceRoot();
-    assertProductionSecrets();
+    assertWebStartup();
     getDb().prepare("SELECT 1").get();
     return NextResponse.json({
       status: "ok",

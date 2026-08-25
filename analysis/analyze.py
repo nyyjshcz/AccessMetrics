@@ -181,6 +181,8 @@ def opportunities_from_scan(scan: dict[str, Any]) -> tuple[list[dict[str, Any]],
         for node in node_rows:
             impact = node.get("impact") or issue.get("impact")
             impact = impact if impact in IMPACTS else None
+            if result_type == "violation" and impact is None:
+                impact = "minor"
             if result_type == "violation":
                 severity[impact or "unknown"] += 1
             opportunities.append(

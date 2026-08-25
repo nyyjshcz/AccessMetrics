@@ -3,7 +3,6 @@ import { currentSession } from "@/lib/auth";
 import { getDb, migrate } from "@/lib/db";
 import { buildRunScore, serializeRunScore } from "@/lib/run-score";
 import { AppError, errorEnvelope } from "@/lib/errors";
-import { catalogEntryWithTags } from "@/lib/wcag";
 import { summarizeAiRun } from "@/lib/ai-overlay";
 export async function GET(_request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
@@ -26,22 +25,30 @@ export async function GET(_request: Request, context: { params: Promise<{ runId:
     const principleCounts = { perceivable: 0, operable: 0, understandable: 0, robust: 0 };
     const resultRows = getDb()
       .prepare(
-        "SELECT result_type,impact,rule_id,tags_json,node_count FROM rule_results WHERE run_id=? AND result_type IN ('violation','incomplete') ORDER BY id",
+        "SELECT result_type,impact,principles_json,node_count FROM rule_results WHERE run_id=? AND result_type IN ('violation','incomplete') ORDER BY id",
       )
       .all(runId) as Array<{
       result_type: string;
       impact: string | null;
-      rule_id: string;
-      tags_json: string;
+      principles_json: string | null;
       node_count: number;
     }>;
     for (const row of resultRows) {
       const count = Math.max(0, Number(row.node_count) || 0);
-      if (row.result_type === "violation" && row.impact && row.impact in severityCounts)
-        severityCounts[row.impact as keyof typeof severityCounts] += count;
-      const entry = catalogEntryWithTags(row.rule_id, JSON.parse(row.tags_json ?? "[]"));
-      for (const principle of entry.principles) {
-        if (principle in principleCounts)
+      if (row.result_type === "violation") {
+        const impact = row.impact ?? "minor";
+        if (impact in severityCounts)
+          severityCounts[impact as keyof typeof severityCounts] += count;
+      }
+      let principles: unknown[] = [];
+      try {
+        const parsed = JSON.parse(row.principles_json ?? "[]");
+        principles = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        principles = [];
+      }
+      for (const principle of principles) {
+        if (typeof principle === "string" && principle in principleCounts)
           principleCounts[principle as keyof typeof principleCounts] += count;
       }
     }

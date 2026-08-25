@@ -93,7 +93,8 @@ function versionTripleForRuns(campaign: any, runIds: string[]) {
   if (runIds.length === 0) throw new AppError("NO_CANONICAL_RUNS", "没有 canonical run", 409);
   const rows = getDb()
     .prepare(
-      `SELECT id,scanner_version scannerVersion,axe_version axeVersion,score_model_version modelVersion
+      `SELECT id,scanner_version scannerVersion,axe_version axeVersion,score_model_version modelVersion,
+              catalog_version catalogVersion,rule_catalog_hash ruleCatalogHash
          FROM scan_runs WHERE id IN (${runIds.map(() => "?").join(",")})`,
     )
     .all(...runIds) as Array<{
@@ -101,11 +102,22 @@ function versionTripleForRuns(campaign: any, runIds: string[]) {
     scannerVersion: string;
     axeVersion: string;
     modelVersion: string;
+    catalogVersion: string | null;
+    ruleCatalogHash: string | null;
   }>;
   if (rows.length !== runIds.length)
     throw new AppError("RUN_VERSION_MISSING", "canonical run 缺少版本记录", 409);
+  if (rows.some((row) => !row.catalogVersion || !row.ruleCatalogHash))
+    throw new AppError(
+      "RUN_CATALOG_MISSING",
+      "canonical run 缺少 catalogVersion 或 ruleCatalogHash",
+      409,
+    );
   const triples = new Set(
-    rows.map((row) => `${row.scannerVersion}\u0000${row.axeVersion}\u0000${row.modelVersion}`),
+    rows.map(
+      (row) =>
+        `${row.scannerVersion}\u0000${row.axeVersion}\u0000${row.modelVersion}\u0000${row.catalogVersion}\u0000${row.ruleCatalogHash}`,
+    ),
   );
   if (triples.size !== 1)
     throw new AppError("VERSION_TRIPLE_MISMATCH", "canonical run 混用了多个版本三元组", 409);
@@ -114,13 +126,19 @@ function versionTripleForRuns(campaign: any, runIds: string[]) {
     scannerVersion: row.scannerVersion,
     axeVersion: row.axeVersion,
     modelVersion: row.modelVersion,
+    catalogVersion: row.catalogVersion,
+    ruleCatalogHash: row.ruleCatalogHash,
   };
   const baseline = parseJsonValue(campaign.baseline_triple_json) as any;
   if (
     baseline &&
     (baseline.scannerVersion !== triple.scannerVersion ||
       baseline.axeVersion !== triple.axeVersion ||
-      baseline.modelVersion !== triple.modelVersion)
+      baseline.modelVersion !== triple.modelVersion ||
+      (baseline.catalogVersion !== undefined &&
+        baseline.catalogVersion !== triple.catalogVersion) ||
+      (baseline.ruleCatalogHash !== undefined &&
+        baseline.ruleCatalogHash !== triple.ruleCatalogHash))
   )
     throw new AppError("VERSION_TRIPLE_MISMATCH", "canonical run 与 R1 锁定版本三元组不一致", 409);
   return triple;
@@ -430,7 +448,9 @@ export function freezeCampaign(campaignId: string) {
       existing.attempt_log_hash !== attemptLogHash ||
       existing.execution_log_hash !== executionLogHash ||
       existing.population_digest !== populationDigest ||
-      existing.run_set_hash !== runSetHash
+      existing.run_set_hash !== runSetHash ||
+      existing.catalog_version !== versionTriple.catalogVersion ||
+      existing.rule_catalog_hash !== versionTriple.ruleCatalogHash
     )
       throw new AppError("FREEZE_IMMUTABLE", "同一 campaign 的 study freeze 输入已发生变化", 409);
     return {
@@ -440,13 +460,15 @@ export function freezeCampaign(campaignId: string) {
       executionLogHash: existing.execution_log_hash,
       runSetHash: existing.run_set_hash,
       populationDigest: existing.population_digest,
+      catalogVersion: existing.catalog_version,
+      ruleCatalogHash: existing.rule_catalog_hash,
       canonicalRuns,
       reused: true,
     };
   }
   getDb()
     .prepare(
-      "INSERT INTO study_freezes(id,campaign_id,attempt_log_hash,freeze_digest,protocol_hash,sample_frame_hash,execution_log_hash,scanner_version,axe_version,model_version,run_set_hash,population_digest,eligible_population_count,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO study_freezes(id,campaign_id,attempt_log_hash,freeze_digest,protocol_hash,sample_frame_hash,execution_log_hash,scanner_version,axe_version,model_version,catalog_version,rule_catalog_hash,run_set_hash,population_digest,eligible_population_count,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .run(
       freezeId,
@@ -459,6 +481,8 @@ export function freezeCampaign(campaignId: string) {
       versionTriple.scannerVersion,
       versionTriple.axeVersion,
       versionTriple.modelVersion,
+      versionTriple.catalogVersion,
+      versionTriple.ruleCatalogHash,
       runSetHash,
       populationDigest,
       population.length,
@@ -472,6 +496,8 @@ export function freezeCampaign(campaignId: string) {
     executionLogHash,
     runSetHash,
     populationDigest,
+    catalogVersion: versionTriple.catalogVersion,
+    ruleCatalogHash: versionTriple.ruleCatalogHash,
     canonicalRuns,
     reused: false,
   };
@@ -577,6 +603,8 @@ export function createManualReviewBatch(
         scannerVersion: freeze.scanner_version,
         axeVersion: freeze.axe_version,
         modelVersion: freeze.model_version,
+        catalogVersion: freeze.catalog_version,
+        ruleCatalogHash: freeze.rule_catalog_hash,
       }),
     },
     sourceRuns.map((row) => row.run_id),
@@ -584,7 +612,9 @@ export function createManualReviewBatch(
   if (
     sourceVersion.scannerVersion !== freeze.scanner_version ||
     sourceVersion.axeVersion !== freeze.axe_version ||
-    sourceVersion.modelVersion !== freeze.model_version
+    sourceVersion.modelVersion !== freeze.model_version ||
+    sourceVersion.catalogVersion !== freeze.catalog_version ||
+    sourceVersion.ruleCatalogHash !== freeze.rule_catalog_hash
   )
     throw new AppError("SOURCE_VERSION_MISMATCH", "study_source 混用了版本三元组", 409);
   const existing = getDb()

@@ -170,6 +170,12 @@ describe("thin AI overlay", () => {
       processedCoverage: 100,
       resolutionCoverage: 66.7,
     });
+    dbModule
+      .getDb()
+      .prepare(
+        "UPDATE ai_review_batches SET status='completed',completed_at=?,updated_at=? WHERE id=?",
+      )
+      .run(new Date().toISOString(), new Date().toISOString(), first.batch.id);
   });
 
   it("defines both coverages as 100% for an empty incomplete population", () => {
@@ -407,6 +413,7 @@ describe("thin AI overlay", () => {
       last_error: null,
       response_hash: null,
     });
+    db.prepare("UPDATE ai_review_batches SET status='paused' WHERE id=?").run(batch.batch.id);
   });
 
   it("requires retry instead of resuming a terminally failed batch", () => {
@@ -446,5 +453,9 @@ describe("thin AI overlay", () => {
           new Date().toISOString(),
         ),
     ).toThrow();
+    dbModule
+      .getDb()
+      .prepare("UPDATE ai_review_batches SET status='paused' WHERE id=?")
+      .run(batch.batch.id);
   });
 });

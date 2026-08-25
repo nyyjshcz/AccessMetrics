@@ -2,6 +2,7 @@
 
 - 当前状态：`WAITING_EXTERNAL_INPUT`
 - 薄 AI Overlay 自动化实现：已完成；不改变原始 axe、原始 score、人工审核、WCAG catalog、human `study_final` 或现有 CSV contract。迁移 27 增加 `result_nodes` 三个 evidence 字段与 `ai_provider_configs`、`ai_review_batches`、`ai_review_items` 三张表；AI worker、OpenAI-compatible provider 设置、动态三值评分映射、formal `study_final_ai` 导出和现有页面 AI 卡片已接入。旧扫描缺 evidence 时只返回 `RESCAN_REQUIRED`。
+- 2026-08-25 按《AccessMetrics 薄 AI Overlay：最终实施计划》逐条自审并收紧：formal batch 创建前重新校验 frozen population digest/数量；终态 `failed` batch 必须走“重试失败项”后才能继续；页面范围优先读取页面 batch 并显示已冻结模型；新增真实 Playwright incomplete evidence 断言、population 失配和失败续跑测试。详细核对表见 [docs/ai-overlay-plan-audit.md](docs/ai-overlay-plan-audit.md)。
 - 当前自动化基线 commit：本提交（以 `git rev-parse HEAD` 获取完整 SHA；未创建 release tag，未公网发布）。
 - 自动化实现：已完成计划步骤 1–17，以及步骤 18/19 所有不依赖真人或外部单位的代码、契约、脚手架、fixture、报告生成器、可复现分析管线和 fail-closed 校验。
 - 真实阻塞：R1–R5 真人确认、真实研究站点/许可/标准来源、生产服务器/域名/密钥/镜像与渲染器 digest。详见 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。

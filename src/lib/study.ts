@@ -26,7 +26,7 @@ function parseJsonValue(value: string | null | undefined) {
   }
 }
 
-function canonicalPopulation(runIds: string[]) {
+export function canonicalPopulation(runIds: string[]) {
   if (runIds.length === 0) return [] as Array<Record<string, unknown>>;
   const rows = getDb()
     .prepare(

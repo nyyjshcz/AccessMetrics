@@ -16,6 +16,7 @@ const dbModule = await import("@/lib/db");
 const repositories = await import("@/lib/repositories");
 const ai = await import("@/lib/ai-overlay");
 const runScore = await import("@/lib/run-score");
+const study = await import("@/lib/study");
 
 function completeEvidence(target: string) {
   const json = canonicalize({
@@ -125,6 +126,12 @@ describe("thin AI overlay", () => {
     expect(first.batch.page_id).toBeNull();
     expect(first.batch.provider_snapshot_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(first.batch.prompt_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.batch.provider_snapshot_json).not.toContain("test-key");
+    const storedRaw = dbModule
+      .getDb()
+      .prepare("SELECT raw_json FROM rule_results WHERE run_id=? AND result_type='incomplete'")
+      .get(item.run.id) as { raw_json: string };
+    expect(storedRaw.raw_json).not.toContain("aiEvidence");
     const rows = dbModule
       .getDb()
       .prepare("SELECT id FROM ai_review_items WHERE batch_id=? ORDER BY id")
@@ -229,7 +236,7 @@ describe("thin AI overlay", () => {
       freezeId,
       campaignId,
       sha256("attempts"),
-      sha256("freeze"),
+      sha256(`freeze:${suffix}`),
       sha256("protocol"),
       sha256("frame"),
       sha256("execution"),
@@ -237,7 +244,7 @@ describe("thin AI overlay", () => {
       "4.13.0",
       "accesscheck-score-v1",
       sha256(item.run.id),
-      sha256("population"),
+      sha256(canonicalize(study.canonicalPopulation([item.run.id]))),
       1,
       "registered",
       timestamp,
@@ -255,6 +262,71 @@ describe("thin AI overlay", () => {
     db.prepare(
       "UPDATE ai_review_batches SET status='completed',completed_at=?,updated_at=? WHERE id=?",
     ).run(timestamp, timestamp, first.batch.id);
+  });
+
+  it("rejects a formal batch when the frozen population no longer matches", () => {
+    const item = fixture(1, true);
+    const config = provider();
+    const suffix = crypto.randomUUID().replaceAll("-", "");
+    const campaignId = `campaign_ai_mismatch_${suffix}`;
+    const freezeId = `freeze_ai_mismatch_${suffix}`;
+    const timestamp = new Date().toISOString();
+    const db = dbModule.getDb();
+    db.prepare(
+      "INSERT INTO study_campaigns(id,campaign_plan_hash,protocol_hash,sample_frame_hash,baseline_triple_json,target_site_count,page_limit,retry_policy_json,replacement_policy_json,allowed_failure_reason_codes_json,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).run(
+      campaignId,
+      sha256(campaignId),
+      sha256("protocol"),
+      sha256("frame"),
+      "{}",
+      10,
+      1,
+      "{}",
+      "{}",
+      "[]",
+      "planned",
+      timestamp,
+    );
+    db.prepare(
+      "INSERT INTO study_run_attempts(id,campaign_id,slot,candidate_id,replacement_rank,attempt_no,run_id,trigger,terminal_status,usability_decision,decision_reason_code,started_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).run(
+      `attempt_ai_mismatch_${suffix}`,
+      campaignId,
+      1,
+      `candidate_ai_mismatch_${suffix}`,
+      0,
+      1,
+      item.run.id,
+      "test",
+      "completed",
+      "included",
+      null,
+      timestamp,
+      timestamp,
+    );
+    db.prepare(
+      "INSERT INTO study_freezes(id,campaign_id,attempt_log_hash,freeze_digest,protocol_hash,sample_frame_hash,execution_log_hash,scanner_version,axe_version,model_version,run_set_hash,population_digest,eligible_population_count,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).run(
+      freezeId,
+      campaignId,
+      sha256("attempts"),
+      sha256(`freeze:mismatch:${suffix}`),
+      sha256("protocol"),
+      sha256("frame"),
+      sha256("execution"),
+      "scanner",
+      "4.13.0",
+      "accesscheck-score-v1",
+      sha256(item.run.id),
+      sha256("not-the-current-population"),
+      1,
+      "registered",
+      timestamp,
+    );
+    expect(() =>
+      ai.createAiBatch({ studyFreezeId: freezeId, providerConfigId: config.id }),
+    ).toThrowError(expect.objectContaining({ code: "STUDY_POPULATION_CHANGED" }));
   });
 
   it("enforces provider URL policy and redirects are not followed", () => {
@@ -335,6 +407,19 @@ describe("thin AI overlay", () => {
       last_error: null,
       response_hash: null,
     });
+  });
+
+  it("requires retry instead of resuming a terminally failed batch", () => {
+    const item = fixture(1, true);
+    const config = provider();
+    const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+    dbModule
+      .getDb()
+      .prepare("UPDATE ai_review_batches SET status='failed' WHERE id=?")
+      .run(batch.batch.id);
+    expect(() => ai.resumeAiBatch(batch.batch.id)).toThrowError(
+      expect.objectContaining({ code: "AI_BATCH_RETRY_REQUIRED" }),
+    );
   });
 
   it("keeps duplicate item protection at the database boundary", () => {

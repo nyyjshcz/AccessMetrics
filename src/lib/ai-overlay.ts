@@ -6,6 +6,7 @@ import { canonicalize, sha256 } from "./canonical";
 import { config } from "./config";
 import { classifyImpact } from "./wcag";
 import type { Impact } from "./domain";
+import { canonicalPopulation } from "./study";
 
 export const AI_PROMPT_VERSION = "ai-incomplete-resolver-v1";
 export const AI_EVIDENCE_VERSION = "ai-evidence-v1";
@@ -343,8 +344,12 @@ function queryIncompleteNodes(scope: {
   const db = getDb();
   if (scope.studyFreezeId) {
     const freeze = db
-      .prepare("SELECT campaign_id FROM study_freezes WHERE id=?")
-      .get(scope.studyFreezeId) as { campaign_id: string } | undefined;
+      .prepare(
+        "SELECT campaign_id,population_digest,eligible_population_count FROM study_freezes WHERE id=?",
+      )
+      .get(scope.studyFreezeId) as
+      | { campaign_id: string; population_digest: string; eligible_population_count: number }
+      | undefined;
     if (!freeze) throw new AppError("STUDY_FREEZE_NOT_FOUND", "study freeze 不存在", 404);
     const includedAttempts = db
       .prepare(
@@ -357,6 +362,23 @@ function queryIncompleteNodes(scope: {
     const runIds = [...canonicalRunBySlot.values()];
     if (!runIds.length)
       throw new AppError("NO_CANONICAL_RUNS", "frozen population 没有 canonical run", 409);
+    const frozenPopulation = canonicalPopulation(runIds);
+    const populationDigest = sha256(canonicalize(frozenPopulation));
+    if (
+      populationDigest !== freeze.population_digest ||
+      frozenPopulation.length !== Number(freeze.eligible_population_count)
+    )
+      throw new AppError(
+        "STUDY_POPULATION_CHANGED",
+        "study freeze 的 frozen population 已变化，请重新建立 study freeze",
+        409,
+        {
+          expectedPopulationDigest: freeze.population_digest,
+          actualPopulationDigest: populationDigest,
+          expectedPopulationCount: Number(freeze.eligible_population_count),
+          actualPopulationCount: frozenPopulation.length,
+        },
+      );
     const placeholders = runIds.map(() => "?").join(",");
     return db
       .prepare(
@@ -574,9 +596,11 @@ export function pauseAiBatch(batchId: string) {
 export function resumeAiBatch(batchId: string) {
   const batch = getBatchRow(batchId);
   if (batch.status === "completed") return getAiBatch(batchId);
+  if (batch.status === "failed")
+    throw new AppError("AI_BATCH_RETRY_REQUIRED", "失败 batch 必须先重试失败项", 409);
   getDb()
     .prepare(
-      "UPDATE ai_review_batches SET status='queued',updated_at=? WHERE id=? AND status IN ('paused','failed','queued','running')",
+      "UPDATE ai_review_batches SET status='queued',updated_at=? WHERE id=? AND status IN ('paused','queued','running')",
     )
     .run(now(), batchId);
   return getAiBatch(batchId);
@@ -913,11 +937,19 @@ export function summarizeAiRun(runId: string, pageId?: string | null) {
       "SELECT COUNT(*) count FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=? AND (? IS NULL OR rr.page_id=?) AND rr.result_type='incomplete'",
     )
     .get(runId, pageId ?? null, pageId ?? null) as { count: number };
-  const batch = db
+  const pageBatch = pageId
+    ? (db
+        .prepare(
+          "SELECT b.* FROM ai_review_batches b WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id=? ORDER BY b.updated_at DESC,b.id DESC LIMIT 1",
+        )
+        .get(runId, pageId) as any)
+    : null;
+  const runBatch = db
     .prepare(
-      `SELECT b.* FROM ai_review_batches b WHERE b.study_freeze_id IS NULL AND b.run_id=? AND (? IS NULL OR b.page_id IS NULL OR b.page_id=?) ORDER BY b.updated_at DESC,b.id DESC LIMIT 1`,
+      "SELECT b.* FROM ai_review_batches b WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL ORDER BY b.updated_at DESC,b.id DESC LIMIT 1",
     )
-    .get(runId, pageId ?? null, pageId ?? null) as any;
+    .get(runId) as any;
+  const batch = pageBatch ?? runBatch;
   return {
     batch: batch ? { ...batch, stats: batchStats(batch.id) } : null,
     totalIncomplete: Number(totalRow.count),

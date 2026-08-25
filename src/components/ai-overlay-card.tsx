@@ -43,6 +43,14 @@ export default function AiOverlayCard({
   const batch = data?.batch?.batch ?? data?.batch ?? null;
   const stats = data?.batch?.stats ?? data?.stats ?? null;
   const status = batch?.status;
+  const batchSnapshot = (() => {
+    if (!batch?.provider_snapshot_json) return null;
+    try {
+      return JSON.parse(batch.provider_snapshot_json) as { label?: string; model?: string };
+    } catch {
+      return null;
+    }
+  })();
 
   useEffect(() => {
     const initialLoad = window.setTimeout(() => {
@@ -143,6 +151,10 @@ export default function AiOverlayCard({
       </p>
       {stats ? (
         <>
+          <p>
+            已冻结模型：<strong>{batchSnapshot?.model ?? "未知"}</strong>
+            {batchSnapshot?.label ? `（${batchSnapshot.label}）` : ""}
+          </p>
           <p>
             已完成 {stats.completed}/{stats.total} · problem {stats.problem} · not_problem{" "}
             {stats.notProblem} · uncertain {stats.uncertain} · failed {stats.failed}

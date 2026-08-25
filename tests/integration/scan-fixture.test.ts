@@ -15,6 +15,14 @@ describe("known issue fixture scanner", () => {
         response.end("User-agent: *\nDisallow: /about.html\n");
         return;
       }
+      if (request.url === "/evidence.html") {
+        response.statusCode = 200;
+        response.setHeader("content-type", "text/html");
+        response.end(
+          '<!doctype html><html lang="zh"><head><title>Evidence</title></head><body><p style="color:#777;background-image:url(/missing.png)">背景图片文字</p></body></html>',
+        );
+        return;
+      }
       if (request.url === "/status-401") {
         response.statusCode = 401;
         response.end("auth required");
@@ -77,6 +85,19 @@ describe("known issue fixture scanner", () => {
       const ruleIds = result.axe.violations.map((item) => item.id);
       expect(ruleIds).toEqual(expect.arrayContaining(["image-alt", "button-name", "link-name"]));
       expect(result.axe.passes.length).toBeGreaterThan(0);
+      const evidenceResult = await scanPage(`${target}evidence.html`, 30000, testPolicy);
+      const incompleteNodes = evidenceResult.axe.incomplete.flatMap((rule) => rule.nodes);
+      expect(incompleteNodes.length).toBeGreaterThan(0);
+      for (const node of incompleteNodes) {
+        expect(node.aiEvidence?.hash).toMatch(/^[a-f0-9]{64}$/);
+        expect(node.aiEvidence?.version).toBe("ai-evidence-v1");
+        const evidence = JSON.parse(node.aiEvidence!.json) as Record<string, unknown>;
+        expect(evidence.complete).toBe(true);
+        expect(Array.isArray(evidence.target)).toBe(true);
+        expect(evidence).not.toHaveProperty("rule");
+        expect(evidence).not.toHaveProperty("impact");
+        expect(evidence).not.toHaveProperty("wcag");
+      }
       const mixed = await scanPage(`${target}mixed-image-alt.html`, 30000, testPolicy);
       const mixedViolations = mixed.axe.violations.find((item) => item.id === "image-alt");
       const mixedPasses = mixed.axe.passes.find((item) => item.id === "image-alt");

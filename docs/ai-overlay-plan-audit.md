@@ -50,7 +50,7 @@
 - Python 分析和可执行 notebook：通过；
 - Next production build：通过，仅保留既有 middleware/tracing/standalone 非失败警告；
 - Playwright E2E：3 个测试通过；
-- `pnpm db:check`、`pnpm contract:check`、`pnpm catalog:check`、`pnpm docs:check`、`pnpm plan:check`、`pnpm handoff:check`：均通过。
+- `pnpm db:check`、`pnpm contract:check`、`pnpm catalog:check`、`pnpm docs:check`、`pnpm handoff:check`：均通过。
 
 ## 仍然等待的外部输入
 

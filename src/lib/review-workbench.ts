@@ -15,7 +15,7 @@ export type CurrentNodeReview = {
 export type ReviewWorkbenchInput = {
   findingId: string;
   resultNodeId: string;
-  resultType: "violation" | "incomplete";
+  resultType: "incomplete";
   impact: string | null;
   ruleId: string;
   description: string;
@@ -39,7 +39,7 @@ export type ReviewWorkbenchInput = {
 
 export type ReviewWorkbenchFinding = {
   id: string;
-  resultType: "violation" | "incomplete";
+  resultType: "incomplete";
   impact: string | null;
   ruleId: string;
   description: string;
@@ -63,10 +63,7 @@ const impactRank: Record<string, number> = {
 };
 
 function findingOrder(left: ReviewWorkbenchFinding, right: ReviewWorkbenchFinding) {
-  const leftType = left.resultType === "incomplete" ? 0 : 1;
-  const rightType = right.resultType === "incomplete" ? 0 : 1;
   return (
-    leftType - rightType ||
     (impactRank[left.impact ?? ""] ?? 4) - (impactRank[right.impact ?? ""] ?? 4) ||
     right.nodeCount - left.nodeCount ||
     left.ruleId.localeCompare(right.ruleId) ||
@@ -77,31 +74,10 @@ function findingOrder(left: ReviewWorkbenchFinding, right: ReviewWorkbenchFindin
 
 function selectPriorityFindings(findings: ReviewWorkbenchFinding[]) {
   const selected = new Set<string>();
-  const choose = (items: ReviewWorkbenchFinding[], limit: number) => {
-    for (const item of [...items].sort(findingOrder)) {
-      if (selected.size >= EXPLORATORY_REVIEW_LIMIT || limit <= 0) break;
-      if (selected.has(item.id)) continue;
-      selected.add(item.id);
-      limit--;
-    }
-  };
-  choose(
-    findings.filter((item) => item.resultType === "incomplete"),
-    6,
-  );
-  choose(
-    findings.filter(
-      (item) =>
-        item.resultType === "violation" &&
-        (item.impact === "critical" || item.impact === "serious"),
-    ),
-    4,
-  );
-  choose(
-    findings.filter((item) => item.resultType === "violation"),
-    2,
-  );
-  choose(findings, EXPLORATORY_REVIEW_LIMIT);
+  for (const item of [...findings].sort(findingOrder)) {
+    if (selected.size >= EXPLORATORY_REVIEW_LIMIT) break;
+    selected.add(item.id);
+  }
   return selected;
 }
 

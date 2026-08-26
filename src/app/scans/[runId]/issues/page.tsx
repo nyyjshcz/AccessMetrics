@@ -113,9 +113,9 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
       <div className="card">
         <h1>问题列表</h1>
         <p className="muted">
-          这里保留全部自动化结果。只有 violation 和 incomplete 是可提交人工判断的异常证据；pass 和
-          inapplicable
-          可以浏览，但不是人工待办。一个问题组可能含多个节点；“人工覆盖”显示已实际记录判断的节点数，不会把一条人工判断扩大成整组结论。
+          这里保留全部自动化结果。violation 已由 axe 自动判定并直接参与自动评分；只有 incomplete
+          需要人工或 AI 结合页面语境判断。pass 和 inapplicable
+          可以浏览，但不是人工待办。一个问题组可能含多个节点；人工判断只记录到实际看过的节点。
         </p>
         <p>
           <a href={`/scans/${runId}/review`}>先进入人工审核工作台（按问题组与代表样本）</a>
@@ -258,13 +258,19 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
                   </td>
                   <td>{item.node_count}</td>
                   <td>
-                    已审 {item.reviewCoverage.reviewedNodeCount}/{item.node_count}
-                    <br />
-                    <small>
-                      确认 {item.reviewCoverage.confirmedCount} · 不成立{" "}
-                      {item.reviewCoverage.notAnIssueCount} · 不确定{" "}
-                      {item.reviewCoverage.uncertainCount}
-                    </small>
+                    {item.result_type === "incomplete" ? (
+                      <>
+                        已审 {item.reviewCoverage.reviewedNodeCount}/{item.node_count}
+                        <br />
+                        <small>
+                          确认 {item.reviewCoverage.confirmedCount} · 不成立{" "}
+                          {item.reviewCoverage.notAnIssueCount} · 不确定{" "}
+                          {item.reviewCoverage.uncertainCount}
+                        </small>
+                      </>
+                    ) : (
+                      <span className="muted">自动判定，无需人工审核</span>
+                    )}
                   </td>
                   <td>
                     <strong>{item.localization?.zhName ?? "暂无人工校对中文说明"}</strong>
@@ -284,13 +290,15 @@ export default function IssuesPage({ params }: { params: Promise<{ runId: string
                         item.nodes.map((node) => (
                           <div key={node.id} style={{ marginTop: 8 }}>
                             <strong>节点 {node.ordinal + 1}</strong>
-                            <div>
-                              <a
-                                href={`/scans/${runId}/review?nodeId=${encodeURIComponent(node.id)}`}
-                              >
-                                审核这个节点
-                              </a>
-                            </div>
+                            {item.result_type === "incomplete" ? (
+                              <div>
+                                <a
+                                  href={`/scans/${runId}/review?nodeId=${encodeURIComponent(node.id)}`}
+                                >
+                                  审核这个节点
+                                </a>
+                              </div>
+                            ) : null}
                             <div>
                               <code>{JSON.stringify(node.target)}</code>
                               {node.targetHash ? (

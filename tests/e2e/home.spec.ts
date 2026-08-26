@@ -122,7 +122,7 @@ test("admin, reviewers, publishing and exports complete the fixture flow", async
   const fixture = http.createServer((_request, response) => {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end(
-      '<!doctype html><head><title>E2E fixture</title></head><body><h1>fixture</h1><img src="/missing.png"><button></button></body>',
+      '<!doctype html><html lang="zh"><head><title>E2E fixture</title></head><body><h1>fixture</h1><img src="/missing.png"><button></button><p style="color:#777;background-image:url(/missing.png)">需要上下文判断的文字</p></body></html>',
     );
   });
   await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", () => resolve()));
@@ -163,13 +163,26 @@ test("admin, reviewers, publishing and exports complete the fixture flow", async
   await page.getByLabel("严重程度").selectOption("critical");
   await expect(page.getByText(/当前筛选没有自动化问题|第/)).toBeVisible();
 
-  const issueResponse = await appRequest(page, `/api/runs/${runId}/issues?pageSize=100`);
+  const issueResponse = await appRequest(
+    page,
+    `/api/runs/${runId}/issues?pageSize=100&resultType=incomplete`,
+  );
   expect(issueResponse.ok).toBeTruthy();
   const issuePayload = JSON.parse(issueResponse.body);
   expect(issuePayload.items.length).toBeGreaterThan(0);
   expect(issuePayload.items[0].nodes.length).toBeGreaterThan(0);
   const resultNodeId = issuePayload.items[0].result_node_id;
   expect(resultNodeId).toMatch(/^node_/);
+  const violationResponse = await appRequest(
+    page,
+    "/api/runs/" + runId + "/issues?pageSize=100&resultType=violation",
+  );
+  expect(violationResponse.ok).toBeTruthy();
+  const violationPayload = JSON.parse(violationResponse.body);
+  expect(violationPayload.items.length).toBeGreaterThan(0);
+  expect(violationPayload.items[0].nodes.length).toBeGreaterThan(0);
+  const violationNodeId = violationPayload.items[0].nodes[0].id;
+  expect(violationNodeId).toMatch(/^node_/);
   const adminAttempt = await appRequest(page, "/api/reviews/ad-hoc", {
     headers: { Origin: baseUrl },
     body: { resultNodeId, verdict: "confirmed", note: "admin must not review" },
@@ -196,7 +209,16 @@ test("admin, reviewers, publishing and exports complete the fixture flow", async
   await expect(computerPage.getByText(/不是让你逐条点完/)).toBeVisible();
   await expect(computerPage.getByText(/自动补入下一个还未覆盖的问题组/)).toBeVisible();
   await expect(computerPage.getByText("写理由前，按这三点核对")).toBeVisible();
-  await expect(computerPage.getByText(/全部待核对自动证据/)).toBeVisible();
+  await expect(computerPage.getByText(/待判断 incomplete/)).toBeVisible();
+  const violationReview = await appRequest(computerPage, "/api/reviews/ad-hoc", {
+    headers: { Origin: baseUrl, "x-csrf-token": await reviewerCsrfCookie(computerPage) },
+    body: {
+      resultNodeId: violationNodeId,
+      verdict: "confirmed",
+      note: "violation 不应进入日常审核",
+    },
+  });
+  expect(violationReview.status).toBe(422);
   await computerPage.getByLabel("为什么这样判断？").fill("这个节点确实需要人工确认。");
   const [computerReview] = await Promise.all([
     computerPage.waitForResponse((response) => response.url().endsWith("/api/reviews/ad-hoc")),

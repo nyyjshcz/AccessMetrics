@@ -91,11 +91,6 @@ const next = {
   status: "R5_SEALED",
 };
 fs.writeFileSync(indexPath, `${JSON.stringify(next, null, 2)}\n`);
-const logPath = path.join(process.cwd(), "docs", "validation-log.md");
-fs.appendFileSync(
-  logPath,
-  `\n| ${new Date().toISOString().slice(0, 10)} | R5 gate seal | AI | 真人已提供 schema-valid 双 receipt（由命令核验） | pnpm gates:seal | fullGateBundleHash=${fullGateBundleHash} | clean-clone/release validation 仍需继续 |\n`,
-);
 console.log(
   JSON.stringify(
     { status: "sealed", note: "Only run after two real R5 reviewer receipts", fullGateBundleHash },

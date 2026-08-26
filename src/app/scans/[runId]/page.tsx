@@ -150,12 +150,12 @@ export default function RunPage({ params }: { params: Promise<{ runId: string }>
           <>
             <div className="grid">
               <div>
-                <strong>全部自动证据</strong>
+                <strong>待处理 incomplete</strong>
                 <br />
-                {reviewWorkbench.summary.automaticNodeCount} 个节点，始终可逐条查看和导出。
+                {reviewWorkbench.summary.contextNodeCount} 个节点，需要人工或 AI 结合页面语境判断。
               </div>
               <div>
-                <strong>需要语境判断</strong>
+                <strong>内部归类</strong>
                 <br />
                 {reviewWorkbench.summary.contextNodeCount} 个节点已归为{" "}
                 {reviewWorkbench.summary.contextFindingCount} 个“页面 × 规则”问题组。

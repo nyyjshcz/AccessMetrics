@@ -22,6 +22,7 @@ export default defineConfig({
       COMPUTER_REVIEW_TOKEN: "e2e-computer-token",
       MATH_REVIEW_TOKEN: "e2e-math-token",
       ADMIN_REAUTH_TOKEN: "e2e-admin-reauth-token",
+      DNS_RESOLVER_MODE: "system",
       SCAN_TEST_ALLOW_PRIVATE_ADDRESSES: "1",
     },
   },

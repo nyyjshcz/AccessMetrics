@@ -34,7 +34,7 @@ const commandResults: Array<{
   stdoutSha256: string;
   stderrSha256: string;
 }> = [];
-const expectedWhitelist = ["docs/gate-attestation-index.json", "docs/validation-log.md"];
+const expectedWhitelist = ["docs/gate-attestation-index.json"];
 const startedAt = new Date().toISOString();
 let candidate = options.candidate ?? "";
 let rcCommit = options["rc-commit"] ?? "";

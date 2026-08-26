@@ -7,7 +7,6 @@ import { verifyReviewFreezeAfterR3 } from "../src/lib/study";
 
 const root = process.cwd();
 const externalPath = path.join(root, "EXTERNAL_INPUTS.md");
-const statusPath = path.join(root, "IMPLEMENTATION_STATUS.md");
 const external = fs.readFileSync(externalPath, "utf8");
 const pending = external.split("\n").filter((line) => line.startsWith("- [ ]"));
 const required = [
@@ -26,7 +25,6 @@ const required = [
   "docker-compose.yml",
   "scripts/check-repository-hygiene.ts",
   "scripts/check-documentation.ts",
-  "scripts/check-plan-coverage.ts",
   "scripts/check-egress-proxy.mjs",
   "scripts/scan-page-cli.ts",
   "scripts/import-sample-frame.ts",
@@ -86,10 +84,6 @@ if (missing.length > 0) {
       return { freezeId, error: error instanceof Error ? error.message : String(error) };
     }
   });
-  const status = fs
-    .readFileSync(statusPath, "utf8")
-    .replace(/当前状态：`[^`]+`/, "当前状态：`READY_FOR_FORMAL_VALIDATION`");
-  fs.writeFileSync(statusPath, status);
   console.log(
     JSON.stringify({ message: "外部输入已齐全，可以继续正式验证。", reviewFreezes: awaiting }),
   );

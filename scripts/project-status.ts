@@ -21,7 +21,6 @@ const required = [
   "docker-compose.yml",
   "scripts/check-repository-hygiene.ts",
   "scripts/check-documentation.ts",
-  "scripts/check-plan-coverage.ts",
   "scripts/check-egress-proxy.mjs",
   "scripts/scan-page-cli.ts",
   "scripts/import-sample-frame.ts",
@@ -67,7 +66,6 @@ const missingEvidence = ["R1", "R2", "R3", "R4", "R5"].filter((gate) => {
 });
 const qualityArtifacts = [
   "docs/dependency-preflight.json",
-  "docs/validation-log.md",
   "contracts/examples/manifest.json",
   "docs/owner-handoff/07-理解检查参考答案与验收表.md",
 ].filter((file) => fs.existsSync(path.join(root, file)));
@@ -84,7 +82,7 @@ const indexValid =
   attestationIndex.schemaVersion === "gate-attestation-index-v1" &&
   typeof attestationIndex.throughGate === "string" &&
   typeof attestationIndex.r5Status === "string";
-const automatedReady = missing.length === 0 && qualityArtifacts.length === 4 && indexValid;
+const automatedReady = missing.length === 0 && qualityArtifacts.length === 3 && indexValid;
 const deliveryAttestation = verifyExternalDeliveryAttestation(root);
 const researchComplete =
   attestationIndex?.throughGate === "R5" && attestationIndex?.r5Status === "passed";
@@ -129,7 +127,6 @@ console.log(
         "pnpm ops:check",
         "pnpm hygiene:check",
         "pnpm docs:check",
-        "pnpm plan:check",
         "pnpm handoff:check",
         "pnpm contract:check",
         "pnpm lint",

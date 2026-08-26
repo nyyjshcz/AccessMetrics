@@ -1160,7 +1160,7 @@ export function finalizeUnderstanding(roleName: string, body: unknown) {
 function handoffEvidence() {
   const paths = [
     "docs/gate-attestation-index.json",
-    "docs/validation-log.md",
+    "docs/archive/validation-log.md",
     "docs/release-validation-log.md",
     "deliverables/research-report/AccessCheck_Lishui_研究报告.md",
     "deliverables/federation-report/丽水市公共数字服务信息无障碍自动评估报告.md",

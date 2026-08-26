@@ -28,7 +28,7 @@ type Node = {
 
 type Finding = {
   id: string;
-  resultType: "violation" | "incomplete";
+  resultType: "incomplete";
   impact: string | null;
   ruleId: string;
   description: string;
@@ -78,8 +78,7 @@ const verdictLabel: Record<Verdict, string> = {
   uncertain: "暂不确定：需要真实辅助技术或业务语境确认",
 };
 
-const resultLabel = (type: Finding["resultType"]) =>
-  type === "incomplete" ? "待上下文判断" : "自动发现，可抽检";
+const resultLabel = (_type: Finding["resultType"]) => "待上下文判断";
 
 export default function ReviewWorkbench({ params }: { params: Promise<{ runId: string }> }) {
   const [runId, setRunId] = useState("");
@@ -237,8 +236,6 @@ export default function ReviewWorkbench({ params }: { params: Promise<{ runId: s
           <a href={`/review/login?next=${encodeURIComponent(reviewPath)}`}>
             Reviewer 登录后回到此工作台
           </a>
-          {" · "}
-          <a href={`/scans/${runId}/issues?resultType=incomplete`}>只浏览全部自动证据</a>
         </p>
       </section>
     );
@@ -252,9 +249,6 @@ export default function ReviewWorkbench({ params }: { params: Promise<{ runId: s
 
   const contextFindings = workbench.findings.filter(
     (finding) => finding.resultType === "incomplete",
-  );
-  const automaticFindings = workbench.findings.filter(
-    (finding) => finding.resultType === "violation",
   );
   const localization = selected ? workbench.localizations[selected.ruleId] : undefined;
 
@@ -284,56 +278,48 @@ export default function ReviewWorkbench({ params }: { params: Promise<{ runId: s
 
       <div className="grid" style={{ marginTop: 16 }}>
         <div className="card">
-          <h2>全部待核对自动证据</h2>
-          <div className="score">{workbench.summary.automaticNodeCount}</div>
+          <h2>待判断 incomplete</h2>
+          <div className="score">{workbench.summary.contextNodeCount}</div>
           <p className="muted">
-            所有 violation 和 incomplete 节点都能展开和单独审核，不会因抽样而丢失。
+            这里才是人工或 AI 需要处理的节点。violation 已由 axe 自动判定，不进入这个队列。
           </p>
         </div>
         <div className="card">
-          <h2>需要上下文判断</h2>
+          <h2>内部归类</h2>
           <div className="score">{workbench.summary.contextFindingCount} 组</div>
           <p className="muted">
-            {workbench.summary.contextNodeCount}{" "}
-            个节点。一个组可含多个类似元素，但人工结论只作用于实际看过的节点。
+            按“页面 × 规则”整理 {workbench.summary.contextNodeCount} 个节点；分组只用于导航和统计。
           </p>
         </div>
         <div className="card">
-          <h2>日常首轮覆盖（可选）</h2>
-          <div className="score">
-            {workbench.summary.dailyReviewedFindingCount}/{workbench.summary.findingCount}
-          </div>
+          <h2>建议样本</h2>
+          <div className="score">{workbench.summary.prioritySampleCount}</div>
           <p className="muted">
-            你已查看 {workbench.summary.dailyReviewedNodeCount} 个节点；还有{" "}
-            {workbench.summary.dailyRemainingFindingCount}{" "}
-            个问题组尚未留下首条日常注记。这里不是硬性待办，处理完当前建议批次即可停止；剩余问题组仍可从下方完整目录进入。
+            每个优先组先给一个代表节点；提交后可以继续下一个。已记录{" "}
+            {workbench.summary.dailyReviewedNodeCount} 条判断。
           </p>
         </div>
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>
-        <h2>这次审核完成后，会更新什么？</h2>
+        <h2>审核规则</h2>
         <p>
-          会立刻更新你的“已查看节点数”、确认/不成立/不确定的人工注记和时间。不会自动把同组其他节点标成已审，也不会改变自动分数。
-          如果以后进入正式研究，系统会从所有自动问题中固定抽取最多{" "}
-          {workbench.summary.formalReview.maxSamplesPerReviewer} 条代表样本，由两位 reviewer
-          独立审核；两人合计最多{" "}
-          {workbench.summary.formalReview.maxSamplesPerReviewer *
-            workbench.summary.formalReview.reviewerCount}{" "}
-          次判断，而不是几百次。
+          这里只处理
+          incomplete。你提交的结论只作用于当前节点，不会把同组其他节点一起改掉，也不会修改原始 axe
+          结果或自动分数。
         </p>
-        <ol className="review-steps">
-          <li>日常核对：先完成代表样本；需要时可从完整证据列表打开任意一个节点。</li>
-          <li>正式研究：确认正式研究输入后，系统冻结抽样来源并固定抽取不超过 40 个节点。</li>
-          <li>双人独立审核：两位 reviewer 分别提交，彼此看不到对方答案。</li>
-          <li>有分歧的样本进入裁决；裁决和复核完成后才冻结成研究结论。</li>
-        </ol>
+        <p className="muted">
+          正式研究仍会从冻结后的研究样本中独立抽取最多{" "}
+          {workbench.summary.formalReview.maxSamplesPerReviewer} 条，由两位 reviewer
+          分别判断；这与当前日常审核分开。
+        </p>
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>
-        <h2>当前建议队列</h2>
+        <h2>建议样本队列</h2>
         <p className="muted">
-          优先涵盖“需要上下文判断”和高影响自动发现。完成一个问题组的首条日常注记后，会自动补入下一组；你也可以先选最熟悉的页面。
+          系统从 incomplete
+          组中按固定顺序挑选代表节点。完成一个组的首条注记后，会自动补入下一个未覆盖的组。
         </p>
         {workbench.prioritySamples.length ? (
           <div className="review-sample-list" aria-label="当前建议样本列表">
@@ -354,7 +340,7 @@ export default function ReviewWorkbench({ params }: { params: Promise<{ runId: s
           </div>
         ) : (
           <p className="notice">
-            你已对全部问题组留下至少一条日常注记。若要深入核对同组的其他节点，请在下方完整证据目录中选择具体节点。
+            当前没有未处理的建议样本。需要深入核对时，可从问题明细页打开具体 incomplete 节点。
           </p>
         )}
       </div>
@@ -364,9 +350,8 @@ export default function ReviewWorkbench({ params }: { params: Promise<{ runId: s
           <h2>现在判断：{localization?.zhName ?? selected.ruleId}</h2>
           <p className="review-meta">
             {resultLabel(selected.resultType)} · 自动影响{" "}
-            {selected.impact ?? selected.node.effectiveImpact ?? "未确定"} · 此问题组共{" "}
-            {selected.nodeCount} 个节点；日常人工注记已覆盖 {selected.reviewedNodeCount}/
-            {selected.nodeCount} 个；你已查看 {selected.currentReviewerReviewedNodeCount}/
+            {selected.impact ?? selected.node.effectiveImpact ?? "未确定"} · 同组共{" "}
+            {selected.nodeCount} 个节点；你已查看 {selected.currentReviewerReviewedNodeCount}/
             {selected.nodeCount} 个。
           </p>
           {workbench.manualSelection &&
@@ -374,9 +359,7 @@ export default function ReviewWorkbench({ params }: { params: Promise<{ runId: s
           !workbench.prioritySamples.some(
             (sample) => sample.node.resultNodeId === selected.node.resultNodeId,
           ) ? (
-            <p className="notice">
-              这是你从“全部自动证据”中主动打开的节点。它可完整审核，但不会被伪装成今天的必做代表样本。
-            </p>
+            <p className="notice">这是你从问题明细页直接打开的节点，不计入建议样本顺序。</p>
           ) : null}
           <p>
             <strong>页面：</strong>{" "}
@@ -413,7 +396,7 @@ export default function ReviewWorkbench({ params }: { params: Promise<{ runId: s
             <a
               href={`/scans/${runId}/issues?resultType=${selected.resultType}&pageId=${selected.pageId}&ruleId=${encodeURIComponent(selected.ruleId)}`}
             >
-              查看这个问题组的全部 {selected.nodeCount} 个原始节点
+              查看同组其他 {selected.nodeCount} 个原始节点
             </a>
             {" · "}
             <a href={selected.helpUrl} target="_blank" rel="noreferrer">
@@ -472,10 +455,10 @@ export default function ReviewWorkbench({ params }: { params: Promise<{ runId: s
       ) : null}
 
       <div className="card" style={{ marginTop: 16 }}>
-        <h2>所有问题组都可核查</h2>
+        <h2>incomplete 分组目录</h2>
         <p className="muted">
-          这里保留全部 {workbench.summary.findingCount}{" "}
-          个问题组的入口。它们不是“必须全部手工点完”的待办；这是你需要时可追溯的完整证据目录。
+          这里按“页面 × 规则”保留全部 {contextFindings.length} 个 incomplete
+          组的入口；分组只用于查找，真正的判断仍逐节点保存。violation 不在此处。
         </p>
         <details open>
           <summary>
@@ -484,19 +467,6 @@ export default function ReviewWorkbench({ params }: { params: Promise<{ runId: s
           </summary>
           <div className="review-group-list">
             {contextFindings.map((finding) => (
-              <FindingRow
-                key={finding.id}
-                finding={finding}
-                runId={runId}
-                localization={workbench.localizations[finding.ruleId]}
-              />
-            ))}
-          </div>
-        </details>
-        <details style={{ marginTop: 12 }}>
-          <summary>自动发现，可抽检：{automaticFindings.length} 个问题组</summary>
-          <div className="review-group-list">
-            {automaticFindings.map((finding) => (
               <FindingRow
                 key={finding.id}
                 finding={finding}

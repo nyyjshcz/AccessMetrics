@@ -3,7 +3,11 @@ import { currentSession } from "@/lib/auth";
 import { getDb, migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { getRuleLocalization } from "@/lib/localization";
-import { buildReviewWorkbench, type ReviewVerdict } from "@/lib/review-workbench";
+import {
+  buildReviewWorkbench,
+  type ReviewVerdict,
+  type ReviewWorkbenchInput,
+} from "@/lib/review-workbench";
 
 const parseJson = (value: string | null, fallback: unknown) => {
   try {
@@ -55,14 +59,14 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
            FROM rule_results rr
            JOIN result_nodes n ON n.rule_result_id=rr.id
            JOIN pages p ON p.id=rr.page_id
-          WHERE rr.run_id=? AND rr.result_type IN ('violation','incomplete')
+          WHERE rr.run_id=? AND rr.result_type='incomplete'
           ORDER BY rr.id,n.ordinal`,
       )
       .all(reviewer, reviewer, reviewer, reviewer, reviewer, runId) as any[];
-    const inputs = rows.map((row) => ({
+    const inputs: ReviewWorkbenchInput[] = rows.map((row) => ({
       findingId: String(row.finding_id),
       resultNodeId: String(row.result_node_id),
-      resultType: row.result_type as "violation" | "incomplete",
+      resultType: "incomplete",
       impact: row.impact ? String(row.impact) : null,
       ruleId: String(row.rule_id),
       description: String(row.description),

@@ -4,7 +4,7 @@ import { buildReviewWorkbench, type ReviewWorkbenchInput } from "@/lib/review-wo
 function node(
   findingId: string,
   resultNodeId: string,
-  resultType: "violation" | "incomplete",
+  resultType: "incomplete",
   impact: string | null,
   overrides: Partial<ReviewWorkbenchInput> = {},
 ): ReviewWorkbenchInput {
@@ -53,9 +53,6 @@ describe("exploratory review workbench", () => {
       ...Array.from({ length: 8 }, (_, index) =>
         node(`context-${index}`, `context-${index}-node`, "incomplete", null),
       ),
-      ...Array.from({ length: 6 }, (_, index) =>
-        node(`critical-${index}`, `critical-${index}-node`, "violation", "critical"),
-      ),
     ];
 
     const first = buildReviewWorkbench(inputs);
@@ -63,17 +60,17 @@ describe("exploratory review workbench", () => {
 
     expect(first).toEqual(second);
     expect(first.summary).toMatchObject({
-      automaticNodeCount: 17,
-      findingCount: 15,
+      automaticNodeCount: 11,
+      findingCount: 9,
       contextNodeCount: 11,
       contextFindingCount: 9,
-      prioritySampleCount: 12,
+      prioritySampleCount: 8,
       dailyReviewedFindingCount: 1,
-      dailyRemainingFindingCount: 14,
+      dailyRemainingFindingCount: 8,
       dailyReviewedNodeCount: 1,
     });
-    expect(new Set(first.prioritySamples.map((sample) => sample.id)).size).toBe(12);
-    expect(first.prioritySamples).toHaveLength(12);
+    expect(new Set(first.prioritySamples.map((sample) => sample.id)).size).toBe(8);
+    expect(first.prioritySamples).toHaveLength(8);
 
     const largeGroup = first.findings.find((finding) => finding.id === "context-large");
     expect(largeGroup).toMatchObject({

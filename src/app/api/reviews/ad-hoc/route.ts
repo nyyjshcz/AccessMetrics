@@ -33,8 +33,12 @@ export async function POST(request: Request) {
       )
       .get(resultNodeId) as any;
     if (!node) throw new AppError("NOT_FOUND", "节点不存在", 404);
-    if (!["violation", "incomplete"].includes(node.result_type))
-      throw new AppError("REVIEW_NOT_ALLOWED", "只有 violation/incomplete 节点可以人工审核", 422);
+    if (node.result_type !== "incomplete")
+      throw new AppError(
+        "REVIEW_NOT_ALLOWED",
+        "日常审核只处理 incomplete 节点；violation 已由 axe 自动判定",
+        422,
+      );
     const reviewer = session.user.role === "computer_reviewer" ? "computer_lead" : "math_lead";
     const context = "ad_hoc";
     const previous = getDb()

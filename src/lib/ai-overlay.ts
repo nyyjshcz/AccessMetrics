@@ -466,15 +466,9 @@ export function createAiBatch(input: { runId: string; providerConfigId: string }
         409,
       );
     // A paused/terminal batch may be revisited after a local ad_hoc review was
-    // saved. Keep the queue aligned with the same human-first rule used by
-    // resume/retry, so create is also safe and idempotent in that flow.
-    if (existing.status !== "queued" && existing.status !== "running") {
-      const timestamp = now();
-      transaction((db) => {
-        removeHumanResolvedQueueItems(db, existing.id, input.runId);
-        finishWhenNoQueuedItems(db, existing.id, timestamp);
-      });
-    }
+    // saved. Remove those queue items, but preserve the batch lifecycle status;
+    // resume/retry are the only operations allowed to reactivate a batch.
+    transaction((db) => removeHumanResolvedQueueItems(db, existing.id, input.runId));
     return { batch: getBatchRow(existing.id), stats: batchStats(existing.id) };
   }
 
@@ -701,7 +695,8 @@ function claimNextAiItem(workerId: string) {
       .prepare(
         `SELECT i.*,b.status AS batch_status,b.provider_config_id,b.provider_snapshot_json,b.provider_snapshot_hash,b.prompt_hash,b.prompt_version,b.evidence_version
          FROM ai_review_items i JOIN ai_review_batches b ON b.id=i.batch_id
-         WHERE b.status IN ('queued','running')
+         WHERE b.run_id IS NOT NULL AND b.page_id IS NULL AND b.study_freeze_id IS NULL
+           AND b.status IN ('queued','running')
            AND (i.status='queued' OR (i.status='running' AND i.lease_until IS NOT NULL AND i.lease_until<?))
          ORDER BY i.created_at,i.id LIMIT 1`,
       )

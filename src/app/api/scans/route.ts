@@ -19,13 +19,13 @@ export async function GET(request: Request) {
         `SELECT r.id run_id,r.status run_status,r.published,r.published_at,r.started_at,r.finished_at,
                 j.id job_id,j.status job_status,j.submitted_url,j.created_at,
                 s.name,s.origin
-           FROM scan_runs r
-           JOIN scan_jobs j ON j.id=r.job_id
-           JOIN sites s ON s.id=r.site_id
-          WHERE r.published=?
-          ORDER BY COALESCE(r.published_at,r.created_at) DESC,r.id DESC`,
+           FROM scan_jobs j
+           LEFT JOIN scan_runs r ON r.job_id=j.id
+           JOIN sites s ON s.id=j.site_id
+          WHERE ${view === "published" ? "r.published=1" : "(r.id IS NULL OR r.published=0)"}
+          ORDER BY COALESCE(r.published_at,r.created_at,j.created_at) DESC,COALESCE(r.id,j.id) DESC`,
       )
-      .all(view === "published" ? 1 : 0);
+      .all();
     return NextResponse.json({ view, runs: rows });
   } catch (error) {
     return NextResponse.json(errorEnvelope(error), {

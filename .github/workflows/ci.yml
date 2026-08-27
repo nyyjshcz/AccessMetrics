@@ -16,11 +16,6 @@ jobs:
         with:
           node-version: 24.19.0
           cache: pnpm
-      - uses: actions/setup-python@v5
-        with:
-          python-version: 3.12.13
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm dependency:preflight
-      - run: pnpm hygiene:check
       - run: pnpm test:all

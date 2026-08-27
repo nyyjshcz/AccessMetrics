@@ -19,7 +19,7 @@ describe("known issue fixture scanner", () => {
         response.statusCode = 200;
         response.setHeader("content-type", "text/html");
         response.end(
-          '<!doctype html><html lang="zh"><head><title>Evidence</title></head><body><p style="color:#777;background-image:url(/missing.png)">背景图片文字</p></body></html>',
+          `<!doctype html><html lang="zh"><head><title>Evidence</title></head><body><p data-long="${"x".repeat(7000)}" style="color:#777;background-image:url(/missing.png)">背景图片文字</p></body></html>`,
         );
         return;
       }
@@ -99,6 +99,9 @@ describe("known issue fixture scanner", () => {
           target: expect.objectContaining({ tagName: expect.any(String) }),
           page: expect.objectContaining({ url: expect.any(String) }),
         }));
+        const outerHtml = (evidence.facts as { target?: { outerHtml?: unknown } }).target?.outerHtml;
+        expect(outerHtml).toEqual(expect.any(String));
+        expect(Array.from(outerHtml as string).length).toBe(6_000);
         expect(JSON.stringify(evidence.facts)).not.toContain('"rule"');
         expect(evidence).not.toHaveProperty("rule");
         expect(evidence).not.toHaveProperty("impact");

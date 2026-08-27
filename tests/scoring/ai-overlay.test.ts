@@ -200,6 +200,17 @@ describe("thin AI overlay", () => {
       .run(new Date().toISOString(), new Date().toISOString(), first.batch.id);
   });
 
+  it("keeps an existing batch status unchanged when create is retried", () => {
+    const item = fixture(1, true);
+    const config = provider();
+    const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+    const db = dbModule.getDb();
+    for (const status of ["queued", "running", "paused", "failed", "completed"] as const) {
+      db.prepare("UPDATE ai_review_batches SET status=? WHERE id=?").run(status, batch.batch.id);
+      expect(ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id }).batch.status).toBe(status);
+    }
+  });
+
   it("defines both coverages as 100% for an empty incomplete population", () => {
     const suffix = crypto.randomUUID().replaceAll("-", "");
     const origin = `https://ai-empty-${suffix}.example`;
@@ -281,6 +292,38 @@ describe("thin AI overlay", () => {
       });
       expect(row.response_hash).toMatch(/^[a-f0-9]{64}$/);
       expect((ai.getAiBatch(batch.batch.id) as any).batch.status).toBe("completed");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("does not claim page-scoped batches", async () => {
+    const server = http.createServer((request, response) => {
+      if (request.url === "/v1/chat/completions" && request.method === "POST") {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const legacy = fixture(1, true);
+      const config = provider(`http://127.0.0.1:${port}/v1`);
+      const legacyBatch = ai.createAiBatch({ runId: legacy.run.id, providerConfigId: config.id });
+      dbModule.getDb().prepare("UPDATE ai_review_batches SET page_id=?,created_at=? WHERE id=?").run(
+        legacy.pageId,
+        "2000-01-01T00:00:00.000Z",
+        legacyBatch.batch.id,
+      );
+      const runWide = fixture(1, true);
+      const runWideBatch = ai.createAiBatch({ runId: runWide.run.id, providerConfigId: config.id });
+      expect(await ai.processNextAiItem("scope-worker")).toBe(true);
+      expect((dbModule.getDb().prepare("SELECT status FROM ai_review_items WHERE batch_id=?").get(legacyBatch.batch.id) as { status: string }).status).toBe("queued");
+      expect((dbModule.getDb().prepare("SELECT status FROM ai_review_items WHERE batch_id=?").get(runWideBatch.batch.id) as { status: string }).status).toBe("completed");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -421,6 +464,22 @@ describe("thin AI overlay", () => {
   it("keeps report statistics over the full node population", () => {
     const item = fixture(13, true);
     expect(report.buildRunReportDto(item.run.id).nodeStatistics.total).toBeGreaterThan(12);
+  });
+
+  it("uses rule-level node counts for aggregates and issue metadata", () => {
+    const item = fixture(3, true, true);
+    dbModule
+      .getDb()
+      .prepare("UPDATE rule_results SET node_count=4 WHERE run_id=? AND result_type='incomplete'")
+      .run(item.run.id);
+
+    const dto = report.buildRunReportDto(item.run.id);
+    expect(dto.score.resultNodeCounts).toMatchObject({ pass: 1, incomplete: 4 });
+    expect(dto.nodeStatistics).toMatchObject({ pass: 1, incomplete: 4, total: 5 });
+    expect(dto.issues.find((issue) => issue.resultType === "incomplete")?.nodeCount).toBe(4);
+    const html = report.renderRunReportHtml(dto);
+    expect(html).toContain("原始 incomplete（尚未解决）");
+    expect(html).not.toContain("null（已完成 AI）");
   });
 
   it("downloads a published report as JSON", async () => {

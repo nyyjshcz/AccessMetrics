@@ -269,5 +269,6 @@ describe("database and evidence chain", () => {
     const value = sanitizeNodeHtml(`<div onclick="steal()">${"x".repeat(400)}</div>`);
     expect(value).not.toContain("onclick");
     expect(value.length).toBeLessThanOrEqual(300);
+    expect(sanitizeNodeHtml(`<div>${"x".repeat(400)}</div>`, 600).length).toBeGreaterThan(300);
   });
 });

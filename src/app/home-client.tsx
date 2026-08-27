@@ -31,7 +31,7 @@ export default function HomeClient({ view }: HomeClientProps) {
       </section>
       <section className="card" style={{ marginTop: 16 }}>
         <div className="section-heading"><div><h2>{view === "published" ? "已发布报告" : "活动任务"}</h2><p className="muted">{view === "published" ? "已发布的结果为只读，可随时打开。" : "正在扫描或尚未发布的任务。"}</p></div><Link href={view === "published" ? "/scans" : "/reports"}>{view === "published" ? "查看活动任务" : "查看已发布报告"}</Link></div>
-        {runs.length === 0 ? <p className="muted">暂无记录。</p> : <div className="run-list">{runs.map(r => <Link className="run-row" key={r.run_id} href={r.run_status === "completed" || r.run_status === "completed_with_errors" ? `/scans/${r.run_id}` : `/scans/jobs/${r.job_id}`}><div><strong>{r.name}</strong><span className="muted">{r.origin}</span></div><span className="pill">{r.published ? "已发布" : r.run_status}</span></Link>)}</div>}
+        {runs.length === 0 ? <p className="muted">暂无记录。</p> : <div className="run-list">{runs.map(r => { const status = r.run_status ?? r.job_status; return <Link className="run-row" key={r.run_id ?? r.job_id} href={status === "completed" || status === "completed_with_errors" ? `/scans/${r.run_id}` : `/scans/jobs/${r.job_id}`}><div><strong>{r.name}</strong><span className="muted">{r.origin}</span></div><span className="pill">{r.published ? "已发布" : status}</span></Link>; })}</div>}
       </section>
       <section className="grid" style={{ marginTop: 16 }}>
         <div className="card">

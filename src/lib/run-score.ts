@@ -287,9 +287,9 @@ export function buildRunScore(runId: string, options?: { aiOverlay?: AiOverlay }
   const opportunities = loadRunOpportunities(runId, options);
   const coverageRows = getDb()
     .prepare(
-      `SELECT rr.result_type,rr.rule_id,rr.tags_json,COUNT(n.id) AS node_count
-       FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id
-       WHERE rr.run_id=? GROUP BY rr.id ORDER BY rr.id`,
+      `SELECT rr.result_type,rr.rule_id,rr.tags_json,rr.node_count
+       FROM rule_results rr
+       WHERE rr.run_id=? ORDER BY rr.id`,
     )
     .all(runId) as Array<{
     result_type: string;

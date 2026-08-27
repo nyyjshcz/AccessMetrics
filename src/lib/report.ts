@@ -196,8 +196,8 @@ export function buildRunReportDto(runId: string): AuthorizedRunReportDto {
   }
   const nodeCounts = getDb()
     .prepare(
-      `SELECT rr.result_type,COUNT(n.id) AS count
-       FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id
+      `SELECT rr.result_type,SUM(rr.node_count) AS count
+       FROM rule_results rr
        WHERE rr.run_id=? GROUP BY rr.result_type`,
     )
     .all(runId) as Array<{ result_type: string; count: number }>;
@@ -250,7 +250,7 @@ export function buildRunReportDto(runId: string): AuthorizedRunReportDto {
       resultType: issue.result_type,
       help: issue.help,
       helpUrl: issue.help_url,
-      nodeCount: (issueNodes.get(issue.id) ?? []).length,
+      nodeCount: Math.max(0, Number(issue.node_count) || 0),
       nodes: (issueNodes.get(issue.id) ?? []).map((node) => ({
         ordinal: node.ordinal,
         pageUrl: node.pageUrl,
@@ -279,10 +279,16 @@ export function renderRunReportHtml(dto: AuthorizedRunReportDto) {
   const evidenceRows = dto.issues
     .filter((issue) => issue.resultType === "violation" || issue.resultType === "incomplete")
     .flatMap((issue) => issue.nodes.map((node) => ({ issue, node })))
-    .map(
-      ({ issue, node }) =>
-        `<tr><td>${escapeHtml(issue.ruleId)}</td><td>${escapeHtml(node.pageUrl)}</td><td><code>${escapeHtml(JSON.stringify(node.target) ?? "")}</code></td><td><pre>${escapeHtml(node.html)}</pre>${node.failureSummary ? `<p>${escapeHtml(node.failureSummary)}</p>` : ""}${node.resolution ? `<p>有效结论：${escapeHtml(node.resolution.verdict)}（${node.resolution.source === "manual" ? "local/ad_hoc 人工" : "已完成 AI"}）</p>` : issue.resultType === "incomplete" ? "<p>有效结论：原始 incomplete（尚未解决）</p>" : ""}</td></tr>`,
-    )
+    .map(({ issue, node }) => {
+      let resolutionHtml = "";
+      if (node.resolution?.source === "manual")
+        resolutionHtml = `<p>有效结论：${escapeHtml(node.resolution.verdict)}（local/ad_hoc 人工）</p>`;
+      else if (node.resolution?.source === "ai")
+        resolutionHtml = `<p>有效结论：${escapeHtml(node.resolution.verdict)}（已完成 AI）</p>`;
+      else if (node.resolution?.source === "raw" || issue.resultType === "incomplete")
+        resolutionHtml = "<p>有效结论：原始 incomplete（尚未解决）</p>";
+      return `<tr><td>${escapeHtml(issue.ruleId)}</td><td>${escapeHtml(node.pageUrl)}</td><td><code>${escapeHtml(JSON.stringify(node.target) ?? "")}</code></td><td><pre>${escapeHtml(node.html)}</pre>${node.failureSummary ? `<p>${escapeHtml(node.failureSummary)}</p>` : ""}${resolutionHtml}</td></tr>`;
+    })
     .join("");
   const failedRows = dto.pages
     .filter((page) => page.scanStatus !== "success" || page.errorCode)

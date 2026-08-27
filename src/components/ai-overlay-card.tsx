@@ -35,13 +35,22 @@ export default function AiOverlayCard({
     const available = (providerValue.providers ?? []).filter((value: Provider) => value.enabled);
     setProviders(available);
     if (!providerId && available[0]) setProviderId(available[0].id);
+    const previousStatus = data?.batch?.batch?.status ?? data?.batch?.status;
+    const nextBatch = statusValue?.batch?.batch ?? statusValue?.batch ?? null;
     setData(statusValue);
     setError("");
+    if (
+      (previousStatus === "queued" || previousStatus === "running") &&
+      nextBatch?.status !== "queued" &&
+      nextBatch?.status !== "running"
+    )
+      onBatchChange?.();
   }
 
   const batch = data?.batch?.batch ?? data?.batch ?? null;
   const stats = data?.batch?.stats ?? data?.stats ?? null;
   const status = batch?.status;
+  const hasBatch = Boolean(batch);
   const isReadOnly = readOnly || Boolean(data?.readOnly);
   const batchSnapshot = (() => {
     if (!batch?.provider_snapshot_json) return null;
@@ -166,13 +175,7 @@ export default function AiOverlayCard({
         <p className="muted">还没有该范围的 AI batch。</p>
       )}
       {!isReadOnly ? <div>
-        <button
-          type="button"
-          onClick={createBatch}
-          disabled={status === "queued" || status === "running"}
-        >
-          一键处理 incomplete
-        </button>{" "}
+        {!hasBatch ? <button type="button" onClick={createBatch}>一键处理 incomplete</button> : null}{" "}
         {status === "queued" || status === "running" ? (
           <button type="button" className="secondary" onClick={() => action("pause")}>
             暂停
@@ -188,6 +191,7 @@ export default function AiOverlayCard({
             重试失败项
           </button>
         ) : null}
+        {status === "completed" ? <span className="pill">completed</span> : null}
       </div> : null}
     </div>
   );

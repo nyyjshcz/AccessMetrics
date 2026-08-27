@@ -1,4 +1,6 @@
 import { config } from "../lib/config";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { assertScanWorkerStartup } from "../lib/startup";
 import { migrate, getDb } from "../lib/db";
 import { logger } from "../lib/logger";
@@ -22,7 +24,20 @@ import { validateTargetUrl, canonicalizeUrl } from "../lib/url-security";
 import { persistRunScores } from "../lib/run-score";
 import { AppError } from "../lib/errors";
 
-async function processJob(job: any) {
+function getRunPageCounts(runId: string) {
+  const persistedCounts = getDb()
+    .prepare(
+      "SELECT COUNT(*) AS pages,SUM(CASE WHEN scan_status='success' THEN 1 ELSE 0 END) AS success,SUM(CASE WHEN scan_status='failed' THEN 1 ELSE 0 END) AS failed FROM pages WHERE run_id=?",
+    )
+    .get(runId) as { pages: number; success: number | null; failed: number | null };
+  return {
+    pages: Number(persistedCounts.pages ?? 0),
+    success: Number(persistedCounts.success ?? 0),
+    failed: Number(persistedCounts.failed ?? 0),
+  };
+}
+
+export async function processJob(job: any) {
   const run = createRun(job);
   const workerId = `worker-${process.pid}`;
   let activePageId: string | null = null;
@@ -31,12 +46,13 @@ async function processJob(job: any) {
     const result = heartbeatJobAndPage(job.id, workerId, activePageId);
     if (!result.jobChanged || !result.pageChanged) leaseLost = true;
   };
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   // Start the heartbeat before discovery: crawling can be the longest part of
   // a job and must keep both the job and any active page lease alive.
-  heartbeat();
-  const heartbeatTimer = setInterval(heartbeat, 10_000);
-  heartbeatTimer.unref?.();
   try {
+    heartbeat();
+    heartbeatTimer = setInterval(heartbeat, 10_000);
+    heartbeatTimer.unref?.();
     const entryUrl = job.submitted_url ?? job.origin;
     await validateTargetUrl(entryUrl);
     const urls = await discoverSite(entryUrl, JSON.parse(job.options_json));
@@ -117,14 +133,10 @@ async function processJob(job: any) {
       return run.id;
     }
     markExhaustedPages(run.id, job.id);
-    const persistedCounts = getDb()
-      .prepare(
-        "SELECT COUNT(*) AS pages,SUM(CASE WHEN scan_status='success' THEN 1 ELSE 0 END) AS success,SUM(CASE WHEN scan_status='failed' THEN 1 ELSE 0 END) AS failed FROM pages WHERE run_id=?",
-      )
-      .get(run.id) as { pages: number; success: number | null; failed: number | null };
-    const storedPageCount = Number(persistedCounts.pages ?? 0);
-    const storedSuccess = Number(persistedCounts.success ?? 0);
-    const storedFailed = Number(persistedCounts.failed ?? 0);
+    const persistedCounts = getRunPageCounts(run.id);
+    const storedPageCount = persistedCounts.pages;
+    const storedSuccess = persistedCounts.success;
+    const storedFailed = persistedCounts.failed;
     finishRun(
       run.id,
       cancelled
@@ -150,8 +162,15 @@ async function processJob(job: any) {
         workerId,
       );
     return run.id;
+  } catch (error) {
+    const activeRun = getDb().prepare("SELECT status FROM scan_runs WHERE id=?").get(run.id) as
+      | { status: string }
+      | undefined;
+    if (activeRun?.status === "running")
+      finishRun(run.id, "failed", getRunPageCounts(run.id), workerId);
+    throw error;
   } finally {
-    clearInterval(heartbeatTimer);
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
   }
 }
 
@@ -184,7 +203,11 @@ async function main() {
   } while (!once);
   await closeScanner();
 }
-main().catch((error) => {
-  logger.error({ error: String(error) }, "worker crashed");
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))
+)
+  main().catch((error) => {
+    logger.error({ error: String(error) }, "worker crashed");
+    process.exitCode = 1;
+  });

@@ -361,7 +361,7 @@ async function collectAiEvidenceUnsafe(
   const targetFacts = envelope.facts.target as Record<string, unknown> | undefined;
   if (typeof targetFacts?.outerHtml === "string")
     targetFacts.outerHtml = truncateUnicode(
-      sanitizeNodeHtml(targetFacts.outerHtml),
+      sanitizeNodeHtml(targetFacts.outerHtml, MAX_TARGET_OUTER_HTML_CHARACTERS),
       MAX_TARGET_OUTER_HTML_CHARACTERS,
     );
   const json = encodeEvidence(envelope);

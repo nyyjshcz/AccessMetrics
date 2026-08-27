@@ -37,7 +37,7 @@ describe("scan worker failure handling", () => {
   });
 
   it("finalizes a running run when discovery throws, preserving page counts", async () => {
-    const site = repositories.upsertSite("https://worker-failure.example");
+    const site = repositories.upsertSite("http://127.0.0.1");
     const job = repositories.createScanJob(
       site.origin,
       { maxPages: 2, sameOriginOnly: true, respectRobots: true },
@@ -53,7 +53,7 @@ describe("scan worker failure handling", () => {
     ).run(
       "worker-success-page",
       site.id,
-      "https://worker-failure.example/success",
+      "http://127.0.0.1/success",
       new Date().toISOString(),
       run.id,
       "success",
@@ -63,7 +63,7 @@ describe("scan worker failure handling", () => {
     ).run(
       "worker-failed-page",
       site.id,
-      "https://worker-failure.example/failed",
+      "http://127.0.0.1/failed",
       new Date().toISOString(),
       run.id,
       "failed",

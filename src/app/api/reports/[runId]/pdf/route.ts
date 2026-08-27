@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { chromium } from "playwright";
 import { chromiumLaunchOptions } from "@/lib/browser";
-import { currentSession, requireRole } from "@/lib/auth";
 import { migrate } from "@/lib/db";
 import { getDb } from "@/lib/db";
 import { buildRunReportDto, renderRunReportHtml } from "@/lib/report";
@@ -13,9 +12,7 @@ export async function GET(_request: Request, context: { params: Promise<{ runId:
     const run = getDb().prepare("SELECT published FROM scan_runs WHERE id=?").get(runId) as
       | { published: number }
       | undefined;
-    const session = await currentSession();
-    if (!run || (!run.published && !session)) throw new AppError("NOT_FOUND", "报告不存在", 404);
-    if (!run.published) await requireRole("admin", "computer_reviewer", "math_reviewer");
+    if (!run || run.published !== 1) throw new AppError("NOT_FOUND", "报告不存在", 404);
     const html = renderRunReportHtml(buildRunReportDto(runId));
     const browser = await chromium.launch(chromiumLaunchOptions());
     try {

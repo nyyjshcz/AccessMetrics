@@ -31,12 +31,10 @@ for (const rule of axeCatalog.rules) {
     zhFix: draft.summary ?? "请查看 axe 原文和官方帮助链接；中文说明尚未完成人工校对。",
     manualCheck: "需要结合页面语境进行人工确认",
     translationStatus: "ai_draft",
-    reviewer: null,
-    reviewedAt: null,
   };
 }
 fs.writeFileSync(
   outputPath,
-  `${JSON.stringify({ schemaVersion: "rule-localizations.zh-CN-v1", status: "ai_draft_waiting_R1_review", rules }, null, 2)}\n`,
+  `${JSON.stringify({ schemaVersion: "rule-localizations.zh-CN-v1", status: "ai_draft", rules }, null, 2)}\n`,
 );
 console.log(`generated ${Object.keys(rules).length} AI-draft localizations`);

@@ -6,7 +6,6 @@ const envSchema = z.object({
   APP_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.string().default("./data/accesscheck.db"),
   SESSION_SECRET: z.string().min(16).default("development-session-secret-change-me"),
-  CSRF_SECRET: z.string().min(16).default("development-csrf-secret-change-me"),
   PRIVATE_EVIDENCE_ROOT: z.string().default("./private-inputs"),
   PUBLIC_EXPORT_ROOT: z.string().default("./data/exports"),
   APP_BASE_URL: z.string().url().default("http://localhost:3000"),
@@ -18,12 +17,6 @@ const envSchema = z.object({
   MAX_SITE_DURATION_MS: z.coerce.number().int().min(1000).max(1800000).default(600000),
   DNS_RESOLVER_MODE: z.enum(["system", "doh"]).default("system"),
   DNS_OVER_HTTPS_URL: z.string().url().optional(),
-  SCAN_ADMIN_TOKEN: z.string().optional(),
-  COMPUTER_REVIEWER_TOKEN: z.string().optional(),
-  MATH_REVIEWER_TOKEN: z.string().optional(),
-  COMPUTER_REVIEW_TOKEN: z.string().optional(),
-  MATH_REVIEW_TOKEN: z.string().optional(),
-  ADMIN_REAUTH_TOKEN: z.string().optional(),
   EGRESS_PROXY_URL: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.string().url().optional(),
@@ -32,14 +25,7 @@ const envSchema = z.object({
 
 export const config = (() => {
   const fileBacked = { ...process.env } as Record<string, string | undefined>;
-  for (const key of [
-    "SESSION_SECRET",
-    "CSRF_SECRET",
-    "SCAN_ADMIN_TOKEN",
-    "COMPUTER_REVIEW_TOKEN",
-    "MATH_REVIEW_TOKEN",
-    "ADMIN_REAUTH_TOKEN",
-  ]) {
+  for (const key of ["SESSION_SECRET"]) {
     const file = fileBacked[`${key}_FILE`];
     if (file && !fileBacked[key]) fileBacked[key] = fs.readFileSync(file, "utf8").trim();
   }
@@ -71,17 +57,8 @@ export function assertPrivateEvidenceRoot() {
 export function assertProductionSecrets() {
   if (config.APP_ENV !== "production") return;
   const missing: string[] = [];
-  if (!config.SCAN_ADMIN_TOKEN) missing.push("SCAN_ADMIN_TOKEN");
-  const computerToken = config.COMPUTER_REVIEW_TOKEN ?? config.COMPUTER_REVIEWER_TOKEN;
-  const mathToken = config.MATH_REVIEW_TOKEN ?? config.MATH_REVIEWER_TOKEN;
-  if (!computerToken) missing.push("COMPUTER_REVIEW_TOKEN");
-  if (!mathToken) missing.push("MATH_REVIEW_TOKEN");
-  if (computerToken && mathToken && computerToken === mathToken)
-    missing.push("COMPUTER_REVIEW_TOKEN and MATH_REVIEW_TOKEN must differ");
-  if (!config.ADMIN_REAUTH_TOKEN) missing.push("ADMIN_REAUTH_TOKEN");
   if (config.SESSION_SECRET === "development-session-secret-change-me")
     missing.push("SESSION_SECRET");
-  if (config.CSRF_SECRET === "development-csrf-secret-change-me") missing.push("CSRF_SECRET");
   if (missing.length) throw new Error(`production secrets missing: ${missing.join(",")}`);
 }
 

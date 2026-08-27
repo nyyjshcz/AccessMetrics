@@ -39,6 +39,12 @@ export function loadRunOpportunities(
     .all(runId) as any[];
   const opportunities: ScoreOpportunity[] = [];
   for (const row of rows) {
+    // Pass nodes are intentionally not persisted (their raw rule result still
+    // carries the node count), so retain the original rule-level pass scoring
+    // while keeping violations and resolved incomplete results node-based.
+    // This is also important for raw scores: an axe pass with no stored node
+    // must still be a judged opportunity.
+    if (row.result_type !== "pass" && !row.node_id) continue;
     const overlayVerdict =
       row.result_type === "incomplete" && row.node_id
         ? options?.aiOverlay?.get(String(row.node_id))
@@ -53,14 +59,20 @@ export function loadRunOpportunities(
             : row.result_type;
     if (resolvedType !== "pass" && resolvedType !== "violation") continue;
     if (Number(row.scoring_eligible) !== 1) continue;
-    const aiResolved = row.result_type === "incomplete" && overlayVerdict === "problem";
-    const impacts = aiResolved
+    const resolvedIncomplete =
+      row.result_type === "incomplete" &&
+      (overlayVerdict === "problem" || overlayVerdict === "not_problem");
+    const impacts = resolvedIncomplete
       ? [aiImpactForResolvedIncomplete(row, { impact: row.impact })]
-      : resolvedType === "violation"
-        ? [classifyImpact(row.effective_impact ?? row.impact) ?? "minor"]
-        : resolvedType === "pass" && row.result_type === "incomplete"
-          ? [row.impact]
-          : Array.from({ length: row.node_count }, () => classifyImpact(row.impact));
+      : resolvedType === "pass" && !row.node_id
+        ? Array.from({ length: Math.max(0, Number(row.node_count) || 0) }, () =>
+            classifyImpact(row.impact),
+          )
+        : [
+            resolvedType === "violation"
+              ? (classifyImpact(row.effective_impact ?? row.impact) ?? "minor")
+              : classifyImpact(row.impact),
+          ];
     for (const impact of impacts)
       opportunities.push({
         passed: resolvedType === "pass",
@@ -84,6 +96,7 @@ export function loadPageOpportunities(
     .all(runId, pageId) as any[];
   const opportunities: ScoreOpportunity[] = [];
   for (const row of rows) {
+    if (row.result_type !== "pass" && !row.node_id) continue;
     const overlayVerdict =
       row.result_type === "incomplete" && row.node_id
         ? options?.aiOverlay?.get(String(row.node_id))
@@ -98,14 +111,20 @@ export function loadPageOpportunities(
             : row.result_type;
     if (resolvedType !== "pass" && resolvedType !== "violation") continue;
     if (Number(row.scoring_eligible) !== 1) continue;
-    const aiResolved = row.result_type === "incomplete" && overlayVerdict === "problem";
-    const impacts = aiResolved
+    const resolvedIncomplete =
+      row.result_type === "incomplete" &&
+      (overlayVerdict === "problem" || overlayVerdict === "not_problem");
+    const impacts = resolvedIncomplete
       ? [aiImpactForResolvedIncomplete(row, { impact: row.impact })]
-      : resolvedType === "violation"
-        ? [classifyImpact(row.effective_impact ?? row.impact) ?? "minor"]
-        : resolvedType === "pass" && row.result_type === "incomplete"
-          ? [row.impact]
-          : Array.from({ length: row.node_count }, () => classifyImpact(row.impact));
+      : resolvedType === "pass" && !row.node_id
+        ? Array.from({ length: Math.max(0, Number(row.node_count) || 0) }, () =>
+            classifyImpact(row.impact),
+          )
+        : [
+            resolvedType === "violation"
+              ? (classifyImpact(row.effective_impact ?? row.impact) ?? "minor")
+              : classifyImpact(row.impact),
+          ];
     for (const impact of impacts)
       opportunities.push({
         passed: resolvedType === "pass",
@@ -268,7 +287,9 @@ export function buildRunScore(runId: string, options?: { aiOverlay?: AiOverlay }
   const opportunities = loadRunOpportunities(runId, options);
   const coverageRows = getDb()
     .prepare(
-      "SELECT result_type,rule_id,tags_json,node_count FROM rule_results WHERE run_id=? ORDER BY id",
+      `SELECT rr.result_type,rr.rule_id,rr.tags_json,COUNT(n.id) AS node_count
+       FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id
+       WHERE rr.run_id=? GROUP BY rr.id ORDER BY rr.id`,
     )
     .all(runId) as Array<{
     result_type: string;

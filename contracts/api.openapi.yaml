@@ -297,10 +297,6 @@ paths:
               additionalProperties: false
       responses:
         "201": { description: server-recomputed handoff artifact }
-  /api/meta/build:
-    get:
-      responses:
-        "200": { description: non-sensitive build provenance }
   /api/admin/logout:
     post:
       responses:

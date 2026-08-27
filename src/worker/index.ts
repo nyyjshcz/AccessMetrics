@@ -37,40 +37,6 @@ async function processJob(job: any) {
   const heartbeatTimer = setInterval(heartbeat, 10_000);
   heartbeatTimer.unref?.();
   try {
-    if (job.study_campaign_id) {
-      const existing = getDb()
-        .prepare(
-          "SELECT id FROM study_run_attempts WHERE campaign_id=? AND slot=? AND replacement_rank=? AND attempt_no=?",
-        )
-        .get(
-          job.study_campaign_id,
-          job.study_slot,
-          job.study_replacement_rank,
-          job.study_attempt_no,
-        );
-      if (!existing)
-        (() => {
-          const startedAt = new Date().toISOString();
-          getDb()
-            .prepare(
-              "INSERT INTO study_run_attempts(id,campaign_id,slot,candidate_id,replacement_rank,attempt_no,run_id,trigger,terminal_status,usability_decision,started_at,replacement_activated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            )
-            .run(
-              `attempt_${run.id}`,
-              job.study_campaign_id,
-              job.study_slot,
-              job.study_candidate_id,
-              job.study_replacement_rank,
-              job.study_attempt_no,
-              run.id,
-              "study-run",
-              "running",
-              "pending",
-              startedAt,
-              job.study_replacement_rank > 0 ? startedAt : null,
-            );
-        })();
-    }
     const entryUrl = job.submitted_url ?? job.origin;
     await validateTargetUrl(entryUrl);
     const urls = await discoverSite(entryUrl, JSON.parse(job.options_json));
@@ -175,22 +141,6 @@ async function processJob(job: any) {
       },
       workerId,
     );
-    if (job.study_campaign_id) {
-      const terminalStatus = storedFailed > 0 && storedSuccess === 0 ? "failed" : "completed";
-      getDb()
-        .prepare(
-          "UPDATE study_run_attempts SET terminal_status=?,usability_decision=?,completed_at=? WHERE campaign_id=? AND slot=? AND replacement_rank=? AND attempt_no=?",
-        )
-        .run(
-          terminalStatus,
-          storedSuccess > 0 ? "included" : "excluded",
-          new Date().toISOString(),
-          job.study_campaign_id,
-          job.study_slot,
-          job.study_replacement_rank,
-          job.study_attempt_no,
-        );
-    }
     if (storedSuccess > 0) persistRunScores(run.id);
     if (!cancelled)
       finishJob(
@@ -223,20 +173,6 @@ async function main() {
       logger.info({ jobId: job.id, runId }, "scan job finished");
     } catch (error) {
       finishJob(job.id, "failed", error, `worker-${process.pid}`);
-      if (job.study_campaign_id) {
-        getDb()
-          .prepare(
-            "UPDATE study_run_attempts SET terminal_status='failed',usability_decision='excluded',decision_reason_code=?,completed_at=? WHERE campaign_id=? AND slot=? AND replacement_rank=? AND attempt_no=? AND terminal_status='running'",
-          )
-          .run(
-            "worker_error",
-            new Date().toISOString(),
-            job.study_campaign_id,
-            job.study_slot,
-            job.study_replacement_rank,
-            job.study_attempt_no,
-          );
-      }
       const failedRun = getDb()
         .prepare("SELECT id FROM scan_runs WHERE job_id=? ORDER BY started_at DESC LIMIT 1")
         .get(job.id) as { id: string } | undefined;

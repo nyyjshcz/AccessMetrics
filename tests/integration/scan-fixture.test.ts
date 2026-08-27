@@ -90,10 +90,16 @@ describe("known issue fixture scanner", () => {
       expect(incompleteNodes.length).toBeGreaterThan(0);
       for (const node of incompleteNodes) {
         expect(node.aiEvidence?.hash).toMatch(/^[a-f0-9]{64}$/);
-        expect(node.aiEvidence?.version).toBe("ai-evidence-v1");
+        expect(node.aiEvidence?.version).toBe("ai-evidence-v2");
         const evidence = JSON.parse(node.aiEvidence!.json) as Record<string, unknown>;
+        expect(Array.from(node.aiEvidence!.json).length).toBeLessThanOrEqual(60_000);
         expect(evidence.complete).toBe(true);
-        expect(Array.isArray(evidence.target)).toBe(true);
+        expect(evidence.version).toBe("ai-evidence-v2");
+        expect(evidence.facts).toEqual(expect.objectContaining({
+          target: expect.objectContaining({ tagName: expect.any(String) }),
+          page: expect.objectContaining({ url: expect.any(String) }),
+        }));
+        expect(JSON.stringify(evidence.facts)).not.toContain('"rule"');
         expect(evidence).not.toHaveProperty("rule");
         expect(evidence).not.toHaveProperty("impact");
         expect(evidence).not.toHaveProperty("wcag");

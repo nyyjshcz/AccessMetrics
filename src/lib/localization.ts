@@ -11,8 +11,6 @@ export type RuleLocalization = {
   zhFix: string;
   manualCheck: string;
   translationStatus: string;
-  reviewer: string | null;
-  reviewedAt: string | null;
   fallback: boolean;
 };
 
@@ -27,8 +25,6 @@ const fallback = (ruleId: string): RuleLocalization => ({
   zhFix: "请查看 axe 原文和官方帮助链接；中文说明尚未完成人工校对。",
   manualCheck: "需要结合页面语境进行人工确认",
   translationStatus: "ai_draft",
-  reviewer: null,
-  reviewedAt: null,
   fallback: true,
 });
 

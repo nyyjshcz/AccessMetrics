@@ -4,8 +4,6 @@ import path from "node:path";
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { sanitizeNodeHtml } from "@/lib/sanitize";
-import { sha256 } from "@/lib/canonical";
-import { validateReceipt, verifyApprovedGate } from "../../scripts/gate-utils";
 
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "accesscheck-test-"));
 process.env.DATABASE_URL = path.join(testRoot, "test.db");
@@ -15,10 +13,6 @@ process.env.PUBLIC_EXPORT_ROOT = path.join(testRoot, "public");
 const dbModule = await import("@/lib/db");
 const repositories = await import("@/lib/repositories");
 const runScore = await import("@/lib/run-score");
-const exportModule = await import("@/lib/export");
-const privacy = await import("@/lib/privacy");
-const zip = await import("@/lib/zip");
-const study = await import("@/lib/study");
 
 describe("database and evidence chain", () => {
   beforeAll(() => dbModule.migrate());
@@ -179,22 +173,6 @@ describe("database and evidence chain", () => {
       1,
       new Date().toISOString(),
     );
-    // A malformed legacy formal row must never cross into an ordinary run
-    // export. Formal data is only allowed in a frozen study_final artifact.
-    db.prepare(
-      "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,is_current,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-    ).run(
-      "formal-core-review",
-      nodeId,
-      null,
-      "formal",
-      "math_lead",
-      "confirmed",
-      "formal fixture",
-      1,
-      1,
-      new Date().toISOString(),
-    );
     expect(() =>
       db
         .prepare(
@@ -213,35 +191,6 @@ describe("database and evidence chain", () => {
           new Date().toISOString(),
         ),
     ).toThrow();
-    const exported = exportModule.exportRun(run.id);
-    expect(fs.existsSync(path.join(exported.target, "manifest.json"))).toBe(true);
-    const runExport = JSON.parse(fs.readFileSync(path.join(exported.target, "scan.json"), "utf8"));
-    expect(runExport).toMatchObject({
-      schemaVersion: "scan-export-v1",
-      exportId: exported.exportId,
-      site: { id: site.id },
-      configSnapshot: expect.any(Object),
-      ruleResults: expect.any(Array),
-      resultNodes: expect.any(Array),
-      pageScores: expect.any(Array),
-      reviewRefs: expect.any(Array),
-      provenance: expect.any(Object),
-    });
-    expect(runExport.reviewRefs).toEqual([
-      {
-        resultNodeId: nodeId,
-        finalVerdict: "uncertain",
-        resolutionSource: "ad_hoc",
-        batchRef: null,
-      },
-    ]);
-    const report = privacy.scanPublicationDirectory(exported.target, exported.exportId);
-    expect(report.passed).toBe(true);
-    expect(zip.zipDirectory(exported.target).byteLength).toBeGreaterThan(50);
-  });
-
-  it("requires 10–20 planned slots and never fabricates a campaign", () => {
-    expect(() => study.createCampaign({ targetSiteCount: 2, slots: [] })).toThrow("10–20");
   });
 
   it("merges duplicate axe rules from multiple execution contexts", () => {
@@ -308,50 +257,6 @@ describe("database and evidence chain", () => {
           .get(run.id) as { count: number }
       ).count,
     ).toBe(2);
-  });
-
-  it("writes idempotent schema-valid gate receipts through the outbox", () => {
-    const artifactPath = path.join(testRoot, "private", "gates", "R1", "protocol.md");
-    const artifactBytes = Buffer.from("protocol fixture\n");
-    fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
-    fs.writeFileSync(artifactPath, artifactBytes);
-    const input = {
-      gateId: "R1",
-      role: "computer_lead",
-      decision: "approved" as const,
-      statementVersion: "r1-v1",
-      boundCommit: "a".repeat(40),
-      artifacts: [{ logicalId: "protocol.md", sha256: sha256(artifactBytes) }],
-      note: "本人已核对协议、样本和模型来源，并确认记录可以复核。",
-    };
-    const first = study.submitGateEvidence(input);
-    const second = study.submitGateEvidence({ ...input, role: "math_lead" });
-    const retry = study.submitGateEvidence(input);
-    expect(retry).toMatchObject({ reused: true, receiptHash: first.receiptHash });
-    expect(study.writePendingEvidence(path.join(testRoot, "private"))).toHaveLength(2);
-    if (!first.targetRelpath) throw new Error("first gate evidence did not return a target path");
-    const receiptPath = path.join(testRoot, "private", first.targetRelpath);
-    const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
-    expect(validateReceipt(receipt, "R1", "computer_lead").receiptHash).toBe(first.receiptHash);
-    expect(
-      (
-        dbModule
-          .getDb()
-          .prepare("SELECT status FROM human_gate_evidence_outbox WHERE evidence_id=?")
-          .get(first.evidenceId) as { status: string }
-      ).status,
-    ).toBe("written");
-    expect(verifyApprovedGate(path.join(testRoot, "private", "gates"), "R1").selected).toHaveLength(
-      2,
-    );
-    expect(second.receiptHash).not.toBe(first.receiptHash);
-  });
-
-  it("neutralizes spreadsheet formula prefixes in CSV cells", () => {
-    expect(exportModule.csvCell('=HYPERLINK("https://evil.test")')).toBe(
-      '"\'=HYPERLINK(""https://evil.test"")"',
-    );
-    expect(exportModule.csvCell("normal,comma")).toBe('"normal,comma"');
   });
 
   it("creates a server-side request id for unified error envelopes", () => {

@@ -14,7 +14,6 @@ const required = [
   "tools/egress-proxy/acl.yaml",
   "tools/egress-proxy/proxy.mjs",
   "scripts/check-egress-proxy.mjs",
-  "scripts/write-build-provenance.mjs",
   "tools/document-renderer/Dockerfile",
 ];
 const missing = required.filter((file) => !fs.existsSync(file));
@@ -25,18 +24,9 @@ const productionCompose = fs.existsSync("compose.prod.yaml")
   : "";
 const warnings = [
   !dockerfile.includes("node:24.19.0") ? "Dockerfile Node baseline differs" : null,
-  !dockerfile.includes("ACCESSCHECK_FINAL_CANDIDATE")
-    ? "Dockerfile must support release provenance build args"
-    : null,
-  !dockerfile.includes("org.opencontainers.image.revision")
-    ? "Dockerfile must set OCI revision label from release candidate"
-    : null,
   !fs.existsSync("tools/egress-proxy/Dockerfile") ? "egress proxy image not supplied" : null,
   !productionCompose.includes("EGRESS_PROXY_IMAGE:?")
     ? "production compose must use a pinned egress proxy image"
-    : null,
-  !productionCompose.includes("CSRF_SECRET_FILE")
-    ? "production compose does not mount CSRF secret"
     : null,
   !caddyfile.includes("CADDY_SITE") ? "Caddyfile must use an externally supplied site" : null,
   !caddyfile.includes("Strict-Transport-Security")

@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
-import { currentSession } from "@/lib/auth";
 import { getDb, migrate } from "@/lib/db";
 import { buildRunScore, serializeRunScore } from "@/lib/run-score";
 import { AppError, errorEnvelope } from "@/lib/errors";
-import { summarizeAiRun } from "@/lib/ai-overlay";
+import { loadEffectiveOverlayForRun, summarizeAiRun } from "@/lib/ai-overlay";
+
+export const dynamic = "force-dynamic";
+
 export async function GET(_request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
     migrate();
-    const session = await currentSession();
     const { runId } = await context.params;
     const run = getDb()
       .prepare(
@@ -15,79 +16,39 @@ export async function GET(_request: Request, context: { params: Promise<{ runId:
       )
       .get(runId) as any;
     if (!run) throw new AppError("NOT_FOUND", "扫描不存在", 404);
-    if (!session && !run.published) throw new AppError("NOT_FOUND", "扫描不存在", 404);
-    const score = buildRunScore(runId);
+
+    const effectiveOverlay = loadEffectiveOverlayForRun(runId);
+    const rawScore = buildRunScore(runId);
+    const score = buildRunScore(runId, { aiOverlay: effectiveOverlay });
     const ai = summarizeAiRun(runId);
-    const aiScore = ai.overlay.size
-      ? serializeRunScore(buildRunScore(runId, { aiOverlay: ai.overlay }))
-      : null;
-    const severityCounts = { critical: 0, serious: 0, moderate: 0, minor: 0 };
-    const principleCounts = { perceivable: 0, operable: 0, understandable: 0, robust: 0 };
-    const resultRows = getDb()
-      .prepare(
-        "SELECT result_type,impact,principles_json,node_count FROM rule_results WHERE run_id=? AND result_type IN ('violation','incomplete') ORDER BY id",
-      )
-      .all(runId) as Array<{
-      result_type: string;
-      impact: string | null;
-      principles_json: string | null;
-      node_count: number;
-    }>;
-    for (const row of resultRows) {
-      const count = Math.max(0, Number(row.node_count) || 0);
-      if (row.result_type === "violation") {
-        const impact = row.impact ?? "minor";
-        if (impact in severityCounts)
-          severityCounts[impact as keyof typeof severityCounts] += count;
-      }
-      let principles: unknown[] = [];
-      try {
-        const parsed = JSON.parse(row.principles_json ?? "[]");
-        principles = Array.isArray(parsed) ? parsed : [];
-      } catch {
-        principles = [];
-      }
-      for (const principle of principles) {
-        if (typeof principle === "string" && principle in principleCounts)
-          principleCounts[principle as keyof typeof principleCounts] += count;
-      }
-    }
     const pages = getDb()
       .prepare(
-        "SELECT id,canonical_url,scan_status,http_status,error_code,frame_coverage_status,frame_error_count FROM pages WHERE run_id=? ORDER BY canonical_url,id",
+        "SELECT id,canonical_url,title,scan_status,http_status,error_code,frame_coverage_status,frame_error_count FROM pages WHERE run_id=? ORDER BY canonical_url,id",
       )
-      .all(runId) as Array<{
-      id: string;
-      canonical_url: string;
-      scan_status: string;
-      http_status: number | null;
-      error_code: string | null;
-      frame_coverage_status: string | null;
-      frame_error_count: number;
-    }>;
-    const pageStatus = Object.fromEntries(
-      Object.entries(
-        pages.reduce<Record<string, number>>((counts, page) => {
-          counts[page.scan_status] = (counts[page.scan_status] ?? 0) + 1;
-          return counts;
-        }, {}),
-      ).sort(([left], [right]) => left.localeCompare(right)),
-    );
+      .all(runId) as any[];
+    const pageStatus = pages.reduce<Record<string, number>>((counts, page) => {
+      counts[page.scan_status] = (counts[page.scan_status] ?? 0) + 1;
+      return counts;
+    }, {});
+    const severityCounts = { critical: 0, serious: 0, moderate: 0, minor: 0 };
+    for (const row of getDb()
+      .prepare("SELECT impact,node_count FROM rule_results WHERE run_id=? AND result_type='violation'")
+      .all(runId) as Array<{ impact: string | null; node_count: number }>) {
+      const impact = row.impact ?? "minor";
+      if (impact in severityCounts)
+        severityCounts[impact as keyof typeof severityCounts] += Math.max(0, Number(row.node_count) || 0);
+    }
+
     return NextResponse.json({
       run,
       score: serializeRunScore(score),
-      ai: {
-        ...ai,
-        overlay: undefined,
-      },
-      aiScore,
+      rawScore: serializeRunScore(rawScore),
+      ai: { ...ai, aiOverlay: undefined, overlay: undefined },
       pages,
       pageStatus,
       severityCounts,
-      principleCounts,
       coverage: {
-        limitedPages: pages.filter((page) => page.frame_coverage_status === "coverage_limited")
-          .length,
+        limitedPages: pages.filter((page) => page.frame_coverage_status === "coverage_limited").length,
         frameErrors: pages.reduce((total, page) => total + Number(page.frame_error_count ?? 0), 0),
       },
     });

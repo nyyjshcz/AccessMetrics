@@ -16,7 +16,10 @@ const dbModule = await import("@/lib/db");
 const repositories = await import("@/lib/repositories");
 const ai = await import("@/lib/ai-overlay");
 const runScore = await import("@/lib/run-score");
-const study = await import("@/lib/study");
+const resolution = await import("@/lib/incomplete-resolution");
+const report = await import("@/lib/report");
+const reportJsonRoute = await import("@/app/api/reports/[runId]/json/route");
+const incompleteReviewRoute = await import("@/app/api/runs/[runId]/incomplete/[nodeId]/review/route");
 
 function completeEvidence(target: string) {
   const json = canonicalize({
@@ -30,7 +33,7 @@ function completeEvidence(target: string) {
   return { json, hash: sha256(json), version: ai.AI_EVIDENCE_VERSION };
 }
 
-function fixture(nodeCount = 1, withEvidence = true) {
+function fixture(nodeCount = 1, withEvidence = true, withPass = false) {
   const suffix = crypto.randomUUID().replaceAll("-", "");
   const origin = `https://ai-${suffix}.example`;
   const site = repositories.upsertSite(origin);
@@ -52,7 +55,19 @@ function fixture(nodeCount = 1, withEvidence = true) {
     status: 200,
     durationMs: 1,
     axe: {
-      passes: [],
+      passes: withPass
+        ? [
+            {
+              id: "image-alt",
+              impact: null,
+              tags: ["wcag111"],
+              description: "Image alternative text",
+              help: "Images must have alternate text",
+              helpUrl: "https://dequeuniversity.com/rules/axe/4.13/image-alt",
+              nodes: [{ html: '<img alt="ok">', target: ["img"], any: [], all: [], none: [] }],
+            },
+          ]
+        : [],
       violations: [],
       incomplete: [
         {
@@ -108,12 +123,19 @@ describe("thin AI overlay", () => {
     );
   });
 
-  it("requires a rescan when an old incomplete node has no evidence", () => {
+  it("keeps old incomplete nodes eligible when evidence was not captured", () => {
     const item = fixture(1, false);
     const config = provider();
-    expect(() =>
-      ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id }),
-    ).toThrowError(expect.objectContaining({ code: "RESCAN_REQUIRED" }));
+    const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+    expect(batch.batch.evidence_version).toBe(ai.AI_EVIDENCE_VERSION);
+    expect(batch.stats).toMatchObject({ total: 1, queued: 1, completed: 0 });
+    const row = dbModule
+      .getDb()
+      .prepare("SELECT evidence_hash FROM ai_review_items WHERE batch_id=?")
+      .get(batch.batch.id) as { evidence_hash: string | null };
+    expect(row.evidence_hash).toBeNull();
+    // Leave the worker queue isolated for the fake provider test below.
+    ai.pauseAiBatch(batch.batch.id);
   });
 
   it("creates an idempotent batch and dynamically maps all three verdicts", () => {
@@ -209,146 +231,6 @@ describe("thin AI overlay", () => {
     ]);
     db.prepare("UPDATE rule_results SET scoring_eligible=0 WHERE run_id=?").run(item.run.id);
     expect(runScore.loadRunOpportunities(item.run.id)).toHaveLength(0);
-  });
-
-  it("creates one formal batch per study freeze with null run and page scope", () => {
-    const item = fixture(1, true);
-    const config = provider();
-    const suffix = crypto.randomUUID().replaceAll("-", "");
-    const campaignId = `campaign_ai_${suffix}`;
-    const freezeId = `freeze_ai_${suffix}`;
-    const timestamp = new Date().toISOString();
-    const db = dbModule.getDb();
-    db.prepare(
-      "INSERT INTO study_campaigns(id,campaign_plan_hash,protocol_hash,sample_frame_hash,baseline_triple_json,target_site_count,page_limit,retry_policy_json,replacement_policy_json,allowed_failure_reason_codes_json,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-    ).run(
-      campaignId,
-      sha256(campaignId),
-      sha256("protocol"),
-      sha256("frame"),
-      "{}",
-      10,
-      1,
-      "{}",
-      "{}",
-      "[]",
-      "planned",
-      timestamp,
-    );
-    db.prepare(
-      "INSERT INTO study_run_attempts(id,campaign_id,slot,candidate_id,replacement_rank,attempt_no,run_id,trigger,terminal_status,usability_decision,decision_reason_code,started_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-    ).run(
-      `attempt_ai_${suffix}`,
-      campaignId,
-      1,
-      `candidate_ai_${suffix}`,
-      0,
-      1,
-      item.run.id,
-      "test",
-      "completed",
-      "included",
-      null,
-      timestamp,
-      timestamp,
-    );
-    db.prepare(
-      "INSERT INTO study_freezes(id,campaign_id,attempt_log_hash,freeze_digest,protocol_hash,sample_frame_hash,execution_log_hash,scanner_version,axe_version,model_version,run_set_hash,population_digest,eligible_population_count,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-    ).run(
-      freezeId,
-      campaignId,
-      sha256("attempts"),
-      sha256(`freeze:${suffix}`),
-      sha256("protocol"),
-      sha256("frame"),
-      sha256("execution"),
-      "scanner",
-      "4.13.0",
-      "accesscheck-score-v1",
-      sha256(item.run.id),
-      sha256(canonicalize(study.canonicalPopulation([item.run.id]))),
-      1,
-      "registered",
-      timestamp,
-    );
-    const first = ai.createAiBatch({ studyFreezeId: freezeId, providerConfigId: config.id });
-    const second = ai.createAiBatch({ studyFreezeId: freezeId, providerConfigId: config.id });
-    expect(second.batch.id).toBe(first.batch.id);
-    expect(first.batch.run_id).toBeNull();
-    expect(first.batch.page_id).toBeNull();
-    expect(first.batch.study_freeze_id).toBe(freezeId);
-    expect(first.batch.batch_key).toBe(`ai-formal:${freezeId}`);
-    db.prepare(
-      "UPDATE ai_review_items SET status='completed',verdict='uncertain',completed_at=?,updated_at=? WHERE batch_id=?",
-    ).run(timestamp, timestamp, first.batch.id);
-    db.prepare(
-      "UPDATE ai_review_batches SET status='completed',completed_at=?,updated_at=? WHERE id=?",
-    ).run(timestamp, timestamp, first.batch.id);
-  });
-
-  it("rejects a formal batch when the frozen population no longer matches", () => {
-    const item = fixture(1, true);
-    const config = provider();
-    const suffix = crypto.randomUUID().replaceAll("-", "");
-    const campaignId = `campaign_ai_mismatch_${suffix}`;
-    const freezeId = `freeze_ai_mismatch_${suffix}`;
-    const timestamp = new Date().toISOString();
-    const db = dbModule.getDb();
-    db.prepare(
-      "INSERT INTO study_campaigns(id,campaign_plan_hash,protocol_hash,sample_frame_hash,baseline_triple_json,target_site_count,page_limit,retry_policy_json,replacement_policy_json,allowed_failure_reason_codes_json,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-    ).run(
-      campaignId,
-      sha256(campaignId),
-      sha256("protocol"),
-      sha256("frame"),
-      "{}",
-      10,
-      1,
-      "{}",
-      "{}",
-      "[]",
-      "planned",
-      timestamp,
-    );
-    db.prepare(
-      "INSERT INTO study_run_attempts(id,campaign_id,slot,candidate_id,replacement_rank,attempt_no,run_id,trigger,terminal_status,usability_decision,decision_reason_code,started_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-    ).run(
-      `attempt_ai_mismatch_${suffix}`,
-      campaignId,
-      1,
-      `candidate_ai_mismatch_${suffix}`,
-      0,
-      1,
-      item.run.id,
-      "test",
-      "completed",
-      "included",
-      null,
-      timestamp,
-      timestamp,
-    );
-    db.prepare(
-      "INSERT INTO study_freezes(id,campaign_id,attempt_log_hash,freeze_digest,protocol_hash,sample_frame_hash,execution_log_hash,scanner_version,axe_version,model_version,run_set_hash,population_digest,eligible_population_count,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-    ).run(
-      freezeId,
-      campaignId,
-      sha256("attempts"),
-      sha256(`freeze:mismatch:${suffix}`),
-      sha256("protocol"),
-      sha256("frame"),
-      sha256("execution"),
-      "scanner",
-      "4.13.0",
-      "accesscheck-score-v1",
-      sha256(item.run.id),
-      sha256("not-the-current-population"),
-      1,
-      "registered",
-      timestamp,
-    );
-    expect(() =>
-      ai.createAiBatch({ studyFreezeId: freezeId, providerConfigId: config.id }),
-    ).toThrowError(expect.objectContaining({ code: "STUDY_POPULATION_CHANGED" }));
   });
 
   it("enforces provider URL policy and redirects are not followed", () => {
@@ -473,5 +355,109 @@ describe("thin AI overlay", () => {
       .getDb()
       .prepare("UPDATE ai_review_batches SET status='paused' WHERE id=?")
       .run(batch.batch.id);
+  });
+
+  it("always gives a local ad_hoc verdict precedence over AI", () => {
+    const item = fixture(1, true);
+    const nodeId = (dbModule
+      .getDb()
+      .prepare("SELECT n.id FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=?")
+      .get(item.run.id) as { id: string }).id;
+    resolution.saveLocalManualVerdict({
+      runId: item.run.id,
+      resultNodeId: nodeId,
+      verdict: "not_problem",
+    });
+    expect(
+      resolution.applyHumanPrecedence(
+        new Map([[nodeId, "problem" as const]]),
+        resolution.loadLocalManualVerdicts(item.run.id),
+      ).get(nodeId),
+    ).toBe("not_problem");
+  });
+
+  it("locks manual edits only while an AI batch is queued or running", () => {
+    const item = fixture(1, true);
+    const config = provider();
+    const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+    const nodeId = (dbModule
+      .getDb()
+      .prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?")
+      .get(batch.batch.id) as { result_node_id: string }).result_node_id;
+    expect(() => resolution.saveLocalManualVerdict({ runId: item.run.id, resultNodeId: nodeId, verdict: "problem" }))
+      .toThrowError(expect.objectContaining({ code: "AI_REVIEW_ACTIVE" }));
+    ai.pauseAiBatch(batch.batch.id);
+    expect(resolution.saveLocalManualVerdict({ runId: item.run.id, resultNodeId: nodeId, verdict: "problem" }).updated)
+      .toBe(false);
+    const running = fixture(1, true);
+    const runningBatch = ai.createAiBatch({ runId: running.run.id, providerConfigId: config.id });
+    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='running' WHERE id=?").run(runningBatch.batch.id);
+    const runningNode = (dbModule.getDb().prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?").get(runningBatch.batch.id) as { result_node_id: string }).result_node_id;
+    expect(() => resolution.saveLocalManualVerdict({ runId: running.run.id, resultNodeId: runningNode, verdict: "problem" }))
+      .toThrowError(expect.objectContaining({ code: "AI_REVIEW_ACTIVE" }));
+    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='completed' WHERE id=?").run(runningBatch.batch.id);
+    expect(resolution.saveLocalManualVerdict({ runId: running.run.id, resultNodeId: runningNode, verdict: "not_problem" }).updated).toBe(false);
+  });
+
+  it("removes manually resolved items when create, resume, or retry revisits a batch", () => {
+    const config = provider();
+    for (const action of ["create", "resume", "retry"] as const) {
+      const item = fixture(1, true);
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      ai.pauseAiBatch(batch.batch.id);
+      const nodeId = (dbModule.getDb().prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id) as { result_node_id: string }).result_node_id;
+      resolution.saveLocalManualVerdict({ runId: item.run.id, resultNodeId: nodeId, verdict: "not_problem" });
+      if (action === "create") ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      if (action === "resume") ai.resumeAiBatch(batch.batch.id);
+      if (action === "retry") {
+        dbModule.getDb().prepare("UPDATE ai_review_items SET status='failed' WHERE batch_id=?").run(batch.batch.id);
+        dbModule.getDb().prepare("UPDATE ai_review_batches SET status='failed' WHERE id=?").run(batch.batch.id);
+        ai.retryAiBatch(batch.batch.id);
+      }
+      expect((dbModule.getDb().prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?").get(batch.batch.id) as { count: number }).count).toBe(0);
+    }
+  });
+
+  it("keeps report statistics over the full node population", () => {
+    const item = fixture(13, true);
+    expect(report.buildRunReportDto(item.run.id).nodeStatistics.total).toBeGreaterThan(12);
+  });
+
+  it("downloads a published report as JSON", async () => {
+    const item = fixture(1, true, true);
+    dbModule.getDb().prepare("UPDATE scan_runs SET published=1 WHERE id=?").run(item.run.id);
+
+    const response = await reportJsonRoute.GET(new Request("http://localhost"), {
+      params: Promise.resolve({ runId: item.run.id }),
+    });
+
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    expect(payload.runId).toBe(item.run.id);
+    expect(typeof payload.score.exact.overall.numerator).toBe("string");
+  });
+
+  it("rejects manual review mutations on published runs with a client error", async () => {
+    const item = fixture(1, true);
+    const nodeId = (dbModule
+      .getDb()
+      .prepare("SELECT id FROM result_nodes WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id=?)")
+      .get(item.run.id) as { id: string }).id;
+    dbModule.getDb().prepare("UPDATE scan_runs SET published=1 WHERE id=?").run(item.run.id);
+
+    const response = await incompleteReviewRoute.POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ verdict: "problem", note: "must remain unchanged" }),
+      }),
+      { params: Promise.resolve({ runId: item.run.id, nodeId }) },
+    );
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatchObject({ code: "RUN_PUBLISHED_READ_ONLY" });
+    expect(
+      (dbModule.getDb().prepare("SELECT COUNT(*) AS count FROM manual_reviews WHERE result_node_id=?").get(nodeId) as { count: number }).count,
+    ).toBe(0);
   });
 });

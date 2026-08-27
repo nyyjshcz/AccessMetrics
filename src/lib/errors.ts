@@ -14,9 +14,8 @@ export class AppError extends Error {
 
 export function errorEnvelope(error: unknown, requestId = crypto.randomUUID()) {
   if (error instanceof AppError) {
-    const code = error.code === "CSRF_INVALID" ? "CSRF_REJECTED" : error.code;
     return {
-      error: { code, message: error.message, details: error.details, requestId },
+      error: { code: error.code, message: error.message, details: error.details, requestId },
     };
   }
   return { error: { code: "INTERNAL_ERROR", message: "服务器内部错误", requestId } };

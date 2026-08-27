@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-/** Repository-side publication hygiene gate. */
+/** Repository-side publication hygiene check. */
 const root = process.cwd();
 const ignoredDirectories = new Set([
   ".git",

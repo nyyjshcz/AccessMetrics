@@ -20,16 +20,95 @@ export const AXE_SCAN_OPTIONS = {
   xpath: false,
   iframes: false,
 };
-export const AI_EVIDENCE_VERSION = "ai-evidence-v1";
+export const AI_EVIDENCE_VERSION = "ai-evidence-v2";
+const MAX_AI_EVIDENCE_CHARACTERS = 60_000;
+const MAX_TARGET_OUTER_HTML_CHARACTERS = 6_000;
 
 type AiEvidenceEnvelope = {
   version: string;
   complete: boolean;
-  target: string[];
   facts: Record<string, unknown>;
   warnings: string[];
   capturedAt: string;
+  truncated?: boolean;
 };
+
+function unicodeLength(value: string) {
+  return Array.from(value).length;
+}
+
+function truncateUnicode(value: string, maximum: number) {
+  const characters = Array.from(value);
+  return characters.length <= maximum ? value : `${characters.slice(0, maximum).join("")}…`;
+}
+
+function encodeEvidence(envelope: AiEvidenceEnvelope) {
+  let json = canonicalize(envelope);
+  if (unicodeLength(json) <= MAX_AI_EVIDENCE_CHARACTERS) return json;
+  const facts = envelope.facts as Record<string, any>;
+  const target = facts.target as Record<string, unknown> | undefined;
+  const page = facts.page as Record<string, unknown> | undefined;
+  const fallback: AiEvidenceEnvelope = {
+    version: envelope.version,
+    complete: envelope.complete,
+    capturedAt: envelope.capturedAt,
+    truncated: true,
+    warnings: [...new Set([...envelope.warnings, "evidence_truncated_to_target_context"])],
+    facts: {
+      target: target
+        ? {
+            ...target,
+            outerHtml:
+              typeof target.outerHtml === "string"
+                ? truncateUnicode(target.outerHtml, 3_000)
+                : null,
+          }
+        : null,
+      page: page
+        ? {
+            url: page.url ?? null,
+            title: page.title ?? null,
+            lang: page.lang ?? null,
+          }
+        : null,
+      ancestors: Array.isArray(facts.ancestors) ? facts.ancestors.slice(0, 3) : [],
+      siblings: Array.isArray(facts.siblings) ? facts.siblings.slice(0, 4) : [],
+    },
+  };
+  json = canonicalize(fallback);
+  if (unicodeLength(json) <= MAX_AI_EVIDENCE_CHARACTERS) return json;
+  json = canonicalize({
+    version: envelope.version,
+    complete: envelope.complete,
+    capturedAt: envelope.capturedAt,
+    truncated: true,
+    warnings: [...new Set([...envelope.warnings, "evidence_minimized"])],
+    facts: {
+      target: target
+        ? {
+            tagName: target.tagName ?? null,
+            role: target.role ?? null,
+            outerHtml:
+              typeof target.outerHtml === "string"
+                ? truncateUnicode(target.outerHtml, 1_000)
+                : null,
+          }
+        : null,
+      page: page ? { url: page.url ?? null, title: page.title ?? null } : null,
+    },
+  });
+  if (unicodeLength(json) <= MAX_AI_EVIDENCE_CHARACTERS) return json;
+  // Page-controlled strings (for example a very large URL/title) must not
+  // defeat the persisted evidence size limit.
+  return canonicalize({
+    version: envelope.version,
+    complete: envelope.complete,
+    capturedAt: envelope.capturedAt,
+    truncated: true,
+    warnings: [...new Set([...envelope.warnings, "evidence_minimized"])],
+    facts: {},
+  });
+}
 
 async function collectAiEvidenceUnsafe(
   frame: Frame | undefined,
@@ -45,16 +124,14 @@ async function collectAiEvidenceUnsafe(
     };
   } else {
     try {
-      captured = await frame.evaluate((selectors) => {
+      const evidenceCollector = (selectors: string[]) => {
         const warnings: string[] = [];
         let element: Element | null = null;
-        let matchedSelector: string | null = null;
         for (const selector of selectors) {
           try {
             const candidate = document.querySelector(selector);
             if (candidate) {
               element = candidate;
-              matchedSelector = selector;
               break;
             }
           } catch {
@@ -71,6 +148,57 @@ async function collectAiEvidenceUnsafe(
           } catch {
             return fallback;
           }
+        };
+        const compact = (value: unknown, limit: number) =>
+          typeof value === "string"
+            ? Array.from(value.replace(/\s+/g, " ").trim()).slice(0, limit).join("")
+            : null;
+        const shortText = (node: Element | null, limit = 500) =>
+          node ? compact((node as HTMLElement).innerText || node.textContent || "", limit) : null;
+        const visibility = (node: Element | null) => {
+          if (!node) return null;
+          const nodeStyle = record(() => getComputedStyle(node), null) as CSSStyleDeclaration | null;
+          const nodeRect = record(() => node.getBoundingClientRect(), null) as DOMRect | null;
+          return nodeRect
+            ? Boolean(
+                nodeRect.width > 0 &&
+                  nodeRect.height > 0 &&
+                  nodeStyle?.display !== "none" &&
+                  nodeStyle?.visibility !== "hidden" &&
+                  nodeStyle?.opacity !== "0",
+              )
+            : null;
+        };
+        const summary = (node: Element | null, textLimit = 500) =>
+          node
+            ? {
+                tagName: node.tagName.toLowerCase(),
+                id: node.id || null,
+                role: node.getAttribute("role"),
+                ariaLabel: node.getAttribute("aria-label"),
+                name: node.getAttribute("name"),
+                text: shortText(node, textLimit),
+                visible: visibility(node),
+              }
+            : null;
+        const idsToText = (value: string | null) =>
+          value
+            ? value
+                .split(/\s+/)
+                .filter(Boolean)
+                .slice(0, 12)
+                .map((identifier) => ({ id: identifier, text: shortText(document.getElementById(identifier), 500) }))
+            : [];
+        const labels = (node: Element) => {
+          const output: Array<{ text: string | null; for: string | null }> = [];
+          const input = node as HTMLInputElement;
+          if (input.labels)
+            for (const label of Array.from(input.labels).slice(0, 8))
+              output.push({ text: shortText(label, 500), for: label.htmlFor || null });
+          if (node.id)
+            for (const label of Array.from(document.querySelectorAll(`label[for="${CSS.escape(node.id)}"]`)).slice(0, 8))
+              output.push({ text: shortText(label, 500), for: node.id });
+          return output;
         };
         const style = record(() => getComputedStyle(element!)) as CSSStyleDeclaration | null;
         const rect = record(() => element!.getBoundingClientRect(), null) as DOMRect | null;
@@ -114,62 +242,107 @@ async function collectAiEvidenceUnsafe(
             null,
           null,
         );
-        const relatedText = record(
-          () =>
-            element!.parentElement?.innerText?.replace(/\s+/g, " ").trim().slice(0, 2000) ?? null,
-          null,
-        );
-        const outerHtml = record(() => element!.outerHTML.slice(0, 4000), null);
+        const outerHtml = record(() => element!.outerHTML, null);
+        const attributes = Array.from(element.attributes)
+          .slice(0, 30)
+          .map((attribute) => ({
+            name: attribute.name,
+            value:
+              attribute.name.toLowerCase() === "value" || attribute.name.toLowerCase() === "data-value"
+                ? "[redacted]"
+                : compact(attribute.value, 200),
+          }));
+        const ancestors: unknown[] = [];
+        let ancestor = element.parentElement;
+        for (let depth = 0; ancestor && depth < 5; depth += 1, ancestor = ancestor.parentElement)
+          ancestors.push(summary(ancestor, 500));
+        const siblings = Array.from(element.parentElement?.children ?? [])
+          .filter((candidate) => candidate !== element)
+          .slice(0, 10)
+          .map((candidate) => summary(candidate, 350));
+        const headings = Array.from(document.querySelectorAll("h1,h2,h3,h4,h5,h6"))
+          .slice(0, 15)
+          .map((heading) => ({ level: heading.tagName.toLowerCase(), text: shortText(heading, 300) }));
+        const landmarks = Array.from(
+          document.querySelectorAll(
+            "main,header,footer,nav,aside,form,[role='main'],[role='banner'],[role='contentinfo'],[role='navigation'],[role='complementary'],[role='search'],[role='form']",
+          ),
+        )
+          .slice(0, 15)
+          .map((landmark) => summary(landmark, 250));
+        const semanticDom = Array.from(
+          document.querySelectorAll(
+            "main,header,footer,nav,aside,section,article,form,h1,h2,h3,h4,h5,h6,button,a,input,select,textarea,[role]",
+          ),
+        )
+          .slice(0, 180)
+          .map((node) => summary(node, 120));
         const facts: Record<string, unknown> = {
-          matchedSelector,
-          tagName,
-          role: element.getAttribute("role"),
-          ariaLabel: element.getAttribute("aria-label"),
-          ariaLabelledby: element.getAttribute("aria-labelledby"),
-          ariaDescribedby: element.getAttribute("aria-describedby"),
-          title: element.getAttribute("title"),
-          alt: element.getAttribute("alt"),
-          accessibleText: typeof accessibleText === "string" ? accessibleText.slice(0, 1000) : null,
-          relatedText,
-          outerHtml,
-          focusable: tabIndex !== null ? Number(tabIndex) >= 0 : null,
-          focused: document.activeElement === element,
-          tabIndex,
-          visible: rect
-            ? Boolean(
-                rect.width > 0 &&
-                rect.height > 0 &&
-                style?.display !== "none" &&
-                style?.visibility !== "hidden",
-              )
-            : null,
-          boundingBox: rect
-            ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-            : null,
-          css: style
-            ? {
-                display: style.display,
-                visibility: style.visibility,
-                opacity: style.opacity,
-                position: style.position,
-                color: foreground,
-                backgroundColor: background,
-                fontSize: style.fontSize,
-                lineHeight: style.lineHeight,
-                fontWeight: style.fontWeight,
-                textDecoration: style.textDecoration,
-              }
-            : null,
-          contrast: {
-            foreground: foregroundColor,
-            background: backgroundColor,
-            ratio: contrastRatio,
+          target: {
+            tagName,
+            id: element.id || null,
+            attributes,
+            role: element.getAttribute("role"),
+            ariaLabel: element.getAttribute("aria-label"),
+            ariaLabelledby: element.getAttribute("aria-labelledby"),
+            ariaDescribedby: element.getAttribute("aria-describedby"),
+            labelledBy: idsToText(element.getAttribute("aria-labelledby")),
+            describedBy: idsToText(element.getAttribute("aria-describedby")),
+            labels: labels(element),
+            title: element.getAttribute("title"),
+            alt: element.getAttribute("alt"),
+            accessibleText: typeof accessibleText === "string" ? compact(accessibleText, 2_000) : null,
+            outerHtml: typeof outerHtml === "string" ? Array.from(outerHtml).slice(0, 6_000).join("") : null,
+            focusable: tabIndex !== null ? Number(tabIndex) >= 0 : null,
+            focused: document.activeElement === element,
+            tabIndex,
+            visible: visibility(element),
+            boundingBox: rect
+              ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+              : null,
+            css: style
+              ? {
+                  display: style.display,
+                  visibility: style.visibility,
+                  opacity: style.opacity,
+                  position: style.position,
+                  color: foreground,
+                  backgroundColor: background,
+                  fontSize: style.fontSize,
+                  lineHeight: style.lineHeight,
+                  fontWeight: style.fontWeight,
+                  textDecoration: style.textDecoration,
+                  outline: style.outline,
+                }
+              : null,
+            contrast: {
+              foreground: foregroundColor,
+              background: backgroundColor,
+              ratio: contrastRatio,
+            },
+          },
+          ancestors,
+          siblings,
+          page: {
+            url: location.href,
+            title: document.title || null,
+            lang: document.documentElement.lang || null,
+            headings,
+            landmarks,
+            visibleText: compact(document.body?.innerText ?? "", 10_000),
+            semanticDom,
           },
         };
         if (!rect) warnings.push("bounding_box_unavailable");
         if (!style) warnings.push("computed_style_unavailable");
         return { complete: true, facts, warnings };
-      }, targets);
+      };
+      // Playwright serializes page functions by calling toString(). The
+      // tsx/esbuild output can contain __name(...) calls for local helpers;
+      // provide that dependency explicitly in the page expression instead of
+      // relying on a module-scoped binding that is absent in the frame.
+      const serializedCollector = `((__name) => (${evidenceCollector.toString()}))((target) => target)`;
+      captured = await frame.evaluate(`${serializedCollector}(${JSON.stringify(targets)})`);
     } catch (error) {
       captured = {
         complete: false,
@@ -181,14 +354,17 @@ async function collectAiEvidenceUnsafe(
   const envelope: AiEvidenceEnvelope = {
     version: AI_EVIDENCE_VERSION,
     complete: captured.complete,
-    target: targets,
     facts: captured.facts,
     warnings: [...new Set(captured.warnings)],
     capturedAt: new Date().toISOString(),
   };
-  if (typeof envelope.facts.outerHtml === "string")
-    envelope.facts.outerHtml = sanitizeNodeHtml(envelope.facts.outerHtml).slice(0, 4000);
-  const json = canonicalize(envelope);
+  const targetFacts = envelope.facts.target as Record<string, unknown> | undefined;
+  if (typeof targetFacts?.outerHtml === "string")
+    targetFacts.outerHtml = truncateUnicode(
+      sanitizeNodeHtml(targetFacts.outerHtml),
+      MAX_TARGET_OUTER_HTML_CHARACTERS,
+    );
+  const json = encodeEvidence(envelope);
   return { json, hash: sha256(json), version: AI_EVIDENCE_VERSION };
 }
 
@@ -199,11 +375,9 @@ async function collectAiEvidence(
   try {
     return await collectAiEvidenceUnsafe(frame, target);
   } catch (error) {
-    const targets = Array.isArray(target) ? target.map(String) : [String(target)];
-    const json = canonicalize({
+    const json = encodeEvidence({
       version: AI_EVIDENCE_VERSION,
       complete: false,
-      target: targets,
       facts: {},
       warnings: [`collector_failed:${String(error).slice(0, 300)}`],
       capturedAt: new Date().toISOString(),

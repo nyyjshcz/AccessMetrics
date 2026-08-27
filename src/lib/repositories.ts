@@ -46,13 +46,6 @@ export function createScanJob(
   requestedBy?: string,
   idempotencyKey?: string,
   submittedUrl?: string,
-  studyContext?: {
-    campaignId: string;
-    slot: number;
-    candidateId: string;
-    replacementRank: number;
-    attemptNo: number;
-  },
 ) {
   const site = upsertSite(origin);
   if (idempotencyKey) {
@@ -79,16 +72,11 @@ export function createScanJob(
     idempotency_key: idempotencyKey ?? null,
     submitted_url: submittedUrl ?? origin,
     normalized_url: origin,
-    study_campaign_id: studyContext?.campaignId ?? null,
-    study_slot: studyContext?.slot ?? null,
-    study_candidate_id: studyContext?.candidateId ?? null,
-    study_replacement_rank: studyContext?.replacementRank ?? null,
-    study_attempt_no: studyContext?.attemptNo ?? null,
     created_at: now(),
   };
   getDb()
     .prepare(
-      "INSERT INTO scan_jobs(id,site_id,status,options_json,max_pages,request_id,requested_by,idempotency_key,submitted_url,normalized_url,study_campaign_id,study_slot,study_candidate_id,study_replacement_rank,study_attempt_no,created_at) VALUES (@id,@site_id,@status,@options_json,@max_pages,@request_id,@requested_by,@idempotency_key,@submitted_url,@normalized_url,@study_campaign_id,@study_slot,@study_candidate_id,@study_replacement_rank,@study_attempt_no,@created_at)",
+      "INSERT INTO scan_jobs(id,site_id,status,options_json,max_pages,request_id,requested_by,idempotency_key,submitted_url,normalized_url,created_at) VALUES (@id,@site_id,@status,@options_json,@max_pages,@request_id,@requested_by,@idempotency_key,@submitted_url,@normalized_url,@created_at)",
     )
     .run(job);
   return { ...job, site };
@@ -437,7 +425,7 @@ export function savePageResult(
                 nodes: (rule.nodes ?? []).map((node: any) => {
                   const { aiEvidence: _aiEvidence, ...storedNode } = node;
                   // AI evidence is a separate overlay column. Keep it out of
-                  // the immutable axe raw snapshot and the existing study
+                  // the immutable axe raw snapshot and the existing scan data
                   // CSV contract.
                   return {
                     ...storedNode,

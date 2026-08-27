@@ -1,33 +1,32 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 type Provider = { id: string; label: string; baseUrl: string; model: string; enabled: boolean };
-
-function csrf() {
-  return document.cookie.match(/(?:^|; )accesscheck_csrf=([^;]+)/)?.[1] ?? "";
-}
 
 export default function AiOverlayCard({
   runId,
   pages,
+  onBatchChange,
+  readOnly = false,
 }: {
   runId: string;
   pages: Array<{ id: string; canonical_url: string }>;
+  onBatchChange?: () => void;
+  readOnly?: boolean;
 }) {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [providerId, setProviderId] = useState("");
-  const [pageId, setPageId] = useState("");
   const [data, setData] = useState<any>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  const query = useMemo(() => (pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""), [pageId]);
+  const query = "";
 
   async function load() {
     const [providerResponse, statusResponse] = await Promise.all([
-      fetch("/api/admin/ai/providers"),
-      fetch(`/api/runs/${runId}/ai-review${query}`),
+      fetch("/api/ai/providers", { cache: "no-store" }),
+      fetch(`/api/runs/${runId}/ai-review${query}`, { cache: "no-store" }),
     ]);
     const providerValue = await providerResponse.json();
     const statusValue = await statusResponse.json();
@@ -43,6 +42,7 @@ export default function AiOverlayCard({
   const batch = data?.batch?.batch ?? data?.batch ?? null;
   const stats = data?.batch?.stats ?? data?.stats ?? null;
   const status = batch?.status;
+  const isReadOnly = readOnly || Boolean(data?.readOnly);
   const batchSnapshot = (() => {
     if (!batch?.provider_snapshot_json) return null;
     try {
@@ -70,6 +70,7 @@ export default function AiOverlayCard({
   }, [runId, query, status]);
 
   async function createBatch() {
+    if (isReadOnly) return;
     if (!providerId) {
       setError("请先在 AI 设置页保存并启用一个模型配置。");
       return;
@@ -78,8 +79,8 @@ export default function AiOverlayCard({
     setMessage("正在创建 AI 批次…");
     const response = await fetch(`/api/runs/${runId}/ai-review`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-csrf-token": csrf() },
-      body: JSON.stringify({ providerConfigId: providerId, ...(pageId ? { pageId } : {}) }),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerConfigId: providerId }),
     });
     const value = await response.json();
     if (!response.ok) {
@@ -90,19 +91,25 @@ export default function AiOverlayCard({
     setMessage("批次已保存，worker 会逐条继续处理。");
     setData(value);
     await load();
+    onBatchChange?.();
   }
 
   async function action(actionName: "pause" | "resume" | "retry") {
+    if (isReadOnly) return;
     const batchId = batch?.id;
     if (!batchId) return;
     const response = await fetch(`/api/ai/batches/${batchId}`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-csrf-token": csrf() },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: actionName }),
     });
     const value = await response.json();
     if (!response.ok) setError(value.error?.message ?? "AI 批次操作失败");
-    else setData((current: any) => ({ ...current, batch: value.batch, stats: value.stats }));
+    else {
+      setData((current: any) => ({ ...current, batch: value.batch, stats: value.stats }));
+      await load();
+      onBatchChange?.();
+    }
   }
 
   return (
@@ -120,20 +127,10 @@ export default function AiOverlayCard({
         </p>
       ) : null}
       <div className="filters">
-        <label>
-          处理范围
-          <select value={pageId} onChange={(event) => setPageId(event.target.value)}>
-            <option value="">当前 run 全部页面</option>
-            {pages.map((page) => (
-              <option key={page.id} value={page.id}>
-                {page.canonical_url}
-              </option>
-            ))}
-          </select>
-        </label>
+        <p className="muted">处理范围：当前扫描的全部 incomplete（一次只运行一个 run-wide 批次）。</p>
         <label>
           模型配置
-          <select value={providerId} onChange={(event) => setProviderId(event.target.value)}>
+          <select value={providerId} onChange={(event) => setProviderId(event.target.value)} disabled={isReadOnly}>
             <option value="">请选择</option>
             {providers.map((provider) => (
               <option key={provider.id} value={provider.id}>
@@ -144,11 +141,12 @@ export default function AiOverlayCard({
         </label>
       </div>
       <p>
-        <a href="/admin/settings/ai">管理 AI provider 配置</a>
+        <a href="/settings/ai">管理 AI provider 配置</a>
       </p>
       <p>
         incomplete 总数：<strong>{data?.totalIncomplete ?? 0}</strong>
       </p>
+      {isReadOnly ? <p className="notice">该扫描已发布，AI 处理为只读。</p> : null}
       {stats ? (
         <>
           <p>
@@ -167,7 +165,7 @@ export default function AiOverlayCard({
       ) : (
         <p className="muted">还没有该范围的 AI batch。</p>
       )}
-      <div>
+      {!isReadOnly ? <div>
         <button
           type="button"
           onClick={createBatch}
@@ -190,7 +188,7 @@ export default function AiOverlayCard({
             重试失败项
           </button>
         ) : null}
-      </div>
+      </div> : null}
     </div>
   );
 }

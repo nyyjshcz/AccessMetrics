@@ -14,7 +14,9 @@ export async function GET(_request: Request, context: { params: Promise<{ runId:
       | undefined;
     if (!run || run.published !== 1) throw new AppError("NOT_FOUND", "报告不存在", 404);
     const html = renderRunReportHtml(buildRunReportDto(runId));
-    const browser = await chromium.launch(chromiumLaunchOptions());
+    // This route prints self-contained HTML via setContent and never navigates
+    // to an external URL, so Web does not need the scan worker's proxy.
+    const browser = await chromium.launch(chromiumLaunchOptions({ requireProxy: false }));
     try {
       const page = await browser.newPage();
       await page.setContent(html, { waitUntil: "load" });

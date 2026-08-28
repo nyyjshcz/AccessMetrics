@@ -23,6 +23,14 @@ describe("known issue fixture scanner", () => {
         );
         return;
       }
+      if (request.url === "/spa.html") {
+        response.statusCode = 200;
+        response.setHeader("content-type", "text/html");
+        response.end(
+          `<!doctype html><html><head><title>SPA</title></head><body><script>setTimeout(() => { const link = document.createElement("a"); link.href = "/valid.html"; link.textContent = "Valid"; document.body.append(link); }, 50);</script></body></html>`,
+        );
+        return;
+      }
       if (request.url === "/status-401") {
         response.statusCode = 401;
         response.end("auth required");
@@ -81,6 +89,13 @@ describe("known issue fixture scanner", () => {
       expect(first).toEqual(second);
       expect(second).toEqual(third);
       expect(first).not.toContain(`${target}about.html`);
+      await expect(
+        discoverSite(`${target}spa.html`, {
+          maxPages: 2,
+          delayMs: 0,
+          networkPolicy: testPolicy,
+        }),
+      ).resolves.toEqual([`${target}spa.html`, `${target}valid.html`]);
       const result = await scanPage(target, 30000, testPolicy);
       const ruleIds = result.axe.violations.map((item) => item.id);
       expect(ruleIds).toEqual(expect.arrayContaining(["image-alt", "button-name", "link-name"]));

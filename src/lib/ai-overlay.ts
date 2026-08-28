@@ -661,6 +661,19 @@ async function callProvider(
   requestParams: typeof AI_REQUEST_PARAMS,
 ) {
   const key = decryptSecret(provider.encrypted_api_key);
+  const localProvider = (() => {
+    try {
+      return isLocalHost(new URL(provider.base_url).hostname);
+    } catch {
+      return false;
+    }
+  })();
+  const effectiveRequestParams = localProvider
+    ? {
+        temperature: requestParams.temperature,
+        response_format: { type: "text" as const },
+      }
+    : requestParams;
   const response = await fetch(providerEndpoint(provider.base_url, "/chat/completions"), {
     method: "POST",
     headers: {
@@ -670,7 +683,9 @@ async function callProvider(
     body: JSON.stringify({
       model: provider.model,
       messages: buildMessages(node, evidence),
-      ...requestParams,
+      // LM Studio's reasoning models need to finish their thinking before
+      // returning the final JSON; omit the shared output cap for local calls.
+      ...effectiveRequestParams,
     }),
     redirect: "error",
     signal: AbortSignal.timeout(120_000),
@@ -697,10 +712,19 @@ function claimNextAiItem(workerId: string) {
          FROM ai_review_items i JOIN ai_review_batches b ON b.id=i.batch_id
          WHERE b.run_id IS NOT NULL AND b.page_id IS NULL AND b.study_freeze_id IS NULL
            AND b.status IN ('queued','running')
+           AND NOT EXISTS (
+             SELECT 1
+             FROM ai_review_items active_i
+             JOIN ai_review_batches active_b ON active_b.id=active_i.batch_id
+             WHERE active_b.run_id IS NOT NULL AND active_b.page_id IS NULL AND active_b.study_freeze_id IS NULL
+               AND active_b.provider_config_id=b.provider_config_id
+               AND active_i.status='running'
+               AND active_i.lease_until IS NOT NULL AND active_i.lease_until>=?
+           )
            AND (i.status='queued' OR (i.status='running' AND i.lease_until IS NOT NULL AND i.lease_until<?))
-         ORDER BY i.created_at,i.id LIMIT 1`,
+           ORDER BY i.created_at,i.id LIMIT 1`,
       )
-      .get(timestamp) as any;
+      .get(timestamp, timestamp) as any;
     if (!item) return null;
     const changed = db
       .prepare(

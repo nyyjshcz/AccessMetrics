@@ -11,7 +11,7 @@ services:
       - accesscheck-private:/var/lib/accesscheck/private-evidence
       - accesscheck-exports:/var/lib/accesscheck/public-exports
     ports:
-      - "3000:3000"
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:3000:3000"
     networks: [app]
     command: ["node", "standalone/server.js"]
     healthcheck:

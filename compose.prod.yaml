@@ -12,28 +12,16 @@ services:
       - /tmp
     environment:
       APP_ENV: production
+      APP_BASE_URL: ${APP_BASE_URL:?set a real HTTPS application URL before production deployment}
       DATABASE_URL: /var/lib/accesscheck/data/accesscheck.db
       PRIVATE_EVIDENCE_ROOT: /var/lib/accesscheck/private-evidence
       PUBLIC_EXPORT_ROOT: /var/lib/accesscheck/public-exports
       SESSION_SECRET_FILE: /run/secrets/session_secret
-      CSRF_SECRET_FILE: /run/secrets/csrf_secret
-      SCAN_ADMIN_TOKEN_FILE: /run/secrets/scan_admin_token
-      COMPUTER_REVIEW_TOKEN_FILE: /run/secrets/computer_review_token
-      MATH_REVIEW_TOKEN_FILE: /run/secrets/math_review_token
-      ADMIN_REAUTH_TOKEN_FILE: /run/secrets/admin_reauth_token
     volumes:
       - ./private-inputs:/var/lib/accesscheck/private-evidence:rw
       - ./data:/var/lib/accesscheck/data:rw
       - ./data/exports:/var/lib/accesscheck/public-exports:ro
-    secrets:
-      [
-        session_secret,
-        csrf_secret,
-        scan_admin_token,
-        computer_review_token,
-        math_review_token,
-        admin_reauth_token,
-      ]
+    secrets: [session_secret]
     expose: [3000]
     networks: [app]
   worker:
@@ -60,6 +48,26 @@ services:
     command: ["pnpm", "worker"]
     networks: [scan-isolated]
     depends_on: [egress-proxy]
+  ai-worker:
+    build: .
+    user: "10003:10003"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    mem_limit: 1g
+    pids_limit: 128
+    init: true
+    tmpfs: [/tmp]
+    environment:
+      APP_ENV: production
+      DATABASE_URL: /var/lib/accesscheck/data/accesscheck.db
+      SESSION_SECRET_FILE: /run/secrets/session_secret
+    volumes:
+      - ./data:/var/lib/accesscheck/data:rw
+    secrets: [session_secret]
+    command: ["pnpm", "ai:worker"]
+    networks: [app]
   egress-proxy:
     image: ${EGRESS_PROXY_IMAGE:?set a pinned Smokescreen/goproxy image digest before production deployment}
     read_only: true
@@ -79,16 +87,6 @@ services:
 secrets:
   session_secret:
     file: ./private-inputs/session_secret
-  scan_admin_token:
-    file: ./private-inputs/scan_admin_token
-  csrf_secret:
-    file: ./private-inputs/csrf_secret
-  computer_review_token:
-    file: ./private-inputs/computer_review_token
-  math_review_token:
-    file: ./private-inputs/math_review_token
-  admin_reauth_token:
-    file: ./private-inputs/admin_reauth_token
 volumes:
   caddy-data:
   caddy-config:

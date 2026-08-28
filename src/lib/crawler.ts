@@ -72,6 +72,14 @@ export async function discoverSite(
         const finalUrl = await validateTargetUrl(page.url(), options.networkPolicy);
         if (finalUrl.origin !== origin) throw new Error("redirect crossed site origin");
         if ((response?.status() ?? 0) >= 400) continue;
+        await page
+          .locator("a[href]")
+          .first()
+          .waitFor({
+            state: "attached",
+            timeout: Math.min(config.SCAN_TIMEOUT_MS, 2000),
+          })
+          .catch(() => undefined);
         const links = await page
           .locator("a[href]")
           .evaluateAll((anchors) => anchors.map((a) => (a as HTMLAnchorElement).href));

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { deleteAiProvider, saveAiProvider } from "@/lib/ai-overlay";
 import { migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
+import { assertSameOrigin } from "@/lib/request-security";
 
 const allowed = ["label", "baseUrl", "model", "apiKey", "enabled"];
 
@@ -10,6 +11,7 @@ export async function PATCH(
   context: { params: Promise<{ providerId: string }> },
 ) {
   try {
+    assertSameOrigin(request);
     migrate();
     const { providerId } = await context.params;
     const body = await request.json().catch(() => null);
@@ -26,10 +28,11 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ providerId: string }> },
 ) {
   try {
+    assertSameOrigin(request);
     migrate();
     const { providerId } = await context.params;
     deleteAiProvider(providerId);

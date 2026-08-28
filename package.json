@@ -7,11 +7,11 @@
     "node": ">=24.19.0"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/dev-all.mjs",
     "build": "next build",
     "start": "next start",
-    "worker": "tsx src/worker/index.ts",
-    "ai:worker": "tsx src/worker/ai.ts",
+    "worker": "tsx --env-file-if-exists=.env.local src/worker/index.ts",
+    "ai:worker": "tsx --env-file-if-exists=.env.local src/worker/ai.ts",
     "lint": "eslint .",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" \"scripts/**/*.{ts,mjs}\" \"tests/**/*.{ts,tsx}\" \"*.{json,ts,mjs}\" \"contracts/**/*.{json,yaml}\" \"configs/**/*.json\" \"scoring/**/*.json\"",
     "typecheck": "tsc --noEmit",

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { listAiProviders, saveAiProvider } from "@/lib/ai-overlay";
 import { migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
+import { assertSameOrigin } from "@/lib/request-security";
 
 const allowed = ["id", "label", "baseUrl", "model", "apiKey", "enabled"];
 
@@ -20,6 +21,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    assertSameOrigin(request);
     migrate();
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body))

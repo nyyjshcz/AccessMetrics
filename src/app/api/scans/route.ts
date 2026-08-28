@@ -5,6 +5,7 @@ import { validateTargetUrl } from "@/lib/url-security";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { getDb, migrate } from "@/lib/db";
 import { consumeRateLimit, requestClientKey } from "@/lib/rate-limit";
+import { assertSameOrigin } from "@/lib/request-security";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +37,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    assertSameOrigin(request);
     const rate = consumeRateLimit(requestClientKey(request, "scan-create"), 30, 60_000);
     if (!rate.allowed) throw new AppError("RATE_LIMITED", "扫描创建请求过于频繁", 429, rate);
     migrate();

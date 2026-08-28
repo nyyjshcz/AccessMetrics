@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAiBatch, summarizeAiRun } from "@/lib/ai-overlay";
 import { getDb, migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
+import { assertSameOrigin } from "@/lib/request-security";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,7 @@ export async function GET(_request: Request, context: { params: Promise<{ runId:
 
 export async function POST(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
+    assertSameOrigin(request);
     migrate();
     const { runId } = await context.params;
     const body = await request.json().catch(() => null);

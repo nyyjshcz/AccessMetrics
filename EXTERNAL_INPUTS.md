@@ -1,15 +1,21 @@
-# 外部输入与真人确认（唯一阻塞清单）
+# 运行时与部署输入
 
-当前状态：`WAITING_EXTERNAL_INPUT`。自动化实现、fixture、数据库、扫描、评分、导出、研究脚手架和发布 fail-closed 校验已经完成；以下事项必须由真实负责人或外部单位提供，AI 不得伪造。
+AccessCheck Lishui 是供本地两位使用者共同使用的小工具。两位使用者同权，应用不提供登录或角色分级；主流程是：
 
-AI provider 配置（OpenAI-compatible Base URL、模型和 API Key）是运行时输入，不是正式研究门的替代品；请只在 `/admin/settings/ai` 配置，Key 不要提交到 Git。正式 `study_final_ai` 仍必须使用 verified study_source 与该 freeze 唯一的 completed formal AI batch；不能用 fixture 或模型草稿代替真实研究证据。
+`新建扫描 → axe 扫描 → 查看结果 → 处理 incomplete → 生成报告 → 发布归档`
 
-- [ ] R1：计算机负责人和数学负责人分别用本人 reviewer 会话确认研究协议、样本框、campaign slots、扫描许可、版本三元组、评分预注册和可信标准来源；提交绑定 hash 的 receipt。
-- [ ] 真实研究网站清单、官方 URL、纳入理由、许可/公开依据和替补顺序；不要把 fixture 当正式样本。
-  - AI 已完成一次不改变正式状态的公开站点侦察：候选为 `https://www.lishui.gov.cn/col/col1229820300/index.html`（丽水市政府“市残联”栏目）、`https://www.zjdpf.org.cn/`（浙江省残联）和 `https://data.lishui.gov.cn/`（丽水市公共数据平台辅助样本）；`canl.lishui.gov.cn` 当前跳转到域名停放页，已排除。详见 [`docs/research/丽水市残联站点调研与人工审核说明.md`](docs/research/丽水市残联站点调研与人工审核说明.md)。这些 URL 尚未由负责人确认纳入、许可、采集窗口或替补顺序，不能当作 R1 已完成。
-- [ ] R2/R3：两位 reviewer 对服务端固定抽样节点独立复核、对分歧裁决，并冻结 review set/adjudication hash。
-- [ ] R4：两位负责人核对中文目录、模型/敏感性、报告候选、数字追溯、frame 覆盖和局限，提交 candidateBundle 绑定的 receipt。
-- [ ] R5：两位负责人 checkout 准确 rcCommit，分别完成端到端练习、理解检查和 A–E 接手确认；由服务端生成共同 artifact bundle 和 receipts。
-- [ ] 生产部署与外部验证环境：服务器、域名/DNS、TLS、镜像仓库、固定 Playwright/渲染器/代理 digest、密钥和接收单位信息；当前桌面未安装 Docker Compose、LibreOffice 或 Poppler，需在具备这些工具的环境补跑 Compose smoke 和逐页视觉 QA，不能把静态检查当作实际通过。
+## 本地运行
 
-收到真实输入后，在仓库根目录运行 `pnpm project:resume`。命令会先验证自动化产物和外部 evidence 的 hash；未齐全时继续返回 `WAITING_EXTERNAL_INPUT`，不会重做或覆盖正式数据。口令、token、签章和签署件只放 Git 外的私有根目录。
+复制 `.env.example` 为 `.env.local`，至少设置随机的 `SESSION_SECRET`（生产环境不得使用示例值）。它只用于加密 AI Provider API Key，不是登录或授权凭据。数据库、私有证据和公开导出目录由 `DATABASE_URL`、`PRIVATE_EVIDENCE_ROOT` 和 `PUBLIC_EXPORT_ROOT` 指定；这些目录不要提交到 Git，也不要通过静态文件服务暴露。
+
+扫描只面向公开、且使用者有权检查的 HTTP/HTTPS 网站。默认只爬取同源页面并尊重 robots.txt；可在新建扫描时设置页面上限（1–15）。本地扫描、人工处理、AI 处理、报告导出和发布均可直接从应用界面完成。
+
+## 可选 AI 输入
+
+需要 AI 处理 incomplete 项目时，在 `/settings/ai` 添加 OpenAI-compatible Provider，填写 Base URL、模型和 API Key。Key 由服务端使用 `SESSION_SECRET` 加密保存，不要写入 Git、日志或公开导出。Provider 地址必须符合应用的 URL 规则：仅 HTTP/HTTPS、不得包含凭据；非 localhost 地址必须使用 HTTPS，调用不会自动跟随重定向。
+
+## 生产或共享网络部署
+
+当前应用没有网络级访问控制。若不是仅供可信本机使用，应由部署者在应用外提供可信内网或反向代理访问控制，并配置 TLS、真实域名、与外部 HTTPS 访问源完全一致的生产 `APP_BASE_URL`、随机 `SESSION_SECRET` 和独立的数据/证据目录。生产扫描 Worker 还必须配置 `EGRESS_PROXY_URL`；代理、容器隔离和实际部署环境属于部署者的外部输入。没有这些条件时，不要把本地服务直接暴露到公网。
+
+凭据、Cookie、真实站点原文、人工备注及其他敏感材料只放在 Git 之外的受控目录。若需要重新检查已发布网站，请创建新的扫描任务；已发布任务保持只读。

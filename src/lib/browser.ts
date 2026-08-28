@@ -6,9 +6,11 @@ import { config } from "./config";
  * Chromium must have an explicit proxy; process-level proxy variables alone
  * are not sufficient to prove Chromium cannot bypass the egress policy.
  */
-export function chromiumLaunchOptions(): LaunchOptions {
+export function chromiumLaunchOptions({
+  requireProxy = true,
+}: { requireProxy?: boolean } = {}): LaunchOptions {
   const proxyServer = config.EGRESS_PROXY_URL;
-  if (config.APP_ENV === "production" && !proxyServer)
+  if (config.APP_ENV === "production" && requireProxy && !proxyServer)
     throw new Error("EGRESS_PROXY_URL is required in production");
   return {
     headless: true,

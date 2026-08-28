@@ -1,13 +1,19 @@
 import { NextResponse } from "next/server";
 import { migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
-import { RESOLUTION_VERDICTS, saveLocalManualVerdict } from "@/lib/incomplete-resolution";
+import {
+  clearLocalManualVerdict,
+  RESOLUTION_VERDICTS,
+  saveLocalManualVerdict,
+} from "@/lib/incomplete-resolution";
+import { assertSameOrigin } from "@/lib/request-security";
 
 export async function POST(
   request: Request,
   context: { params: Promise<{ runId: string; nodeId: string }> },
 ) {
   try {
+    assertSameOrigin(request);
     migrate();
     const { runId, nodeId } = await context.params;
     const body = await request.json().catch(() => null);
@@ -22,6 +28,22 @@ export async function POST(
     return NextResponse.json(
       saveLocalManualVerdict({ runId, resultNodeId: nodeId, verdict: body.verdict, note: body.note }),
     );
+  } catch (error) {
+    return NextResponse.json(errorEnvelope(error), {
+      status: error instanceof AppError ? error.status : 500,
+    });
+  }
+}
+
+export async function DELETE(
+  request: Request,
+  context: { params: Promise<{ runId: string; nodeId: string }> },
+) {
+  try {
+    assertSameOrigin(request);
+    migrate();
+    const { runId, nodeId } = await context.params;
+    return NextResponse.json(clearLocalManualVerdict({ runId, resultNodeId: nodeId }));
   } catch (error) {
     return NextResponse.json(errorEnvelope(error), {
       status: error instanceof AppError ? error.status : 500,

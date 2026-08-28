@@ -49,9 +49,9 @@ a:hover {
 .topnav { display:flex; gap:18px; align-items:center; }
 .topnav a { color:#fff; font-size:.95rem; }
 .eyebrow { color:var(--accent); text-transform:uppercase; letter-spacing:.08em; font-size:.78rem; font-weight:800; }
-.tabbar { display:flex; gap:4px; margin:22px -20px -20px; border-top:1px solid #dbe4ef; overflow:auto; }
+.tabbar { display:flex; gap:4px; margin:22px -20px 0; border-top:1px solid #dbe4ef; overflow:auto; }
 .tabbar a, .tabbar button { padding:13px 16px; white-space:nowrap; border-bottom:3px solid transparent; border-radius:0; margin:0; }
-.tabbar a.active, .tabbar button.active { border-color:var(--accent); font-weight:800; background:#f3f8fb; }
+.tabbar a.active, .tabbar button.active { border-color:var(--accent); font-weight:800; background:#f3f8fb; color:var(--ink); }
 .tab-count { background:#e5edf5; border-radius:999px; padding:2px 7px; font-size:.8rem; }
 .section-heading { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
 .run-list { display:grid; gap:8px; }

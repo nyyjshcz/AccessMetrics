@@ -2,9 +2,11 @@ import { NextResponse } from "next/server";
 import { getDb, migrate, transaction } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { renderRunReport } from "@/lib/report";
+import { assertSameOrigin } from "@/lib/request-security";
 
-export async function POST(_request: Request, context: { params: Promise<{ runId: string }> }) {
+export async function POST(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
+    assertSameOrigin(request);
     migrate();
     const { runId } = await context.params;
     const run = getDb().prepare("SELECT status,published FROM scan_runs WHERE id=?").get(runId) as

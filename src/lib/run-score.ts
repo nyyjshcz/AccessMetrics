@@ -13,6 +13,66 @@ function impactWeight(impact: ScoreOpportunity["impact"]): number {
   return impact ? IMPACT_ORDINAL_WEIGHTS[impact] : 0;
 }
 
+type OpportunityRow = {
+  node_id: string | null;
+  result_type: string;
+  impact: string | null;
+  rule_id: string;
+  node_count: number;
+  principles_json: string | null;
+  scoring_eligible: number;
+  effective_impact: string | null;
+};
+type RuleRow = Omit<OpportunityRow, "node_id" | "effective_impact"> & {
+  rule_result_id: string;
+};
+type NodeRow = {
+  node_id: string;
+  rule_result_id: string;
+  effective_impact: string | null;
+};
+
+function loadOpportunityRows(runId: string, pageId?: string): OpportunityRow[] {
+  const filter = pageId ? "rr.run_id=? AND rr.page_id=?" : "rr.run_id=?";
+  const params = pageId ? [runId, pageId] : [runId];
+  const db = getDb();
+  const rules = db
+    .prepare(
+      `SELECT rr.id AS rule_result_id,rr.result_type,rr.impact,rr.rule_id,rr.node_count,rr.principles_json,rr.scoring_eligible
+       FROM rule_results rr WHERE ${filter} ORDER BY rr.id`,
+    )
+    .all(...params) as RuleRow[];
+  const nodes = db
+    .prepare(
+      `SELECT n.id AS node_id,n.rule_result_id,n.effective_impact,n.ordinal
+       FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id
+       WHERE ${filter} ORDER BY n.rule_result_id,n.ordinal`,
+    )
+    .all(...params) as NodeRow[];
+  const nodesByRule = new Map<string, NodeRow[]>();
+  for (const node of nodes) {
+    const list = nodesByRule.get(node.rule_result_id);
+    if (list) list.push(node);
+    else nodesByRule.set(node.rule_result_id, [node]);
+  }
+  return rules.flatMap((rule): OpportunityRow[] => {
+    const ruleNodes = nodesByRule.get(rule.rule_result_id);
+    if (!ruleNodes?.length)
+      return [
+        {
+          ...rule,
+          node_id: null,
+          effective_impact: null,
+        },
+      ];
+    return ruleNodes.map((node) => ({
+      ...rule,
+      node_id: node.node_id,
+      effective_impact: node.effective_impact,
+    }));
+  });
+}
+
 const PRINCIPLES = new Set(["perceivable", "operable", "understandable", "robust"]);
 function frozenPrinciples(value: unknown): ScoreOpportunity["principles"] {
   if (typeof value !== "string") return [];
@@ -32,11 +92,7 @@ export function loadRunOpportunities(
   runId: string,
   options?: { aiOverlay?: AiOverlay },
 ): ScoreOpportunity[] {
-  const rows = getDb()
-    .prepare(
-      "SELECT n.id AS node_id,rr.result_type,rr.impact,rr.rule_id,rr.node_count,rr.principles_json,rr.scoring_eligible,n.effective_impact FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id WHERE rr.run_id=? ORDER BY rr.id,n.ordinal",
-    )
-    .all(runId) as any[];
+  const rows = loadOpportunityRows(runId);
   const opportunities: ScoreOpportunity[] = [];
   for (const row of rows) {
     // Pass nodes are intentionally not persisted (their raw rule result still
@@ -89,11 +145,7 @@ export function loadPageOpportunities(
   pageId: string,
   options?: { aiOverlay?: AiOverlay },
 ): ScoreOpportunity[] {
-  const rows = getDb()
-    .prepare(
-      "SELECT n.id AS node_id,rr.result_type,rr.impact,rr.rule_id,rr.node_count,rr.principles_json,rr.scoring_eligible,n.effective_impact FROM rule_results rr LEFT JOIN result_nodes n ON n.rule_result_id=rr.id WHERE rr.run_id=? AND rr.page_id=? ORDER BY rr.id,n.ordinal",
-    )
-    .all(runId, pageId) as any[];
+  const rows = loadOpportunityRows(runId, pageId);
   const opportunities: ScoreOpportunity[] = [];
   for (const row of rows) {
     if (row.result_type !== "pass" && !row.node_id) continue;

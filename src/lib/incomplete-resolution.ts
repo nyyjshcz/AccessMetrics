@@ -130,3 +130,26 @@ export function saveLocalManualVerdict(input: {
   );
   return { reviewId, updated: false, reviewedAt: timestamp };
 }
+
+/** Removes only the current local ad-hoc decision, so AI or raw data becomes effective again. */
+export function clearLocalManualVerdict(input: { runId: string; resultNodeId: string }) {
+  assertManualEditingAllowed(input.runId);
+  const db = getDb();
+  const node = db
+    .prepare(
+      `SELECT n.id
+       FROM result_nodes n
+       JOIN rule_results rr ON rr.id=n.rule_result_id
+       WHERE n.id=? AND rr.run_id=? AND rr.result_type='incomplete'`,
+    )
+    .get(input.resultNodeId, input.runId) as { id: string } | undefined;
+  if (!node) throw new AppError("INCOMPLETE_NODE_NOT_FOUND", "待判断节点不存在", 404);
+  const result = db
+    .prepare(
+      `UPDATE manual_reviews SET is_current=0
+       WHERE result_node_id=? AND sample_id IS NULL AND review_context='ad_hoc'
+         AND reviewer='local' AND is_current=1`,
+    )
+    .run(input.resultNodeId);
+  return { cleared: result.changes > 0 };
+}

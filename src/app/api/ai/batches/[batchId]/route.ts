@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getAiBatch, pauseAiBatch, resumeAiBatch, retryAiBatch } from "@/lib/ai-overlay";
 import { migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
+import { assertSameOrigin } from "@/lib/request-security";
 
 export const dynamic = "force-dynamic";
 
@@ -19,6 +20,7 @@ export async function GET(_request: Request, context: { params: Promise<{ batchI
 
 export async function POST(request: Request, context: { params: Promise<{ batchId: string }> }) {
   try {
+    assertSameOrigin(request);
     migrate();
     const { batchId } = await context.params;
     const body = await request.json().catch(() => null);

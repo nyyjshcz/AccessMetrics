@@ -16,6 +16,45 @@ describe("scans list route", () => {
   beforeAll(() => dbModule.migrate());
   afterAll(() => dbModule.closeDb());
 
+  it("allows absent or matching Origin and rejects cross-origin mutations", async () => {
+    const crossOrigin = await scansRoute.POST(
+      new Request("http://localhost/api/scans", {
+        method: "POST",
+        headers: { Origin: "https://attacker.example", "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    expect(crossOrigin.status).toBe(403);
+    expect((await crossOrigin.json()).error).toMatchObject({ code: "ORIGIN_MISMATCH" });
+
+    const malformedOrigin = await scansRoute.POST(
+      new Request("http://localhost/api/scans", {
+        method: "POST",
+        headers: { Origin: "not-an-origin", "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    expect(malformedOrigin.status).toBe(403);
+
+    const absentOrigin = await scansRoute.POST(
+      new Request("http://localhost/api/scans", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    expect(absentOrigin.status).toBe(422);
+
+    const matchingOrigin = await scansRoute.POST(
+      new Request("http://localhost:3000/api/scans", {
+        method: "POST",
+        headers: { Origin: "http://localhost:3000", "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    expect(matchingOrigin.status).toBe(422);
+  });
+
   it("includes queued, running, and failed jobs without runs in the active view", async () => {
     const queued = repositories.createScanJob("https://queued-list.example", {
       maxPages: 1,

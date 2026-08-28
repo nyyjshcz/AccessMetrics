@@ -259,11 +259,25 @@ describe("thin AI overlay", () => {
     const server = http.createServer((request, response) => {
       if (request.url === "/v1/chat/completions" && request.method === "POST") {
         response.setHeader("content-type", "application/json");
-        response.end(
-          JSON.stringify({
-            choices: [{ message: { content: '{"verdict":"problem","reason":"fixture"}' } }],
-          }),
-        );
+        const chunks: Buffer[] = [];
+        request.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        request.on("end", () => {
+          const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+            response_format?: { type?: string };
+            max_tokens?: number;
+          };
+          if (body.response_format?.type === "json_object") {
+            response.statusCode = 400;
+            response.end(JSON.stringify({ error: "json_object is unsupported" }));
+            return;
+          }
+          expect(body.max_tokens).toBeUndefined();
+          response.end(
+            JSON.stringify({
+              choices: [{ message: { content: '{"verdict":"problem","reason":"fixture"}' } }],
+            }),
+          );
+        });
         return;
       }
       response.statusCode = 404;
@@ -324,6 +338,52 @@ describe("thin AI overlay", () => {
       expect(await ai.processNextAiItem("scope-worker")).toBe(true);
       expect((dbModule.getDb().prepare("SELECT status FROM ai_review_items WHERE batch_id=?").get(legacyBatch.batch.id) as { status: string }).status).toBe("queued");
       expect((dbModule.getDb().prepare("SELECT status FROM ai_review_items WHERE batch_id=?").get(runWideBatch.batch.id) as { status: string }).status).toBe("completed");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("keeps one in-flight request per provider", async () => {
+    let requests = 0;
+    const server = http.createServer((request, response) => {
+      if (request.url === "/v1/chat/completions" && request.method === "POST") {
+        requests += 1;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const item = fixture(2, true);
+      const config = provider(`http://127.0.0.1:${port}/v1`);
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      const rows = dbModule
+        .getDb()
+        .prepare("SELECT id FROM ai_review_items WHERE batch_id=? ORDER BY id")
+        .all(batch.batch.id) as Array<{ id: string }>;
+      const leaseUntil = new Date(Date.now() + 60_000).toISOString();
+      dbModule
+        .getDb()
+        .prepare("UPDATE ai_review_items SET status='running',lease_owner='other-worker',lease_until=?,attempt_count=1 WHERE id=?")
+        .run(leaseUntil, rows[0].id);
+      expect(await ai.processNextAiItem("single-provider-worker")).toBe(false);
+      expect(requests).toBe(0);
+
+      dbModule
+        .getDb()
+        .prepare("UPDATE ai_review_items SET lease_until=? WHERE id=?")
+        .run(new Date(Date.now() - 1_000).toISOString(), rows[0].id);
+      expect(await ai.processNextAiItem("single-provider-worker")).toBe(true);
+      expect(requests).toBe(1);
+      dbModule
+        .getDb()
+        .prepare("UPDATE ai_review_batches SET status='paused' WHERE id=?")
+        .run(batch.batch.id);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -417,6 +477,51 @@ describe("thin AI overlay", () => {
         resolution.loadLocalManualVerdicts(item.run.id),
       ).get(nodeId),
     ).toBe("not_problem");
+  });
+
+  it("clears a local verdict and restores the AI or raw state", async () => {
+    const item = fixture(1, true);
+    const nodeId = (dbModule
+      .getDb()
+      .prepare("SELECT n.id FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=?")
+      .get(item.run.id) as { id: string }).id;
+    const context = { params: Promise.resolve({ runId: item.run.id, nodeId }) };
+
+    const saved = await incompleteReviewRoute.POST(
+      new Request("http://localhost", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ verdict: "not_problem", note: "temporary" }),
+      }),
+      context,
+    );
+    expect(saved.status).toBe(200);
+    expect(
+      resolution.applyHumanPrecedence(
+        new Map([[nodeId, "problem" as const]]),
+        resolution.loadLocalManualVerdicts(item.run.id),
+      ).get(nodeId),
+    ).toBe("not_problem");
+
+    const cleared = await incompleteReviewRoute.DELETE(
+      new Request("http://localhost", { method: "DELETE" }),
+      context,
+    );
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).toMatchObject({ cleared: true });
+    expect(resolution.loadLocalManualVerdicts(item.run.id).has(nodeId)).toBe(false);
+    expect(
+      resolution.applyHumanPrecedence(
+        new Map([[nodeId, "problem" as const]]),
+        resolution.loadLocalManualVerdicts(item.run.id),
+      ).get(nodeId),
+    ).toBe("problem");
+    expect(
+      dbModule
+        .getDb()
+        .prepare("SELECT is_current FROM manual_reviews WHERE result_node_id=?")
+        .get(nodeId),
+    ).toMatchObject({ is_current: 0 });
   });
 
   it("locks manual edits only while an AI batch is queued or running", () => {
@@ -515,6 +620,12 @@ describe("thin AI overlay", () => {
 
     expect(response.status).toBe(409);
     expect((await response.json()).error).toMatchObject({ code: "RUN_PUBLISHED_READ_ONLY" });
+    const clearResponse = await incompleteReviewRoute.DELETE(
+      new Request("http://localhost", { method: "DELETE" }),
+      { params: Promise.resolve({ runId: item.run.id, nodeId }) },
+    );
+    expect(clearResponse.status).toBe(409);
+    expect((await clearResponse.json()).error).toMatchObject({ code: "RUN_PUBLISHED_READ_ONLY" });
     expect(
       (dbModule.getDb().prepare("SELECT COUNT(*) AS count FROM manual_reviews WHERE result_node_id=?").get(nodeId) as { count: number }).count,
     ).toBe(0);

@@ -16,7 +16,7 @@ pnpm db:migrate
 pnpm dev
 ```
 
-需要执行扫描时，另开终端运行 `pnpm worker`。需要 AI 解析时，再运行 `pnpm ai:worker`。也可以直接运行：
+`pnpm dev` 会一起启动 Web、扫描 Worker 和 AI Worker，点击扫描或 AI 处理后会自动消费队列；按 Ctrl+C 会一并停止它们。需要单独调试某个进程时，仍可另开终端运行 `pnpm worker` 或 `pnpm ai:worker`。也可以直接运行：
 
 ```text
 pnpm scan:site -- https://example.org --max-pages 10

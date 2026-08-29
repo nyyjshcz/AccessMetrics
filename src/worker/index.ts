@@ -83,7 +83,17 @@ export async function processJob(job: any) {
               config.SCAN_TIMEOUT_MS,
             );
             if (leaseLost) throw new AppError("PAGE_LEASE_LOST", "页面租约已失效", 409);
-            savePageResult(run.id, page.page_id, result, workerId, attemptsUsed);
+            const stored = savePageResult(run.id, page.page_id, result, workerId, attemptsUsed);
+            if (stored.status === "deduplicated")
+              logger.info(
+                {
+                  jobId: job.id,
+                  runId: run.id,
+                  url: page.canonical_url,
+                  finalUrl: stored.finalUrl,
+                },
+                "redirect duplicate merged",
+              );
             completed = true;
             break;
           } catch (error) {

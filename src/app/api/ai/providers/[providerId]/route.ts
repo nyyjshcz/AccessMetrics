@@ -4,7 +4,15 @@ import { migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { assertSameOrigin } from "@/lib/request-security";
 
-const allowed = ["label", "baseUrl", "model", "apiKey", "enabled"];
+const allowed = [
+  "label",
+  "baseUrl",
+  "model",
+  "apiKey",
+  "maxConcurrentRequests",
+  "rateLimitRpm",
+  "enabled",
+];
 
 export async function PATCH(
   request: Request,

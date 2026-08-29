@@ -7,6 +7,8 @@ type Provider = {
   label: string;
   baseUrl: string;
   model: string;
+  maxConcurrentRequests: number;
+  rateLimitRpm: number | null;
   keyFingerprint: string;
   enabled: boolean;
 };
@@ -16,6 +18,8 @@ type Draft = {
   baseUrl: string;
   model: string;
   apiKey: string;
+  maxConcurrentRequests: number;
+  rateLimitRpm: number | null;
   enabled: boolean;
 };
 const emptyDraft = (): Draft => ({
@@ -23,6 +27,8 @@ const emptyDraft = (): Draft => ({
   baseUrl: "https://api.openai.com/v1",
   model: "",
   apiKey: "",
+  maxConcurrentRequests: 1,
+  rateLimitRpm: null,
   enabled: true,
 });
 
@@ -68,6 +74,8 @@ export default function AiSettingsPage() {
             baseUrl: provider.baseUrl,
             model: provider.model,
             apiKey: "",
+            maxConcurrentRequests: provider.maxConcurrentRequests ?? 1,
+            rateLimitRpm: provider.rateLimitRpm ?? null,
             enabled: provider.enabled,
           }
         : emptyDraft(),
@@ -107,7 +115,10 @@ export default function AiSettingsPage() {
         throw new Error(messageFrom(data, action === "models" ? "读取模型失败" : "连接测试失败"));
       if (action === "models") {
         setModels(data.models ?? []);
-        setNotice({ kind: "success", text: `已读取 ${data.models?.length ?? 0} 个模型。` });
+        setNotice({
+          kind: "success",
+          text: `已从“${saved.label}”读取 ${data.models?.length ?? 0} 个可选模型。`,
+        });
       } else setNotice({ kind: "success", text: "连接测试成功。" });
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : "操作失败" });
@@ -168,6 +179,10 @@ export default function AiSettingsPage() {
               </p>
               <p>
                 <span className="pill">{provider.enabled ? "已启用" : "已停用"}</span>
+                <span className="pill">最大并发 {provider.maxConcurrentRequests ?? 1}</span>
+                <span className="pill">
+                  {provider.rateLimitRpm === 20 ? "20 请求/分钟" : "不启用 RPM 限速"}
+                </span>
                 {provider.keyFingerprint && (
                   <span className="muted provider-key">
                     Key 已保存（指纹 {provider.keyFingerprint.slice(0, 10)}…）
@@ -189,6 +204,8 @@ export default function AiSettingsPage() {
                     baseUrl: provider.baseUrl,
                     model: provider.model,
                     apiKey: "",
+                    maxConcurrentRequests: provider.maxConcurrentRequests ?? 1,
+                    rateLimitRpm: provider.rateLimitRpm ?? null,
                     enabled: !provider.enabled,
                   };
                   save(next).catch((error) => setNotice({ kind: "error", text: error.message }));
@@ -254,6 +271,39 @@ export default function AiSettingsPage() {
               <option key={model} value={model} />
             ))}
           </datalist>
+          <label htmlFor="provider-max-concurrency">最大同时请求数</label>
+          <input
+            id="provider-max-concurrency"
+            required
+            type="number"
+            min={1}
+            max={16}
+            step={1}
+            value={draft.maxConcurrentRequests}
+            onChange={(event) =>
+              setDraft({ ...draft, maxConcurrentRequests: Number(event.target.value) })
+            }
+          />
+          <small className="muted">
+            同一 provider 的所有扫描共用此上限；本地 LM Studio 通常设为 1，OpenRouter 免费模型建议先设为 1。
+          </small>
+          <label htmlFor="provider-rate-limit">请求速率策略</label>
+          <select
+            id="provider-rate-limit"
+            value={draft.rateLimitRpm ?? ""}
+            onChange={(event) =>
+              setDraft({
+                ...draft,
+                rateLimitRpm: event.target.value === "" ? null : Number(event.target.value),
+              })
+            }
+          >
+            <option value="">不启用 20 请求/分钟（按最大并发持续处理）</option>
+            <option value="20">启用 20 请求/分钟策略</option>
+          </select>
+          <small className="muted">
+            只影响新建的 AI 批次；最大并发仍独立生效。OpenRouter 免费模型可用此策略避免超过官方速率。
+          </small>
           <label htmlFor="provider-api-key">API Key</label>
           <input
             id="provider-api-key"

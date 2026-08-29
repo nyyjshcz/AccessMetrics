@@ -67,6 +67,8 @@ export function migrate() {
     migration026,
     migration027,
     migration028,
+    migration029,
+    migration030,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -940,6 +942,7 @@ function migration027(db: Database.Database) {
       model TEXT NOT NULL,
       encrypted_api_key TEXT,
       key_fingerprint TEXT NOT NULL DEFAULT '',
+      max_concurrent_requests INTEGER NOT NULL DEFAULT 1,
       enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -1010,6 +1013,38 @@ function migration028(db: Database.Database) {
   // treated as catalog-complete until recreated.
   addColumn("study_freezes", "catalog_version", "TEXT");
   addColumn("study_freezes", "rule_catalog_hash", "TEXT");
+}
+
+function migration029(db: Database.Database) {
+  const hasColumn = (db.prepare("PRAGMA table_info(ai_provider_configs)").all() as any[]).some(
+    (row) => row.name === "max_concurrent_requests",
+  );
+  if (!hasColumn)
+    db.exec(
+      "ALTER TABLE ai_provider_configs ADD COLUMN max_concurrent_requests INTEGER NOT NULL DEFAULT 1",
+    );
+  db.prepare(
+    "UPDATE ai_provider_configs SET max_concurrent_requests=1 WHERE max_concurrent_requests IS NULL OR max_concurrent_requests<1",
+  ).run();
+}
+
+function migration030(db: Database.Database) {
+  const hasColumn = (db.prepare("PRAGMA table_info(ai_provider_configs)").all() as any[]).some(
+    (row) => row.name === "rate_limit_rpm",
+  );
+  if (!hasColumn)
+    db.exec(
+      "ALTER TABLE ai_provider_configs ADD COLUMN rate_limit_rpm INTEGER NOT NULL DEFAULT 0",
+    );
+  // Existing OpenRouter free providers already used the built-in 20 RPM pace;
+  // preserve that behavior while making the strategy optional for future edits.
+  db.exec(`
+    UPDATE ai_provider_configs
+    SET rate_limit_rpm=20
+    WHERE rate_limit_rpm=0
+      AND lower(base_url) LIKE 'https://openrouter.ai%'
+      AND (lower(trim(model)) LIKE '%:free' OR lower(trim(model))='openrouter/free')
+  `);
 }
 
 export type Db = Database.Database;

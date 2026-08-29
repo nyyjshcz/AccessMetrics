@@ -1,9 +1,24 @@
 import { test, expect } from "@playwright/test";
+import Database from "better-sqlite3";
 import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
 const baseUrl = "http://127.0.0.1:3100";
+
+function setE2eJobStatus(jobId: string, status: string) {
+  const db = new Database(path.join(process.cwd(), "data/e2e-accesscheck-local.db"));
+  try {
+    db.pragma("busy_timeout = 5000");
+    db.prepare("UPDATE scan_jobs SET status=?,finished_at=? WHERE id=?").run(
+      status,
+      new Date().toISOString(),
+      jobId,
+    );
+  } finally {
+    db.close();
+  }
+}
 
 function runWorkerOnce() {
   return new Promise<void>((resolve, reject) => {
@@ -70,6 +85,45 @@ test("首页导航、新建扫描页和匿名页面可访问", async ({ page, re
   expect(anonymousScans.ok()).toBeTruthy();
 });
 
+test("活动任务只为已结束任务显示删除按钮并可删除", async ({ page, request }) => {
+  const port = 40000 + (Date.now() % 10000);
+  const terminalUrl = `http://127.0.0.1:${port}/`;
+  const queuedUrl = `http://127.0.0.1:${port + 1}/`;
+  const create = async (url: string) => {
+    const response = await request.post("/api/scans", {
+      data: { url, maxPages: 1, sameOriginOnly: true, respectRobots: true },
+    });
+    expect(response.ok()).toBeTruthy();
+    return (await response.json()) as { jobId: string };
+  };
+
+  const terminal = await create(terminalUrl);
+  const queued = await create(queuedUrl);
+  setE2eJobStatus(terminal.jobId, "failed");
+
+  try {
+    await page.goto("/?view=active");
+    const terminalRow = page.locator(".run-row", { hasText: new URL(terminalUrl).origin });
+    const queuedRow = page.locator(".run-row", { hasText: new URL(queuedUrl).origin });
+    await expect(terminalRow.getByRole("button", { name: "删除" })).toBeVisible();
+    await expect(queuedRow.getByRole("button", { name: "删除" })).toHaveCount(0);
+
+    page.once("dialog", (dialog) => dialog.accept());
+    const deleted = page.waitForResponse(
+      (response) =>
+        response.url().endsWith(`/api/scans/${terminal.jobId}`) &&
+        response.request().method() === "DELETE",
+    );
+    await terminalRow.getByRole("button", { name: "删除" }).click();
+    expect((await deleted).ok()).toBeTruthy();
+    await expect(terminalRow).toHaveCount(0);
+  } finally {
+    setE2eJobStatus(queued.jobId, "cancelled");
+    const cleanup = await request.delete(`/api/scans/${queued.jobId}`);
+    expect(cleanup.ok()).toBeTruthy();
+  }
+});
+
 test("匿名本地扫描可查看四标签、发布并公开读取报告", async ({ page, request }) => {
   test.setTimeout(120000);
   const { fixture, url } = await startFixture();
@@ -105,7 +159,7 @@ test("匿名本地扫描可查看四标签、发布并公开读取报告", async
     const tabs = page.getByRole("tab");
     await expect(page.getByRole("tablist")).toBeVisible();
     await expect(tabs).toHaveCount(4);
-    for (const tabName of ["概览", "自动问题", "待判断", "报告"]) {
+    for (const tabName of ["概览", "自动问题", "incomplete 扫描结果", "报告"]) {
       const tab = tabs.filter({ hasText: new RegExp(`^${tabName}(?: \\(\\d+\\))?$`) });
       await expect(tab).toBeVisible();
       await tab.click();

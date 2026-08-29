@@ -4,7 +4,16 @@ import { migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { assertSameOrigin } from "@/lib/request-security";
 
-const allowed = ["id", "label", "baseUrl", "model", "apiKey", "enabled"];
+const allowed = [
+  "id",
+  "label",
+  "baseUrl",
+  "model",
+  "apiKey",
+  "maxConcurrentRequests",
+  "rateLimitRpm",
+  "enabled",
+];
 
 export const dynamic = "force-dynamic";
 

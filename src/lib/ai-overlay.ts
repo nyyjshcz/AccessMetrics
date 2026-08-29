@@ -31,6 +31,8 @@ export const AI_REQUEST_PARAMS = {
   max_tokens: 800,
   response_format: { type: "json_object" },
 } as const;
+export const MAX_AI_PROVIDER_CONCURRENCY = 16;
+const DEFAULT_AI_PROVIDER_CONCURRENCY = 1;
 export const AI_VERDICTS = ["problem", "not_problem", "uncertain"] as const;
 export type AiVerdict = (typeof AI_VERDICTS)[number];
 export type AiOverlay = ReadonlyMap<string, AiVerdict>;
@@ -41,6 +43,14 @@ const MAX_REASON_LENGTH = 2000;
 // worker cannot claim the same item while the first request is still in flight.
 const LEASE_MS = 180_000;
 const MAX_ATTEMPTS = 3;
+const RATE_LIMIT_FALLBACK_DELAY_MS = 60_000;
+// OpenRouter documents a 20 RPM limit for free variants. Keep a three-second
+// gap between starts; the user-configured concurrent-request cap still applies
+// independently to requests that take longer than that interval.
+const OPENROUTER_FREE_REQUESTS_PER_MINUTE = 20;
+const OPENROUTER_FREE_REQUEST_INTERVAL_MS =
+  60_000 / OPENROUTER_FREE_REQUESTS_PER_MINUTE;
+const nextOpenRouterFreeRequestAt = new Map<string, number>();
 
 function now() {
   return new Date().toISOString();
@@ -108,11 +118,56 @@ function providerEndpoint(baseUrl: string, path: string) {
   return `${baseUrl.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
 }
 
+function isOpenRouterFreeProvider(input: { baseUrl?: unknown; model?: unknown }) {
+  if (typeof input.baseUrl !== "string" || typeof input.model !== "string") return false;
+  try {
+    if (new URL(input.baseUrl).hostname.toLowerCase() !== "openrouter.ai") return false;
+  } catch {
+    return false;
+  }
+  const model = input.model.trim().toLowerCase();
+  return model.endsWith(":free") || model === "openrouter/free";
+}
+
+function normalizeStoredRateLimit(value: unknown) {
+  return Number(value) === OPENROUTER_FREE_REQUESTS_PER_MINUTE
+    ? OPENROUTER_FREE_REQUESTS_PER_MINUTE
+    : null;
+}
+
+function parseRateLimitRpm(value: unknown, fallback: number | null) {
+  if (value === undefined) return fallback;
+  if (value === null || value === 0) return null;
+  if (value !== OPENROUTER_FREE_REQUESTS_PER_MINUTE)
+    throw new AppError(
+      "AI_PROVIDER_RATE_LIMIT_INVALID",
+      `请求速率策略只能选择 ${OPENROUTER_FREE_REQUESTS_PER_MINUTE} 请求/分钟或关闭`,
+      422,
+    );
+  return OPENROUTER_FREE_REQUESTS_PER_MINUTE;
+}
+
+function configuredRateLimitRpm(input: {
+  baseUrl?: unknown;
+  model?: unknown;
+  rateLimitRpm?: unknown;
+}) {
+  // Snapshots created before this setting existed have no field; keep their
+  // previous OpenRouter-free behavior when they are resumed.
+  if (input.rateLimitRpm === undefined)
+    return isOpenRouterFreeProvider(input)
+      ? OPENROUTER_FREE_REQUESTS_PER_MINUTE
+      : null;
+  return normalizeStoredRateLimit(input.rateLimitRpm);
+}
+
 export type AiProviderPublic = {
   id: string;
   label: string;
   baseUrl: string;
   model: string;
+  maxConcurrentRequests: number;
+  rateLimitRpm: number | null;
   keyFingerprint: string;
   enabled: boolean;
   createdAt: string;
@@ -126,6 +181,8 @@ type AiProviderRow = {
   model: string;
   encrypted_api_key: string | null;
   key_fingerprint: string;
+  max_concurrent_requests: number;
+  rate_limit_rpm: number;
   enabled: number;
   created_at: string;
   updated_at: string;
@@ -137,11 +194,36 @@ function publicProvider(row: AiProviderRow): AiProviderPublic {
     label: row.label,
     baseUrl: row.base_url,
     model: row.model,
+    maxConcurrentRequests: normalizeStoredConcurrency(row.max_concurrent_requests),
+    rateLimitRpm: normalizeStoredRateLimit(row.rate_limit_rpm),
     keyFingerprint: row.key_fingerprint,
     enabled: row.enabled === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function normalizeStoredConcurrency(value: unknown) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= MAX_AI_PROVIDER_CONCURRENCY
+    ? parsed
+    : DEFAULT_AI_PROVIDER_CONCURRENCY;
+}
+
+function parseMaxConcurrentRequests(value: unknown, fallback: number) {
+  if (value === undefined) return fallback;
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > MAX_AI_PROVIDER_CONCURRENCY
+  )
+    throw new AppError(
+      "AI_PROVIDER_CONCURRENCY_INVALID",
+      `最大同时请求数必须是 1 到 ${MAX_AI_PROVIDER_CONCURRENCY} 的整数`,
+      422,
+    );
+  return value;
 }
 
 function getProviderRow(providerId: string, requireEnabled = false) {
@@ -168,6 +250,8 @@ export function saveAiProvider(input: {
   baseUrl: string;
   model: string;
   apiKey?: string | null;
+  maxConcurrentRequests?: number;
+  rateLimitRpm?: number | null;
   enabled?: boolean;
 }) {
   const label = String(input.label ?? "")
@@ -180,6 +264,14 @@ export function saveAiProvider(input: {
     throw new AppError("AI_PROVIDER_INPUT_INVALID", "提供商名称和模型名称必填", 422);
   const baseUrl = validateAiProviderUrl(String(input.baseUrl ?? ""));
   const existing = input.id ? (getProviderRow(input.id) as AiProviderRow) : null;
+  const maxConcurrentRequests = parseMaxConcurrentRequests(
+    input.maxConcurrentRequests,
+    normalizeStoredConcurrency(existing?.max_concurrent_requests),
+  );
+  const rateLimitRpm = parseRateLimitRpm(
+    input.rateLimitRpm,
+    normalizeStoredRateLimit(existing?.rate_limit_rpm),
+  );
   // An omitted key, or a blank key while editing, means “keep the existing
   // secret”. New providers may still be saved without a key.
   const suppliedKey = input.apiKey === undefined || input.apiKey === null ? null : String(input.apiKey).trim();
@@ -193,20 +285,22 @@ export function saveAiProvider(input: {
   transaction((db) => {
     if (existing) {
       db.prepare(
-        "UPDATE ai_provider_configs SET label=?,base_url=?,model=?,encrypted_api_key=?,key_fingerprint=?,enabled=?,updated_at=? WHERE id=?",
+        "UPDATE ai_provider_configs SET label=?,base_url=?,model=?,encrypted_api_key=?,key_fingerprint=?,max_concurrent_requests=?,rate_limit_rpm=?,enabled=?,updated_at=? WHERE id=?",
       ).run(
         label,
         baseUrl,
         model,
         encrypted,
         keyFingerprint,
+        maxConcurrentRequests,
+        rateLimitRpm ?? 0,
         input.enabled === false ? 0 : 1,
         timestamp,
         providerId,
       );
     } else {
       db.prepare(
-        "INSERT INTO ai_provider_configs(id,label,base_url,model,encrypted_api_key,key_fingerprint,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO ai_provider_configs(id,label,base_url,model,encrypted_api_key,key_fingerprint,max_concurrent_requests,rate_limit_rpm,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
       ).run(
         providerId,
         label,
@@ -214,6 +308,8 @@ export function saveAiProvider(input: {
         model,
         encrypted,
         keyFingerprint,
+        maxConcurrentRequests,
+        rateLimitRpm ?? 0,
         input.enabled === false ? 0 : 1,
         timestamp,
         timestamp,
@@ -267,6 +363,7 @@ type ProviderSnapshot = {
   model: string;
   requestParams: typeof AI_REQUEST_PARAMS;
   keyFingerprint: string;
+  rateLimitRpm?: number | null;
 };
 
 function providerSnapshot(provider: AiProviderRow): ProviderSnapshot {
@@ -276,7 +373,25 @@ function providerSnapshot(provider: AiProviderRow): ProviderSnapshot {
     model: provider.model,
     requestParams: AI_REQUEST_PARAMS,
     keyFingerprint: provider.key_fingerprint,
+    rateLimitRpm: normalizeStoredRateLimit(provider.rate_limit_rpm),
   };
+}
+
+function legacyProviderSnapshot(provider: AiProviderRow) {
+  return {
+    label: provider.label,
+    baseUrl: provider.base_url,
+    model: provider.model,
+    requestParams: AI_REQUEST_PARAMS,
+    keyFingerprint: provider.key_fingerprint,
+  };
+}
+
+function providerSnapshotHashMatches(provider: AiProviderRow, snapshotHash: string) {
+  return (
+    sha256(canonicalize(providerSnapshot(provider))) === snapshotHash ||
+    sha256(canonicalize(legacyProviderSnapshot(provider))) === snapshotHash
+  );
 }
 
 function parseEvidence(value: string | null | undefined) {
@@ -344,6 +459,10 @@ export type AiBatchSummary = {
   queued: number;
   running: number;
   failed: number;
+  delayed: number;
+  nextRetryAt: string | null;
+  waitingError: string | null;
+  providerRateLimitRpm: number | null;
   problem: number;
   notProblem: number;
   uncertain: number;
@@ -352,6 +471,18 @@ export type AiBatchSummary = {
 };
 
 function batchStats(batchId: string): AiBatchSummary {
+  const timestamp = now();
+  const batch = getDb()
+    .prepare("SELECT provider_snapshot_json FROM ai_review_batches WHERE id=?")
+    .get(batchId) as { provider_snapshot_json?: string | null } | undefined;
+  let providerRateLimitRpm: number | null = null;
+  try {
+    const snapshot = JSON.parse(batch?.provider_snapshot_json ?? "{}") as ProviderSnapshot;
+    providerRateLimitRpm = configuredRateLimitRpm(snapshot);
+  } catch {
+    // A malformed legacy snapshot cannot be claimed, but should not prevent the
+    // status endpoint from returning the remaining batch statistics.
+  }
   const row = getDb()
     .prepare(
       `SELECT COUNT(*) total,
@@ -359,12 +490,15 @@ function batchStats(batchId: string): AiBatchSummary {
           SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) queued,
           SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) running,
           SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed,
+          SUM(CASE WHEN status='queued' AND lease_until IS NOT NULL AND lease_until>? THEN 1 ELSE 0 END) delayed,
+          MIN(CASE WHEN status='queued' AND lease_until IS NOT NULL AND lease_until>? THEN lease_until END) nextRetryAt,
+          MAX(CASE WHEN status='queued' AND lease_until IS NOT NULL AND lease_until>? THEN last_error END) waitingError,
           SUM(CASE WHEN verdict='problem' THEN 1 ELSE 0 END) problem,
           SUM(CASE WHEN verdict='not_problem' THEN 1 ELSE 0 END) notProblem,
           SUM(CASE WHEN verdict='uncertain' THEN 1 ELSE 0 END) uncertain
        FROM ai_review_items WHERE batch_id=?`,
     )
-    .get(batchId) as any;
+    .get(timestamp, timestamp, timestamp, batchId) as any;
   const total = Number(row.total ?? 0);
   const processed =
     Number(row.problem ?? 0) + Number(row.notProblem ?? 0) + Number(row.uncertain ?? 0);
@@ -375,6 +509,10 @@ function batchStats(batchId: string): AiBatchSummary {
     queued: Number(row.queued ?? 0),
     running: Number(row.running ?? 0),
     failed: Number(row.failed ?? 0),
+    delayed: Number(row.delayed ?? 0),
+    nextRetryAt: typeof row.nextRetryAt === "string" ? row.nextRetryAt : null,
+    waitingError: typeof row.waitingError === "string" ? row.waitingError : null,
+    providerRateLimitRpm,
     problem: Number(row.problem ?? 0),
     notProblem: Number(row.notProblem ?? 0),
     uncertain: Number(row.uncertain ?? 0),
@@ -426,16 +564,23 @@ function assertNoOtherActiveBatch(db: ReturnType<typeof getDb>, runId: string, e
 }
 
 function finishWhenNoQueuedItems(db: ReturnType<typeof getDb>, batchId: string, timestamp: string) {
-  const pending = db
-    .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND status IN ('queued','running')")
-    .get(batchId) as { count: number };
-  if (Number(pending.count) === 0)
-    db.prepare("UPDATE ai_review_batches SET status='completed',updated_at=?,completed_at=? WHERE id=?").run(
+  const state = db
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN status IN ('queued','running') THEN 1 ELSE 0 END) pending,
+         SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed
+       FROM ai_review_items WHERE batch_id=?`,
+    )
+    .get(batchId) as { pending: number | null; failed: number | null };
+  const pending = Number(state.pending ?? 0);
+  if (pending === 0)
+    db.prepare("UPDATE ai_review_batches SET status=?,updated_at=?,completed_at=? WHERE id=?").run(
+      Number(state.failed ?? 0) > 0 ? "failed" : "completed",
       timestamp,
       timestamp,
       batchId,
     );
-  return Number(pending.count);
+  return pending;
 }
 
 export function createAiBatch(input: { runId: string; providerConfigId: string }) {
@@ -584,6 +729,51 @@ function normalizeResponseContent(content: unknown) {
   return "";
 }
 
+function retryAfterMs(value: string | null) {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.max(0, timestamp - Date.now()) : null;
+}
+
+function isProviderRateLimit(error: unknown) {
+  return error instanceof AppError && error.code === "AI_PROVIDER_RATE_LIMITED";
+}
+
+function isTransientProviderError(error: unknown) {
+  if (!(error instanceof AppError)) return true;
+  if (isProviderRateLimit(error)) return true;
+  if (["AI_RESPONSE_EMPTY", "AI_RESPONSE_INVALID", "AI_VERDICT_INVALID"].includes(error.code))
+    return true;
+  if (error.code !== "AI_PROVIDER_REQUEST_FAILED") return false;
+  const httpStatus =
+    error.details &&
+    typeof error.details === "object" &&
+    typeof (error.details as { httpStatus?: unknown }).httpStatus === "number"
+      ? (error.details as { httpStatus: number }).httpStatus
+      : 0;
+  return httpStatus === 408 || httpStatus === 425 || httpStatus >= 500;
+}
+
+function transientRetryAt(error: unknown) {
+  // Only provider rate limits are backpressure. All other transient failures
+  // are requeued immediately so a network hiccup or malformed response does
+  // not make the queue wait for a minute (or longer).
+  if (!isProviderRateLimit(error)) return null;
+  const requestedDelay =
+    error instanceof AppError &&
+    error.details &&
+    typeof error.details === "object" &&
+    typeof (error.details as { retryAfterMs?: unknown }).retryAfterMs === "number"
+      ? (error.details as { retryAfterMs: number }).retryAfterMs
+      : null;
+  // For a 429 without an explicit provider wait, retry in one minute. A
+  // supplied Retry-After remains authoritative.
+  const delay = requestedDelay === null ? RATE_LIMIT_FALLBACK_DELAY_MS : Math.max(1_000, requestedDelay);
+  return new Date(Date.now() + delay).toISOString();
+}
+
 function parseVerdict(content: string): {
   verdict: AiVerdict;
   reason: string;
@@ -690,11 +880,16 @@ async function callProvider(
     redirect: "error",
     signal: AbortSignal.timeout(120_000),
   });
+  if (response.status === 429)
+    throw new AppError("AI_PROVIDER_RATE_LIMITED", "模型服务限流，等待后自动重试", 502, {
+      retryAfterMs: retryAfterMs(response.headers.get("retry-after")),
+    });
   if (!response.ok)
     throw new AppError(
       "AI_PROVIDER_REQUEST_FAILED",
       `模型请求失败（HTTP ${response.status}）`,
       502,
+      { httpStatus: response.status, retryAfterMs: retryAfterMs(response.headers.get("retry-after")) },
     );
   const body = (await response.json()) as any;
   const content = normalizeResponseContent(body?.choices?.[0]?.message?.content);
@@ -702,36 +897,197 @@ async function callProvider(
   return parseVerdict(content);
 }
 
+function recoverInterruptedAiBatches() {
+  const db = getDb();
+  const candidates = db
+    .prepare(
+      `SELECT b.*
+       FROM ai_review_batches b
+       WHERE b.run_id IS NOT NULL AND b.page_id IS NULL AND b.study_freeze_id IS NULL
+         AND b.status IN ('queued','running','failed')
+         AND (
+           (b.status IN ('queued','running') AND EXISTS (
+             SELECT 1 FROM ai_review_items i
+             WHERE i.batch_id=b.id AND i.status='failed'
+               AND (
+                 i.last_error LIKE '%HTTP 429%' OR i.last_error LIKE '%限流%'
+                 OR i.last_error LIKE '%HTTP 408%' OR i.last_error LIKE '%HTTP 425%'
+                 OR i.last_error LIKE '%HTTP 5%' OR i.last_error LIKE '%fetch failed%'
+                 OR i.last_error LIKE '%模型返回内容为空%'
+                 OR i.last_error LIKE '%模型没有返回有效 JSON%'
+                 OR i.last_error LIKE '%模型 verdict 不在%'
+               )
+           ))
+           OR (b.status='failed' AND NOT EXISTS (
+             SELECT 1 FROM ai_review_batches active_b
+             WHERE active_b.run_id=b.run_id AND active_b.page_id IS NULL AND active_b.study_freeze_id IS NULL
+               AND active_b.id<>b.id AND active_b.status IN ('queued','running')
+           ) AND (
+             EXISTS (SELECT 1 FROM ai_review_items i WHERE i.batch_id=b.id AND i.status='queued')
+             OR EXISTS (
+               SELECT 1 FROM ai_review_items i
+               WHERE i.batch_id=b.id AND i.status='failed'
+                 AND (
+                   i.last_error LIKE '%HTTP 429%' OR i.last_error LIKE '%限流%'
+                   OR i.last_error LIKE '%HTTP 408%' OR i.last_error LIKE '%HTTP 425%'
+                   OR i.last_error LIKE '%HTTP 5%' OR i.last_error LIKE '%fetch failed%'
+                   OR i.last_error LIKE '%模型返回内容为空%'
+                   OR i.last_error LIKE '%模型没有返回有效 JSON%'
+                   OR i.last_error LIKE '%模型 verdict 不在%'
+                 )
+             )
+           ))
+         )`,
+    )
+    .all() as any[];
+  const batches = candidates.filter((batch) => {
+    try {
+      const provider = getProviderRow(batch.provider_config_id);
+      return providerSnapshotHashMatches(provider, batch.provider_snapshot_hash);
+    } catch {
+      return false;
+    }
+  });
+  if (!batches.length) return;
+  const timestamp = now();
+  const retryAt = new Date(Date.now() + RATE_LIMIT_FALLBACK_DELAY_MS).toISOString();
+  transaction((db) => {
+    const requeueRetryable = db.prepare(
+      `UPDATE ai_review_items
+       SET status='queued',verdict=NULL,reason=NULL,response_hash=NULL,lease_owner=NULL,lease_until=?,attempt_count=0,last_error='历史可重试失败已重新排队，等待后自动重试',updated_at=?,completed_at=NULL
+       WHERE batch_id=? AND status='failed'
+         AND (
+           last_error LIKE '%HTTP 429%' OR last_error LIKE '%限流%'
+           OR last_error LIKE '%HTTP 408%' OR last_error LIKE '%HTTP 425%'
+           OR last_error LIKE '%HTTP 5%' OR last_error LIKE '%fetch failed%'
+           OR last_error LIKE '%模型返回内容为空%'
+           OR last_error LIKE '%模型没有返回有效 JSON%'
+           OR last_error LIKE '%模型 verdict 不在%'
+         )`,
+    );
+    const reactivate = db.prepare(
+      "UPDATE ai_review_batches SET status='queued',updated_at=?,completed_at=NULL WHERE id=? AND status='failed'",
+    );
+    for (const batch of batches) {
+      requeueRetryable.run(retryAt, timestamp, batch.id);
+      if (batch.status === "failed") reactivate.run(timestamp, batch.id);
+    }
+  });
+}
+
+function openRouterFreePacingKey(item: {
+  provider_config_id: string;
+  provider_key_fingerprint?: string | null;
+}) {
+  return item.provider_key_fingerprint
+    ? `key:${item.provider_key_fingerprint}`
+    : `config:${item.provider_config_id}`;
+}
+
+function canStartOpenRouterFreeRequest(
+  db: ReturnType<typeof getDb>,
+  item: {
+    provider_config_id: string;
+    provider_key_fingerprint?: string | null;
+  },
+  timestampMs: number,
+) {
+  const key = openRouterFreePacingKey(item);
+  const knownNextAt = nextOpenRouterFreeRequestAt.get(key);
+  if (knownNextAt !== undefined) return knownNextAt <= timestampMs;
+
+  // The in-memory clock is shared by every slot in the single AI worker. On a
+  // worker restart, seed it from an existing recent request so the restart does
+  // not create a burst before the next three-second interval has elapsed.
+  const cutoff = new Date(timestampMs - OPENROUTER_FREE_REQUEST_INTERVAL_MS).toISOString();
+  const recent = item.provider_key_fingerprint
+    ? (db
+        .prepare(
+          `SELECT MAX(i.updated_at) AS updated_at
+           FROM ai_review_items i
+           JOIN ai_review_batches b ON b.id=i.batch_id
+           JOIN ai_provider_configs p ON p.id=b.provider_config_id
+           WHERE b.run_id IS NOT NULL AND b.page_id IS NULL AND b.study_freeze_id IS NULL
+             AND p.key_fingerprint=? AND i.attempt_count>0 AND i.updated_at>?`,
+        )
+        .get(item.provider_key_fingerprint, cutoff) as { updated_at?: string | null })
+    : (db
+        .prepare(
+          `SELECT MAX(i.updated_at) AS updated_at
+           FROM ai_review_items i
+           JOIN ai_review_batches b ON b.id=i.batch_id
+           WHERE b.run_id IS NOT NULL AND b.page_id IS NULL AND b.study_freeze_id IS NULL
+             AND b.provider_config_id=? AND i.attempt_count>0 AND i.updated_at>?`,
+        )
+        .get(item.provider_config_id, cutoff) as { updated_at?: string | null });
+  const recentMs = Date.parse(recent.updated_at ?? "");
+  return !Number.isFinite(recentMs) || recentMs + OPENROUTER_FREE_REQUEST_INTERVAL_MS <= timestampMs;
+}
+
+function noteOpenRouterFreeRequestStart(item: {
+  provider_config_id: string;
+  provider_key_fingerprint?: string | null;
+}, timestampMs: number) {
+  nextOpenRouterFreeRequestAt.set(
+    openRouterFreePacingKey(item),
+    timestampMs + OPENROUTER_FREE_REQUEST_INTERVAL_MS,
+  );
+}
+
 function claimNextAiItem(workerId: string) {
   return transaction((db) => {
     const timestamp = now();
+    const timestampMs = Date.now();
     const leaseUntil = new Date(Date.now() + LEASE_MS).toISOString();
     const item = db
       .prepare(
-        `SELECT i.*,b.status AS batch_status,b.provider_config_id,b.provider_snapshot_json,b.provider_snapshot_hash,b.prompt_hash,b.prompt_version,b.evidence_version
+        `SELECT i.*,b.status AS batch_status,b.provider_config_id,b.provider_snapshot_json,b.provider_snapshot_hash,b.prompt_hash,b.prompt_version,b.evidence_version,p.key_fingerprint AS provider_key_fingerprint
          FROM ai_review_items i JOIN ai_review_batches b ON b.id=i.batch_id
+         JOIN ai_provider_configs p ON p.id=b.provider_config_id
          WHERE b.run_id IS NOT NULL AND b.page_id IS NULL AND b.study_freeze_id IS NULL
            AND b.status IN ('queued','running')
-           AND NOT EXISTS (
-             SELECT 1
+           AND (
+             SELECT COUNT(*)
              FROM ai_review_items active_i
              JOIN ai_review_batches active_b ON active_b.id=active_i.batch_id
              WHERE active_b.run_id IS NOT NULL AND active_b.page_id IS NULL AND active_b.study_freeze_id IS NULL
                AND active_b.provider_config_id=b.provider_config_id
                AND active_i.status='running'
                AND active_i.lease_until IS NOT NULL AND active_i.lease_until>=?
+           ) < p.max_concurrent_requests
+           AND NOT EXISTS (
+             SELECT 1
+             FROM ai_review_items cooling_i
+             JOIN ai_review_batches cooling_b ON cooling_b.id=cooling_i.batch_id
+             WHERE cooling_b.run_id IS NOT NULL AND cooling_b.page_id IS NULL AND cooling_b.study_freeze_id IS NULL
+               AND cooling_b.provider_config_id=b.provider_config_id
+               AND cooling_b.status IN ('queued','running')
+               AND cooling_i.status='queued'
+               AND cooling_i.lease_until IS NOT NULL AND cooling_i.lease_until>?
            )
            AND (i.status='queued' OR (i.status='running' AND i.lease_until IS NOT NULL AND i.lease_until<?))
            ORDER BY i.created_at,i.id LIMIT 1`,
       )
-      .get(timestamp, timestamp) as any;
+      .get(timestamp, timestamp, timestamp) as any;
     if (!item) return null;
+    let providerRateLimitRpm: number | null = null;
+    try {
+      providerRateLimitRpm = configuredRateLimitRpm(
+        JSON.parse(item.provider_snapshot_json ?? "{}") as ProviderSnapshot,
+      );
+    } catch {
+      // A malformed legacy snapshot will fail the provider snapshot check after
+      // claim; it must not prevent the status endpoint from responding.
+    }
+    const isRateLimited = providerRateLimitRpm === OPENROUTER_FREE_REQUESTS_PER_MINUTE;
+    if (isRateLimited && !canStartOpenRouterFreeRequest(db, item, timestampMs)) return null;
     const changed = db
       .prepare(
         "UPDATE ai_review_items SET status='running',lease_owner=?,lease_until=?,attempt_count=attempt_count+1,updated_at=? WHERE id=? AND (status='queued' OR (status='running' AND lease_until IS NOT NULL AND lease_until<?))",
       )
       .run(workerId, leaseUntil, timestamp, item.id, timestamp);
     if (changed.changes !== 1) return null;
+    if (isRateLimited) noteOpenRouterFreeRequestStart(item, timestampMs);
     db.prepare(
       "UPDATE ai_review_batches SET status='running',updated_at=? WHERE id=? AND status='queued'",
     ).run(timestamp, item.batch_id);
@@ -759,21 +1115,11 @@ function completeItem(
         item.lease_owner,
       );
     if (changed.changes !== 1) return;
-    const remaining = db
-      .prepare(
-        "SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND status IN ('queued','running')",
-      )
-      .get(item.batch_id) as { count: number };
-    const failures = db
-      .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND status='failed'")
-      .get(item.batch_id) as { count: number };
     const currentBatch = db
       .prepare("SELECT status FROM ai_review_batches WHERE id=?")
       .get(item.batch_id) as { status: AiBatchStatus } | undefined;
-    if (remaining.count === 0)
-      db.prepare(
-        "UPDATE ai_review_batches SET status=?,updated_at=?,completed_at=? WHERE id=?",
-      ).run(failures.count ? "failed" : "completed", timestamp, timestamp, item.batch_id);
+    const pending = finishWhenNoQueuedItems(db, item.batch_id, timestamp);
+    if (pending === 0) return;
     else if (currentBatch?.status === "paused")
       db.prepare("UPDATE ai_review_batches SET updated_at=? WHERE id=?").run(
         timestamp,
@@ -794,14 +1140,18 @@ function failItem(item: any, error: unknown) {
     const current = db
       .prepare("SELECT attempt_count FROM ai_review_items WHERE id=?")
       .get(item.id) as { attempt_count: number } | undefined;
-    const terminal = Number(current?.attempt_count ?? item.attempt_count) >= MAX_ATTEMPTS;
+    const attemptCount = Number(current?.attempt_count ?? item.attempt_count);
+    const transient = isTransientProviderError(error);
+    const terminal = !transient && attemptCount >= MAX_ATTEMPTS;
+    const nextRetryAt = transient ? transientRetryAt(error) : null;
     const changed = db
       .prepare(
-        "UPDATE ai_review_items SET status=?,last_error=?,lease_owner=NULL,lease_until=NULL,updated_at=?,completed_at=? WHERE id=? AND status='running' AND lease_owner=?",
+        "UPDATE ai_review_items SET status=?,last_error=?,lease_owner=NULL,lease_until=?,updated_at=?,completed_at=? WHERE id=? AND status='running' AND lease_owner=?",
       )
       .run(
         terminal ? "failed" : "queued",
         message,
+        nextRetryAt,
         timestamp,
         terminal ? timestamp : null,
         item.id,
@@ -811,12 +1161,9 @@ function failItem(item: any, error: unknown) {
     const currentBatch = db
       .prepare("SELECT status FROM ai_review_batches WHERE id=?")
       .get(item.batch_id) as { status: AiBatchStatus } | undefined;
-    if (terminal)
-      db.prepare("UPDATE ai_review_batches SET status='failed',updated_at=? WHERE id=?").run(
-        timestamp,
-        item.batch_id,
-      );
-    else if (currentBatch?.status === "paused")
+    const pending = finishWhenNoQueuedItems(db, item.batch_id, timestamp);
+    if (pending === 0) return;
+    if (currentBatch?.status === "paused")
       db.prepare("UPDATE ai_review_batches SET updated_at=? WHERE id=?").run(
         timestamp,
         item.batch_id,
@@ -830,6 +1177,7 @@ function failItem(item: any, error: unknown) {
 }
 
 export async function processNextAiItem(workerId: string) {
+  recoverInterruptedAiBatches();
   const item = claimNextAiItem(workerId);
   if (!item) return false;
   try {
@@ -837,7 +1185,11 @@ export async function processNextAiItem(workerId: string) {
     const snapshot = JSON.parse(item.provider_snapshot_json ?? "{}") as ProviderSnapshot;
     if (
       provider.key_fingerprint !== snapshot.keyFingerprint ||
-      sha256(canonicalize(snapshot)) !== item.provider_snapshot_hash
+      !(
+        sha256(canonicalize(snapshot)) === item.provider_snapshot_hash ||
+        (snapshot.rateLimitRpm === undefined &&
+          providerSnapshotHashMatches(provider, item.provider_snapshot_hash))
+      )
     )
       throw new AppError(
         "AI_PROVIDER_CHANGED",
@@ -898,18 +1250,36 @@ export function loadAiOverlayForBatch(batchId: string): AiOverlay {
   return resultNodeOverlay(rows);
 }
 
-export function summarizeAiRun(runId: string) {
+export function summarizeAiRun(runId: string, providerConfigId?: string) {
   const db = getDb();
   const totalRow = db
     .prepare(
       "SELECT COUNT(*) count FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=? AND rr.result_type='incomplete'",
     )
     .get(runId) as { count: number };
-  const runBatch = db
-    .prepare(
-      "SELECT b.* FROM ai_review_batches b WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL ORDER BY b.updated_at DESC,b.id DESC LIMIT 1",
-    )
-    .get(runId) as any;
+  let runBatch: any;
+  if (providerConfigId) {
+    const provider = getProviderRow(providerConfigId);
+    const candidates = db
+      .prepare(
+        `SELECT b.* FROM ai_review_batches b
+         WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL
+           AND b.provider_config_id=?
+         ORDER BY b.created_at DESC,b.id DESC`,
+      )
+      .all(runId, providerConfigId) as any[];
+    runBatch = candidates.find((batch) =>
+      providerSnapshotHashMatches(provider, batch.provider_snapshot_hash),
+    );
+  } else {
+    runBatch = db
+      .prepare(
+        `SELECT b.* FROM ai_review_batches b
+         WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL
+         ORDER BY CASE WHEN b.status IN ('queued','running') THEN 0 ELSE 1 END,b.created_at DESC,b.id DESC LIMIT 1`,
+      )
+      .get(runId) as any;
+  }
   const aiOverlay = loadAiOverlayForRun(runId);
   const overlay = loadEffectiveOverlayForRun(runId);
   return {

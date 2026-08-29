@@ -64,6 +64,58 @@ describe("database and evidence chain", () => {
     expect(rows.every((row) => row.job_page_id === row.page_job_page_id)).toBe(true);
   });
 
+  it("merges a redirect duplicate without aborting the job", () => {
+    const db = dbModule.getDb();
+    const site = repositories.upsertSite("https://redirect-duplicate.example");
+    const job = repositories.createScanJob(site.origin, {
+      maxPages: 2,
+      sameOriginOnly: true,
+      respectRobots: true,
+    });
+    const workerId = "redirect-duplicate-worker";
+    db.prepare("UPDATE scan_jobs SET status='running',worker_id=?,heartbeat_at=? WHERE id=?").run(
+      workerId,
+      new Date().toISOString(),
+      job.id,
+    );
+    const run = repositories.createRun(job);
+    repositories.addDiscoveredPages(job.id, site.id, [
+      "https://redirect-duplicate.example/first",
+      "https://redirect-duplicate.example/second",
+    ]);
+    const result = (url: string) => ({
+      url,
+      finalUrl: "https://redirect-duplicate.example/final",
+      title: "redirect fixture",
+      status: 200,
+      durationMs: 1,
+      axe: { passes: [], violations: [], incomplete: [], inapplicable: [] },
+    });
+
+    const first = repositories.leaseNextPage(job.id, workerId)!;
+    expect(repositories.savePageResult(run.id, first.page_id, result(first.canonical_url), workerId)).toMatchObject({
+      status: "saved",
+    });
+    const second = repositories.leaseNextPage(job.id, workerId)!;
+    expect(
+      repositories.savePageResult(run.id, second.page_id, result(second.canonical_url), workerId),
+    ).toMatchObject({ status: "deduplicated", finalUrl: "https://redirect-duplicate.example/final" });
+
+    expect(
+      db.prepare("SELECT COUNT(*) count FROM pages WHERE run_id=?").get(run.id),
+    ).toMatchObject({ count: 1 });
+    expect(
+      db
+        .prepare(
+          "SELECT jp.status,p.scan_status,p.run_id FROM job_pages jp JOIN pages p ON p.id=jp.page_id WHERE jp.job_id=? ORDER BY jp.discovery_order",
+        )
+        .all(job.id),
+    ).toEqual([
+      { status: "completed", scan_status: "success", run_id: run.id },
+      { status: "completed", scan_status: "skipped", run_id: null },
+    ]);
+  });
+
   it("persists a scan result, exact score, manifest and privacy report", () => {
     const db = dbModule.getDb();
     const site = repositories.upsertSite("https://score.example");

@@ -3,7 +3,7 @@ import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { canonicalize, sha256 } from "@/lib/canonical";
 
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "accessmetrics-ai-test-"));
@@ -93,12 +93,18 @@ function fixture(nodeCount = 1, withEvidence = true, withPass = false) {
   return { run, pageId, site };
 }
 
-function provider(baseUrl = "http://127.0.0.1:1234/v1") {
+function provider(
+  baseUrl = "http://127.0.0.1:1234/v1",
+  maxConcurrentRequests = 1,
+  rateLimitRpm: number | null = null,
+) {
   return ai.saveAiProvider({
     label: "测试 Qwen",
     baseUrl,
     model: "qwen3.8-27b",
     apiKey: "test-key",
+    maxConcurrentRequests,
+    rateLimitRpm,
     enabled: true,
   });
 }
@@ -120,6 +126,12 @@ describe("thin AI overlay", () => {
     ).map((row) => row.name);
     expect(columns).toEqual(
       expect.arrayContaining(["ai_evidence_json", "ai_evidence_hash", "ai_evidence_version"]),
+    );
+    const providerColumns = (
+      dbModule.getDb().prepare("PRAGMA table_info(ai_provider_configs)").all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    expect(providerColumns).toEqual(
+      expect.arrayContaining(["max_concurrent_requests", "rate_limit_rpm"]),
     );
   });
 
@@ -200,6 +212,34 @@ describe("thin AI overlay", () => {
       .run(new Date().toISOString(), new Date().toISOString(), first.batch.id);
   });
 
+  it("keeps the raw incomplete count while AI verdicts change the effective score", () => {
+    const item = fixture(1, true, true);
+    const config = provider();
+    const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+    const node = dbModule
+      .getDb()
+      .prepare("SELECT id FROM ai_review_items WHERE batch_id=?")
+      .get(batch.batch.id) as { id: string };
+    const timestamp = new Date().toISOString();
+    dbModule
+      .getDb()
+      .prepare("UPDATE ai_review_items SET status='completed',verdict='problem',completed_at=?,updated_at=? WHERE id=?")
+      .run(timestamp, timestamp, node.id);
+    dbModule
+      .getDb()
+      .prepare("UPDATE ai_review_batches SET status='completed',completed_at=?,updated_at=? WHERE id=?")
+      .run(timestamp, timestamp, batch.batch.id);
+
+    const raw = runScore.buildRunScore(item.run.id);
+    const effective = runScore.buildRunScore(item.run.id, { aiOverlay: ai.loadEffectiveOverlayForRun(item.run.id) });
+
+    expect(raw.resultNodeCounts.incomplete).toBe(1);
+    expect(effective.resultNodeCounts.incomplete).toBe(1);
+    expect(raw.overall).toBe(100);
+    expect(effective.overall).toBeLessThan(raw.overall!);
+    expect(effective.modelVersion).toContain("ai-overlay-v1");
+  });
+
   it("keeps an existing batch status unchanged when create is retried", () => {
     const item = fixture(1, true);
     const config = provider();
@@ -252,6 +292,14 @@ describe("thin AI overlay", () => {
     );
     expect(() => ai.validateAiProviderUrl("https://user:pass@model.example/v1")).toThrowError(
       expect.objectContaining({ code: "AI_PROVIDER_URL_CREDENTIALS" }),
+    );
+  });
+
+  it("validates and exposes the provider concurrency cap", () => {
+    const config = provider(undefined, 4);
+    expect(config.maxConcurrentRequests).toBe(4);
+    expect(() => provider(undefined, 0)).toThrowError(
+      expect.objectContaining({ code: "AI_PROVIDER_CONCURRENCY_INVALID" }),
     );
   });
 
@@ -311,6 +359,542 @@ describe("thin AI overlay", () => {
     }
   });
 
+  it("waits and retries after a provider rate limit instead of failing the batch", async () => {
+    let requests = 0;
+    const server = http.createServer((request, response) => {
+      if (request.url === "/v1/chat/completions" && request.method === "POST") {
+        requests += 1;
+        response.statusCode = 429;
+        response.setHeader("retry-after", "60");
+        response.end(JSON.stringify({ error: "rate limited" }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const item = fixture(1, true);
+      const config = provider(`http://127.0.0.1:${port}/v1`);
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+
+      expect(await ai.processNextAiItem("rate-limit-worker")).toBe(true);
+      const current = ai.getAiBatch(batch.batch.id) as any;
+      const row = dbModule
+        .getDb()
+        .prepare("SELECT status,attempt_count,last_error,lease_until FROM ai_review_items WHERE batch_id=?")
+        .get(batch.batch.id) as any;
+      expect(current.batch.status).toBe("queued");
+      expect(current.stats).toMatchObject({ queued: 1, delayed: 1, failed: 0 });
+      expect(row).toMatchObject({
+        status: "queued",
+        attempt_count: 1,
+        last_error: "模型服务限流，等待后自动重试",
+      });
+      expect(new Date(row.lease_until).getTime()).toBeGreaterThan(Date.now());
+
+      expect(await ai.processNextAiItem("rate-limit-worker")).toBe(false);
+      expect(requests).toBe(1);
+      ai.pauseAiBatch(batch.batch.id);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("uses a one-minute fallback for repeated rate limits without Retry-After", async () => {
+    const server = http.createServer((request, response) => {
+      if (request.url === "/v1/chat/completions" && request.method === "POST") {
+        response.statusCode = 429;
+        response.end(JSON.stringify({ error: "rate limited" }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const item = fixture(1, true);
+      const config = provider(`http://127.0.0.1:${port}/v1`);
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+
+      await ai.processNextAiItem("repeated-rate-limit-worker");
+      const row = dbModule
+        .getDb()
+        .prepare("SELECT id FROM ai_review_items WHERE batch_id=?")
+        .get(batch.batch.id) as { id: string };
+      dbModule
+        .getDb()
+        .prepare("UPDATE ai_review_items SET lease_until=? WHERE id=?")
+        .run(new Date(Date.now() - 1_000).toISOString(), row.id);
+
+      await ai.processNextAiItem("repeated-rate-limit-worker");
+      const retried = dbModule
+        .getDb()
+        .prepare("SELECT attempt_count,lease_until FROM ai_review_items WHERE id=?")
+        .get(row.id) as { attempt_count: number; lease_until: string };
+      expect(retried.attempt_count).toBe(2);
+      expect(new Date(retried.lease_until).getTime() - Date.now()).toBeLessThan(70_000);
+      expect(new Date(retried.lease_until).getTime() - Date.now()).toBeGreaterThan(50_000);
+      ai.pauseAiBatch(batch.batch.id);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("honors a provider Retry-After longer than the generic retry cap", async () => {
+    const server = http.createServer((request, response) => {
+      if (request.url === "/v1/chat/completions" && request.method === "POST") {
+        response.statusCode = 429;
+        response.setHeader("retry-after", "1200");
+        response.end(JSON.stringify({ error: "rate limited" }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const item = fixture(1, true);
+      const config = provider(`http://127.0.0.1:${port}/v1`);
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+
+      await ai.processNextAiItem("long-retry-after-worker");
+      const row = dbModule
+        .getDb()
+        .prepare("SELECT lease_until FROM ai_review_items WHERE batch_id=?")
+        .get(batch.batch.id) as { lease_until: string };
+      expect(new Date(row.lease_until).getTime() - Date.now()).toBeGreaterThan(19 * 60_000);
+      ai.pauseAiBatch(batch.batch.id);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("requeues an invalid model verdict immediately", async () => {
+    let requests = 0;
+    const server = http.createServer((request, response) => {
+      if (request.url === "/v1/chat/completions" && request.method === "POST") {
+        requests += 1;
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content:
+                    requests === 1
+                      ? '{"verdict":"maybe"}'
+                      : '{"verdict":"problem","reason":"retried"}',
+                },
+              },
+            ],
+          }),
+        );
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const item = fixture(1, true);
+      const config = provider(`http://127.0.0.1:${port}/v1`);
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+
+      expect(await ai.processNextAiItem("invalid-verdict-worker")).toBe(true);
+      const queued = dbModule
+        .getDb()
+        .prepare("SELECT status,lease_until,last_error FROM ai_review_items WHERE batch_id=?")
+        .get(batch.batch.id) as any;
+      expect(queued).toMatchObject({
+        status: "queued",
+        lease_until: null,
+        last_error: "模型 verdict 不在 problem/not_problem/uncertain 内",
+      });
+
+      expect(await ai.processNextAiItem("invalid-verdict-worker")).toBe(true);
+      expect(requests).toBe(2);
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+        batch: { status: "completed" },
+        stats: { completed: 1, queued: 0, delayed: 0, failed: 0 },
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("paces OpenRouter free requests at 20 RPM without changing the configured concurrency", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    try {
+      const item = fixture(2, true);
+      const config = ai.saveAiProvider({
+        label: "OpenRouter free",
+        baseUrl: "https://openrouter.ai/api/v1",
+        model: "poolside/laguna-s-2.1:free",
+        apiKey: "openrouter-test-key",
+        maxConcurrentRequests: 4,
+        rateLimitRpm: 20,
+        enabled: true,
+      });
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+
+      expect(batch.stats.providerRateLimitRpm).toBe(20);
+      expect(config.maxConcurrentRequests).toBe(4);
+      expect(await ai.processNextAiItem("openrouter-free-worker")).toBe(true);
+      expect(await ai.processNextAiItem("openrouter-free-worker")).toBe(false);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+        batch: { status: "running" },
+        stats: { completed: 1, queued: 1, providerRateLimitRpm: 20 },
+      });
+      ai.pauseAiBatch(batch.batch.id);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("does not apply the free-model pace to a paid OpenRouter model", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    try {
+      const item = fixture(2, true);
+      const config = ai.saveAiProvider({
+        label: "OpenRouter paid",
+        baseUrl: "https://openrouter.ai/api/v1",
+        model: "openai/gpt-4.1-mini",
+        apiKey: "openrouter-paid-test-key",
+        maxConcurrentRequests: 4,
+        enabled: true,
+      });
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+
+      expect(batch.stats.providerRateLimitRpm).toBeNull();
+      expect(await ai.processNextAiItem("openrouter-paid-worker")).toBe(true);
+      expect(await ai.processNextAiItem("openrouter-paid-worker")).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      ai.pauseAiBatch(batch.batch.id);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("does not pace an OpenRouter free model when the optional strategy is disabled", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    try {
+      const item = fixture(2, true);
+      const config = ai.saveAiProvider({
+        label: "OpenRouter free without pace",
+        baseUrl: "https://openrouter.ai/api/v1",
+        model: "poolside/laguna-s-2.1:free",
+        apiKey: "openrouter-disabled-key",
+        maxConcurrentRequests: 4,
+        rateLimitRpm: null,
+        enabled: true,
+      });
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+
+      expect(batch.stats.providerRateLimitRpm).toBeNull();
+      expect(await ai.processNextAiItem("openrouter-free-unpaced-worker")).toBe(true);
+      expect(await ai.processNextAiItem("openrouter-free-unpaced-worker")).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+        batch: { status: "completed" },
+        stats: { completed: 2, queued: 0, delayed: 0, failed: 0 },
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("keeps processing queued items after a non-retryable item exhausts its retries", async () => {
+    let requests = 0;
+    const server = http.createServer((request, response) => {
+      if (request.url === "/v1/chat/completions" && request.method === "POST") {
+        requests += 1;
+        response.statusCode = 400;
+        response.end(JSON.stringify({ error: "invalid provider request" }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const item = fixture(2, true);
+      const config = provider(`http://127.0.0.1:${port}/v1`);
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+
+      await ai.processNextAiItem("terminal-error-worker");
+      await ai.processNextAiItem("terminal-error-worker");
+      await ai.processNextAiItem("terminal-error-worker");
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+        batch: { status: "queued" },
+        stats: { queued: 1, failed: 1 },
+      });
+
+      expect(await ai.processNextAiItem("terminal-error-worker")).toBe(true);
+      expect(requests).toBe(4);
+      ai.pauseAiBatch(batch.batch.id);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("queues temporary provider failures for automatic retry", async () => {
+    const server = http.createServer((request, response) => {
+      if (request.url === "/v1/chat/completions" && request.method === "POST") {
+        response.statusCode = 503;
+        response.end(JSON.stringify({ error: "service unavailable" }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const item = fixture(1, true);
+      const config = provider(`http://127.0.0.1:${port}/v1`);
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+
+      expect(await ai.processNextAiItem("temporary-error-worker")).toBe(true);
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+        batch: { status: "queued" },
+        stats: { queued: 1, delayed: 0, failed: 0 },
+      });
+      const row = dbModule
+        .getDb()
+        .prepare("SELECT lease_until FROM ai_review_items WHERE batch_id=?")
+        .get(batch.batch.id) as { lease_until: string | null };
+      expect(row.lease_until).toBeNull();
+      ai.pauseAiBatch(batch.batch.id);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("requeues a network fetch failure immediately", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ choices: [{ message: { content: '{\"verdict\":\"problem\"}' } }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    try {
+      const item = fixture(1, true);
+      const config = provider();
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+
+      expect(await ai.processNextAiItem("network-error-worker")).toBe(true);
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+        batch: { status: "queued" },
+        stats: { queued: 1, delayed: 0, failed: 0 },
+      });
+      const queued = dbModule
+        .getDb()
+        .prepare("SELECT status,lease_until,last_error FROM ai_review_items WHERE batch_id=?")
+        .get(batch.batch.id) as any;
+      expect(queued).toEqual({
+        status: "queued",
+        lease_until: null,
+        last_error: "TypeError: fetch failed",
+      });
+
+      expect(await ai.processNextAiItem("network-error-worker")).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+        batch: { status: "completed" },
+        stats: { completed: 1, queued: 0, delayed: 0, failed: 0 },
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("automatically recovers a legacy failed batch that still has queued work", async () => {
+    const item = fixture(2, true);
+    const config = provider();
+    const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+    const db = dbModule.getDb();
+    const first = db
+      .prepare("SELECT id FROM ai_review_items WHERE batch_id=? ORDER BY id LIMIT 1")
+      .get(batch.batch.id) as { id: string };
+    const timestamp = new Date().toISOString();
+    db.prepare(
+      "UPDATE ai_review_items SET status='failed',attempt_count=3,last_error='模型请求失败（HTTP 429）',completed_at=?,updated_at=? WHERE id=?",
+    ).run(timestamp, timestamp, first.id);
+    db.prepare("UPDATE ai_review_batches SET status='failed',completed_at=?,updated_at=? WHERE id=?").run(
+      timestamp,
+      timestamp,
+      batch.batch.id,
+    );
+
+    expect(await ai.processNextAiItem("legacy-recovery-worker")).toBe(false);
+    expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+      batch: { status: "queued" },
+      stats: { queued: 2, delayed: 1, failed: 0 },
+    });
+    ai.pauseAiBatch(batch.batch.id);
+  });
+
+  it("automatically requeues a retryable failed item while its batch is still active", async () => {
+    const item = fixture(2, true);
+    const config = provider();
+    const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+    const db = dbModule.getDb();
+    const rows = db
+      .prepare("SELECT id FROM ai_review_items WHERE batch_id=? ORDER BY id")
+      .all(batch.batch.id) as Array<{ id: string }>;
+    const timestamp = new Date().toISOString();
+    db.prepare(
+      "UPDATE ai_review_items SET status='failed',attempt_count=3,last_error='模型返回内容为空',completed_at=?,updated_at=? WHERE id=?",
+    ).run(timestamp, timestamp, rows[0].id);
+    db.prepare("UPDATE ai_review_items SET lease_until=? WHERE id=?").run(
+      new Date(Date.now() + 60_000).toISOString(),
+      rows[1].id,
+    );
+    db.prepare("UPDATE ai_review_batches SET status='running',updated_at=? WHERE id=?").run(
+      timestamp,
+      batch.batch.id,
+    );
+
+    expect(await ai.processNextAiItem("active-recovery-worker")).toBe(false);
+    const recovered = db
+      .prepare("SELECT status,attempt_count,last_error,lease_until FROM ai_review_items WHERE id=?")
+      .get(rows[0].id) as any;
+    expect(recovered).toMatchObject({
+      status: "queued",
+      attempt_count: 0,
+      last_error: "历史可重试失败已重新排队，等待后自动重试",
+    });
+    expect(new Date(recovered.lease_until).getTime()).toBeGreaterThan(Date.now());
+    expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ stats: { queued: 2, failed: 0 } });
+    ai.pauseAiBatch(batch.batch.id);
+  });
+
+  it("automatically resumes queued work from a legacy failed batch", async () => {
+    const item = fixture(2, true);
+    const config = provider();
+    const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+    const db = dbModule.getDb();
+    const rows = db
+      .prepare("SELECT id FROM ai_review_items WHERE batch_id=? ORDER BY id")
+      .all(batch.batch.id) as Array<{ id: string }>;
+    const timestamp = new Date().toISOString();
+    db.prepare(
+      "UPDATE ai_review_items SET status='failed',attempt_count=3,last_error='模型请求失败（HTTP 400）',completed_at=?,updated_at=? WHERE id=?",
+    ).run(timestamp, timestamp, rows[0].id);
+    db.prepare("UPDATE ai_review_items SET lease_until=? WHERE id=?").run(
+      new Date(Date.now() + 60_000).toISOString(),
+      rows[1].id,
+    );
+    db.prepare("UPDATE ai_review_batches SET status='failed',updated_at=? WHERE id=?").run(
+      timestamp,
+      batch.batch.id,
+    );
+
+    expect(await ai.processNextAiItem("legacy-queued-worker")).toBe(false);
+    expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+      batch: { status: "queued" },
+      stats: { queued: 1, failed: 1 },
+    });
+    ai.pauseAiBatch(batch.batch.id);
+  });
+
+  it("does not revive a stale provider snapshot during legacy recovery", async () => {
+    const item = fixture(2, true);
+    const config = provider();
+    const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+    const db = dbModule.getDb();
+    const first = db
+      .prepare("SELECT id FROM ai_review_items WHERE batch_id=? ORDER BY id LIMIT 1")
+      .get(batch.batch.id) as { id: string };
+    const timestamp = new Date().toISOString();
+    db.prepare(
+      "UPDATE ai_review_items SET status='failed',attempt_count=3,last_error='模型请求失败（HTTP 429）',completed_at=?,updated_at=? WHERE id=?",
+    ).run(timestamp, timestamp, first.id);
+    db.prepare("UPDATE ai_review_batches SET status='failed',completed_at=?,updated_at=? WHERE id=?").run(
+      timestamp,
+      timestamp,
+      batch.batch.id,
+    );
+    ai.saveAiProvider({
+      id: config.id,
+      label: "测试 Qwen",
+      baseUrl: "http://127.0.0.1:4321/v1",
+      model: "qwen3.8-27b",
+      apiKey: "changed-key",
+      enabled: true,
+    });
+
+    expect(await ai.processNextAiItem("stale-recovery-worker")).toBe(false);
+    expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "failed" } });
+  });
+
+  it("returns the batch for the selected current provider snapshot", () => {
+    const item = fixture(1, true);
+    const config = provider();
+    const stale = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+    ai.pauseAiBatch(stale.batch.id);
+    const current = ai.saveAiProvider({
+      id: config.id,
+      label: "测试 Qwen",
+      baseUrl: "http://127.0.0.1:4321/v1",
+      model: "qwen3.8-27b",
+      apiKey: "new-key",
+      enabled: true,
+    });
+    const fresh = ai.createAiBatch({ runId: item.run.id, providerConfigId: current.id });
+
+    expect(ai.summarizeAiRun(item.run.id, current.id).batch?.id).toBe(fresh.batch.id);
+    ai.pauseAiBatch(fresh.batch.id);
+  });
+
+  it("does not mark a paused batch completed when only failed items remain", () => {
+    const item = fixture(1, true);
+    const config = provider();
+    const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+    const timestamp = new Date().toISOString();
+    const db = dbModule.getDb();
+    db.prepare(
+      "UPDATE ai_review_items SET status='failed',attempt_count=3,last_error='temporary',completed_at=?,updated_at=? WHERE batch_id=?",
+    ).run(timestamp, timestamp, batch.batch.id);
+    db.prepare("UPDATE ai_review_batches SET status='paused',updated_at=? WHERE id=?").run(
+      timestamp,
+      batch.batch.id,
+    );
+
+    expect(ai.resumeAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "failed" } });
+  });
+
   it("does not claim page-scoped batches", async () => {
     const server = http.createServer((request, response) => {
       if (request.url === "/v1/chat/completions" && request.method === "POST") {
@@ -343,7 +927,7 @@ describe("thin AI overlay", () => {
     }
   });
 
-  it("keeps one in-flight request per provider", async () => {
+  it("keeps one in-flight request per provider by default", async () => {
     let requests = 0;
     const server = http.createServer((request, response) => {
       if (request.url === "/v1/chat/completions" && request.method === "POST") {
@@ -359,9 +943,11 @@ describe("thin AI overlay", () => {
     try {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : 0;
-      const item = fixture(2, true);
+      const item = fixture(1, true);
+      const otherItem = fixture(1, true);
       const config = provider(`http://127.0.0.1:${port}/v1`);
       const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      const otherBatch = ai.createAiBatch({ runId: otherItem.run.id, providerConfigId: config.id });
       const rows = dbModule
         .getDb()
         .prepare("SELECT id FROM ai_review_items WHERE batch_id=? ORDER BY id")
@@ -380,6 +966,55 @@ describe("thin AI overlay", () => {
         .run(new Date(Date.now() - 1_000).toISOString(), rows[0].id);
       expect(await ai.processNextAiItem("single-provider-worker")).toBe(true);
       expect(requests).toBe(1);
+      dbModule
+        .getDb()
+        .prepare("UPDATE ai_review_batches SET status='paused' WHERE id=?")
+        .run(batch.batch.id);
+      dbModule
+        .getDb()
+        .prepare("UPDATE ai_review_batches SET status='paused' WHERE id=?")
+        .run(otherBatch.batch.id);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("allows the configured number of concurrent requests for a provider", async () => {
+    let requests = 0;
+    const server = http.createServer((request, response) => {
+      if (request.url === "/v1/chat/completions" && request.method === "POST") {
+        requests += 1;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const item = fixture(2, true);
+      const config = provider(`http://127.0.0.1:${port}/v1`, 2);
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      const rows = dbModule
+        .getDb()
+        .prepare("SELECT id FROM ai_review_items WHERE batch_id=? ORDER BY id")
+        .all(batch.batch.id) as Array<{ id: string }>;
+      const leaseUntil = new Date(Date.now() + 60_000).toISOString();
+      dbModule
+        .getDb()
+        .prepare("UPDATE ai_review_items SET status='running',lease_owner='other-worker',lease_until=?,attempt_count=1 WHERE id=?")
+        .run(leaseUntil, rows[0].id);
+
+      expect(await ai.processNextAiItem("parallel-provider-worker")).toBe(true);
+      expect(requests).toBe(1);
+
+      dbModule
+        .getDb()
+        .prepare("UPDATE ai_review_items SET lease_until=? WHERE id=?")
+        .run(new Date(Date.now() - 1_000).toISOString(), rows[0].id);
       dbModule
         .getDb()
         .prepare("UPDATE ai_review_batches SET status='paused' WHERE id=?")

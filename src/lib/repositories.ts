@@ -9,6 +9,7 @@ import { AppError } from "./errors";
 import { canonicalize, sha256 } from "./canonical";
 import { config } from "./config";
 import { SCORE_MODEL_VERSION } from "./score";
+import { canonicalizeUrl } from "./url-security";
 
 const now = () => new Date().toISOString();
 export function upsertSite(origin: string, name = origin, category?: string, candidateId?: string) {
@@ -87,6 +88,120 @@ export function getJob(jobId: string) {
       "SELECT j.*,s.origin,s.name FROM scan_jobs j JOIN sites s ON s.id=j.site_id WHERE j.id=?",
     )
     .get(jobId) as any;
+}
+
+const DELETABLE_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
+
+/**
+ * Permanently removes one local, terminal scan and its runtime artifacts.
+ *
+ * Published and study-linked runs deliberately remain immutable.  The caller
+ * only needs a job id because a discovery failure can leave a terminal job
+ * without ever creating a run.
+ */
+export function deleteTerminalScanJob(jobId: string) {
+  return transaction((db) => {
+    const job = db
+      .prepare("SELECT id,status FROM scan_jobs WHERE id=?")
+      .get(jobId) as { id: string; status: string } | undefined;
+    if (!job) throw new AppError("NOT_FOUND", "任务不存在", 404);
+    if (!DELETABLE_JOB_STATUSES.has(job.status))
+      throw new AppError("SCAN_JOB_NOT_TERMINAL", "仅已结束的任务可以删除", 409);
+
+    const run = db
+      .prepare("SELECT id,published FROM scan_runs WHERE job_id=?")
+      .get(jobId) as { id: string; published: number } | undefined;
+    if (run?.published)
+      throw new AppError("RUN_PUBLISHED_READ_ONLY", "已发布报告不能删除", 409);
+
+    if (run) {
+      const studyReference = db
+        .prepare(
+          `SELECT 'study_run_attempts' AS source FROM study_run_attempts WHERE run_id=?
+           UNION ALL
+           SELECT 'study_export_runs' AS source FROM study_export_runs WHERE run_id=?
+           LIMIT 1`,
+        )
+        .get(run.id, run.id) as { source: string } | undefined;
+      const manualSampleReference = db
+        .prepare(
+          `SELECT ms.id
+           FROM manual_review_samples ms
+           JOIN result_nodes n ON n.id=ms.result_node_id
+           JOIN rule_results rr ON rr.id=n.rule_result_id
+           WHERE rr.run_id=?
+           LIMIT 1`,
+        )
+        .get(run.id) as { id: string } | undefined;
+      if (studyReference || manualSampleReference)
+        throw new AppError("SCAN_STUDY_REFERENCED", "研究记录引用了该扫描，不能删除", 409);
+    }
+
+    const pageIds = db
+      .prepare(
+        `SELECT page_id AS id FROM job_pages WHERE job_id=?
+         UNION
+         SELECT id FROM pages WHERE run_id=?`,
+      )
+      .all(jobId, run?.id ?? "") as Array<{ id: string }>;
+    const sharedPage = db
+      .prepare(
+        `SELECT jp.page_id
+         FROM job_pages jp
+         WHERE jp.job_id=?
+           AND EXISTS (
+             SELECT 1 FROM job_pages other
+             WHERE other.page_id=jp.page_id AND other.job_id<>?
+           )
+         LIMIT 1`,
+      )
+      .get(jobId, jobId) as { page_id: string } | undefined;
+    if (sharedPage)
+      throw new AppError("SCAN_SHARED_PAGE_REFERENCED", "任务页面仍被其他任务引用，不能删除", 409);
+
+    if (run) {
+      const timestamp = now();
+      // Prevent further claims before removing the batch.  A request already
+      // in flight uses guarded updates, which become no-ops after this
+      // transaction removes its item row.
+      db.prepare(
+        `UPDATE ai_review_batches
+         SET status='cancelled',updated_at=?,completed_at=COALESCE(completed_at,?)
+         WHERE run_id=? AND status IN ('queued','running')`,
+      ).run(timestamp, timestamp, run.id);
+      db.prepare(
+        "DELETE FROM ai_review_items WHERE batch_id IN (SELECT id FROM ai_review_batches WHERE run_id=?)",
+      ).run(run.id);
+      db.prepare(
+        `DELETE FROM manual_reviews
+         WHERE result_node_id IN (
+           SELECT n.id
+           FROM result_nodes n
+           JOIN rule_results rr ON rr.id=n.rule_result_id
+           WHERE rr.run_id=?
+         )`,
+      ).run(run.id);
+      db.prepare("DELETE FROM ai_review_batches WHERE run_id=?").run(run.id);
+      db.prepare(
+        "DELETE FROM result_nodes WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id=?)",
+      ).run(run.id);
+      db.prepare("DELETE FROM rule_results WHERE run_id=?").run(run.id);
+      db.prepare("DELETE FROM page_scores WHERE run_id=?").run(run.id);
+      db.prepare("DELETE FROM site_scores WHERE run_id=?").run(run.id);
+      db.prepare("DELETE FROM exports WHERE run_id=?").run(run.id);
+    }
+
+    db.prepare("DELETE FROM job_pages WHERE job_id=?").run(jobId);
+    if (pageIds.length > 0) {
+      db.prepare(`DELETE FROM pages WHERE id IN (${pageIds.map(() => "?").join(",")})`).run(
+        ...pageIds.map((page) => page.id),
+      );
+    }
+    if (run) db.prepare("DELETE FROM scan_runs WHERE id=?").run(run.id);
+    db.prepare("DELETE FROM scan_jobs WHERE id=?").run(jobId);
+
+    return { jobId, runId: run?.id ?? null };
+  });
 }
 export function createRun(job: any) {
   const existing = getDb().prepare("SELECT * FROM scan_runs WHERE job_id=?").get(job.id) as any;
@@ -340,13 +455,14 @@ export function savePageResult(
   attemptCount = 1,
 ) {
   const db = getDb();
+  const finalUrl = canonicalizeUrl(String(result.finalUrl ?? result.url));
   const insert = db.prepare(
     "INSERT INTO rule_results(id,run_id,page_id,rule_id,result_type,impact,description,help,help_url,tags_json,node_count,raw_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
   );
   const nodeInsert = db.prepare(
     "INSERT INTO result_nodes(id,rule_result_id,ordinal,frame_path_json,frame_url,frame_origin_relation,target_json,html_sanitized,failure_summary,any_json,all_json,none_json,ai_evidence_json,ai_evidence_hash,ai_evidence_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
   );
-  transaction((tx) => {
+  return transaction((tx) => {
     const run = tx.prepare("SELECT job_id FROM scan_runs WHERE id=?").get(runId) as
       | { job_id: string }
       | undefined;
@@ -368,6 +484,51 @@ export function savePageResult(
       )
         throw new AppError("PAGE_LEASE_LOST", "页面租约已失效，拒绝写入结果", 409);
     }
+    const duplicate = tx
+      .prepare(
+        "SELECT id FROM pages WHERE run_id=? AND normalized_url=? AND id<>? LIMIT 1",
+      )
+      .get(runId, finalUrl, pageId) as { id: string } | undefined;
+    if (duplicate) {
+      // A crawler can encounter multiple URLs that redirect to one final
+      // document. The run stores one result per final URL, so retain the first
+      // result and mark this job page as a completed duplicate rather than
+      // letting the unique index abort the entire scan.
+      tx.prepare(
+        "DELETE FROM result_nodes WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id=? AND page_id=?)",
+      ).run(runId, pageId);
+      tx.prepare("DELETE FROM rule_results WHERE run_id=? AND page_id=?").run(runId, pageId);
+      tx.prepare(
+        "UPDATE pages SET run_id=NULL,requested_url=?,final_url=?,normalized_url=?,title=?,http_status=?,content_type=?,load_ms=?,scan_status='skipped',error_code=NULL,error_message=NULL WHERE id=?",
+      ).run(
+        result.url,
+        finalUrl,
+        finalUrl,
+        result.title ?? null,
+        result.status,
+        result.contentType ?? null,
+        result.durationMs,
+        pageId,
+      );
+      if (workerId) {
+        const changed = tx
+          .prepare(
+            "UPDATE job_pages SET status='completed',attempts=attempts+?,attempt_count=attempt_count+?,last_error=NULL,last_error_code=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=? WHERE job_id=? AND page_id=? AND status='scanning' AND lease_owner=? AND lease_expires_at>?",
+          )
+          .run(
+            Math.max(0, attemptCount - 1),
+            Math.max(0, attemptCount - 1),
+            now(),
+            run.job_id,
+            pageId,
+            workerId,
+            new Date().toISOString(),
+          );
+        if (changed.changes !== 1)
+          throw new AppError("PAGE_LEASE_LOST", "页面租约在提交时失效，拒绝合并重复页面", 409);
+      }
+      return { status: "deduplicated" as const, finalUrl, duplicatePageId: duplicate.id };
+    }
     // A lease-expiry retry reuses the same run/page identity.  Replace the
     // previous attempt atomically so a completed page can never accumulate
     // duplicate rule facts or fail on the result unique constraint.
@@ -380,8 +541,8 @@ export function savePageResult(
     ).run(
       runId,
       result.url,
-      result.finalUrl,
-      result.finalUrl,
+      finalUrl,
+      finalUrl,
       result.title ?? null,
       result.status,
       result.contentType ?? null,
@@ -531,6 +692,7 @@ export function savePageResult(
       if (changed.changes !== 1)
         throw new AppError("PAGE_LEASE_LOST", "页面租约在提交时失效，拒绝完成结果", 409);
     }
+    return { status: "saved" as const, finalUrl };
   });
 }
 

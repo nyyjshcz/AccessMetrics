@@ -23,10 +23,14 @@ export async function discoverSite(
   const maxDurationMs = options.maxDurationMs ?? config.MAX_SITE_DURATION_MS;
   const target = await validateTargetUrl(startUrl, options.networkPolicy);
   const origin = target.origin;
-  const queue: Array<{ url: string; depth: number }> = [
-    { url: canonicalizeUrl(startUrl), depth: 0 },
-  ];
-  const seen = new Set<string>();
+  const firstUrl = canonicalizeUrl(startUrl);
+  const queue: Array<{ url: string; depth: number }> = [{ url: firstUrl, depth: 0 }];
+  // Track requested URLs separately from the scan targets. A site can expose
+  // two links that both redirect to the same final URL; only that final URL
+  // should be returned for scanning.
+  const visited = new Set<string>();
+  const queued = new Set<string>([firstUrl]);
+  const discovered = new Set<string>();
   const browser: Browser = await chromium.launch(chromiumLaunchOptions());
   try {
     const context = await browser.newContext({ serviceWorkers: "block" });
@@ -53,16 +57,21 @@ export async function discoverSite(
     });
     const page = await context.newPage();
     const crawlStarted = Date.now();
-    while (queue.length > 0 && seen.size < maxPages && Date.now() - crawlStarted < maxDurationMs) {
+    while (
+      queue.length > 0 &&
+      discovered.size < maxPages &&
+      Date.now() - crawlStarted < maxDurationMs
+    ) {
       const currentEntry = queue.shift()!;
       const current = currentEntry.url;
-      if (seen.has(current)) continue;
+      queued.delete(current);
+      if (visited.has(current)) continue;
       const parsed = new URL(current);
       if ((options.sameOriginOnly ?? true) && parsed.origin !== origin) continue;
       if (isDisallowed(parsed.pathname, robots)) continue;
       if (currentEntry.depth > maxDepth) continue;
       if (/[.](?:pdf|zip|png|jpe?g|gif|svg|webp|mp4|mp3|docx?)$/i.test(parsed.pathname)) continue;
-      seen.add(current);
+      visited.add(current);
       try {
         await validateTargetUrl(current, options.networkPolicy);
         const response = await page.goto(current, {
@@ -70,7 +79,15 @@ export async function discoverSite(
           timeout: config.SCAN_TIMEOUT_MS,
         });
         const finalUrl = await validateTargetUrl(page.url(), options.networkPolicy);
-        if (finalUrl.origin !== origin) throw new Error("redirect crossed site origin");
+        const normalizedFinalUrl = canonicalizeUrl(finalUrl.toString());
+        const final = new URL(normalizedFinalUrl);
+        if (final.origin !== origin) throw new Error("redirect crossed site origin");
+        if (isDisallowed(final.pathname, robots)) continue;
+        // If a direct link to the final page is already waiting, it no longer
+        // needs a separate crawl or a second scan result.
+        visited.add(normalizedFinalUrl);
+        if (discovered.has(normalizedFinalUrl)) continue;
+        discovered.add(normalizedFinalUrl);
         if ((response?.status() ?? 0) >= 400) continue;
         await page
           .locator("a[href]")
@@ -89,11 +106,17 @@ export async function discoverSite(
             await validateTargetUrl(normalized, options.networkPolicy);
             if (
               new URL(normalized).origin === origin &&
-              !seen.has(normalized) &&
-              queue.length + seen.size < maxPages
+              !visited.has(normalized) &&
+              !queued.has(normalized) &&
+              // A few candidate URLs may collapse to one final redirect URL.
+              // Keep enough discovery candidates to still reach the requested
+              // scan cap when another candidate is a duplicate redirect.
+              queue.length < maxPages
             )
-              if (!isDisallowed(new URL(normalized).pathname, robots))
+              if (!isDisallowed(new URL(normalized).pathname, robots)) {
                 queue.push({ url: normalized, depth: currentEntry.depth + 1 });
+                queued.add(normalized);
+              }
           } catch {
             /* ignore malformed links */
           }
@@ -107,7 +130,7 @@ export async function discoverSite(
         );
     }
     await context.close();
-    return [...seen];
+    return [...discovered];
   } finally {
     await browser.close();
   }

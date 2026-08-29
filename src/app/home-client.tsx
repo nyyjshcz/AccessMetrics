@@ -1,15 +1,72 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type HomeClientProps = {
   view: "active" | "published";
 };
 
+type ScanListRow = {
+  run_id: string | null;
+  run_status: string | null;
+  published: number | null;
+  job_id: string;
+  job_status: string;
+  name: string;
+  origin: string;
+};
+
+const deletableStatuses = new Set(["completed", "failed", "cancelled"]);
+
 export default function HomeClient({ view }: HomeClientProps) {
-  const [runs, setRuns] = useState<any[]>([]);
-  useEffect(() => { fetch(`/api/scans?view=${view}`).then(r => r.json()).then(d => setRuns(d.runs ?? [])); }, [view]);
+  const [runs, setRuns] = useState<ScanListRow[]>([]);
+  const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState("");
+
+  const fetchRuns = useCallback(async () => {
+    const response = await fetch(`/api/scans?view=${view}`);
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error("读取任务列表失败");
+    return (payload?.runs ?? []) as ScanListRow[];
+  }, [view]);
+
+  const load = useCallback(async () => {
+    setRuns(await fetchRuns());
+  }, [fetchRuns]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchRuns()
+      .then((nextRuns) => {
+        if (!cancelled) setRuns(nextRuns);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchRuns]);
+
+  async function deleteTask(row: ScanListRow) {
+    const confirmed = window.confirm(
+      `删除“${row.name}”的扫描任务及其未发布结果？此操作不可恢复。`,
+    );
+    if (!confirmed) return;
+
+    setDeleteError("");
+    setDeletingJobId(row.job_id);
+    try {
+      const response = await fetch(`/api/scans/${row.job_id}`, { method: "DELETE" });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.error?.message ?? "删除任务失败");
+      await load();
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "删除任务失败");
+    } finally {
+      setDeletingJobId(null);
+    }
+  }
+
   return (
     <>
       <section className="card">
@@ -27,11 +84,65 @@ export default function HomeClient({ view }: HomeClientProps) {
           <span className="pill">评分模型 accesscheck-score-v1</span>{" "}
           <span className="pill">WCAG 2.2 映射</span> <span className="pill">可追溯导出</span>
         </p>
-        <Link href="/scans/new"><button style={{ width: "auto", paddingInline: 24 }}>新建扫描</button></Link>
+        <Link href="/scans/new">
+          <button style={{ width: "auto", paddingInline: 24 }}>新建扫描</button>
+        </Link>
       </section>
       <section className="card" style={{ marginTop: 16 }}>
-        <div className="section-heading"><div><h2>{view === "published" ? "已发布报告" : "活动任务"}</h2><p className="muted">{view === "published" ? "已发布的结果为只读，可随时打开。" : "正在扫描或尚未发布的任务。"}</p></div><Link href={view === "published" ? "/scans" : "/reports"}>{view === "published" ? "查看活动任务" : "查看已发布报告"}</Link></div>
-        {runs.length === 0 ? <p className="muted">暂无记录。</p> : <div className="run-list">{runs.map(r => { const status = r.run_status ?? r.job_status; return <Link className="run-row" key={r.run_id ?? r.job_id} href={status === "completed" || status === "completed_with_errors" ? `/scans/${r.run_id}` : `/scans/jobs/${r.job_id}`}><div><strong>{r.name}</strong><span className="muted">{r.origin}</span></div><span className="pill">{r.published ? "已发布" : status}</span></Link>; })}</div>}
+        <div className="section-heading">
+          <div>
+            <h2>{view === "published" ? "已发布报告" : "活动任务"}</h2>
+            <p className="muted">
+              {view === "published" ? "已发布的结果为只读，可随时打开。" : "正在扫描或尚未发布的任务。"}
+            </p>
+          </div>
+          <Link href={view === "published" ? "/scans" : "/reports"}>
+            {view === "published" ? "查看活动任务" : "查看已发布报告"}
+          </Link>
+        </div>
+        {deleteError ? (
+          <p className="error" role="alert">
+            {deleteError}
+          </p>
+        ) : null}
+        {runs.length === 0 ? (
+          <p className="muted">暂无记录。</p>
+        ) : (
+          <div className="run-list">
+            {runs.map((row) => {
+              const status = row.run_status ?? row.job_status;
+              const deletable =
+                view === "active" && row.published !== 1 && deletableStatuses.has(row.job_status);
+              const destination =
+                status === "completed" || status === "completed_with_errors"
+                  ? (`/scans/${row.run_id ?? row.job_id}` as `/scans/${string}`)
+                  : (`/scans/jobs/${row.job_id}` as `/scans/jobs/${string}`);
+              return (
+                <div className="run-row" key={row.run_id ?? row.job_id}>
+                  <Link className="run-row-link" href={destination}>
+                    <div className="run-row-info">
+                      <strong>{row.name}</strong>
+                      <span className="muted">{row.origin}</span>
+                    </div>
+                    <span className="pill">{row.published ? "已发布" : status}</span>
+                  </Link>
+                  {deletable ? (
+                    <div className="run-row-actions">
+                      <button
+                        type="button"
+                        className="danger-button"
+                        disabled={deletingJobId !== null}
+                        onClick={() => void deleteTask(row)}
+                      >
+                        {deletingJobId === row.job_id ? "删除中…" : "删除"}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </section>
       <section className="grid" style={{ marginTop: 16 }}>
         <div className="card">

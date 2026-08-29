@@ -23,6 +23,7 @@ process.env.PUBLIC_EXPORT_ROOT = path.join(testRoot, "public");
 const dbModule = await import("@/lib/db");
 const repositories = await import("@/lib/repositories");
 const crawler = await import("@/lib/crawler");
+const scanner = await import("@/lib/scan-page");
 const worker = await import("@/worker/index");
 
 describe("scan worker failure handling", () => {
@@ -86,5 +87,52 @@ describe("scan worker failure handling", () => {
       failed_count: 1,
     });
     expect(storedRun.finished_at).toEqual(expect.any(String));
+  });
+
+  it("continues after two discovered URLs resolve to one final page", async () => {
+    const site = repositories.upsertSite("http://127.0.0.1");
+    const job = repositories.createScanJob(
+      site.origin,
+      { maxPages: 2, sameOriginOnly: true, respectRobots: true },
+      "test",
+      "worker-redirect-duplicate-job",
+    );
+    const workerId = `worker-${process.pid}`;
+    expect(repositories.leaseNextJob(workerId)?.id).toBe(job.id);
+    vi.mocked(crawler.discoverSite).mockResolvedValueOnce([
+      "http://127.0.0.1/first",
+      "http://127.0.0.1/second",
+    ]);
+    const result = {
+      url: "http://127.0.0.1/first",
+      finalUrl: "http://127.0.0.1/final",
+      title: "redirect fixture",
+      status: 200,
+      durationMs: 1,
+      axe: { passes: [], violations: [], incomplete: [], inapplicable: [] },
+    };
+    vi.mocked(scanner.scanPage)
+      .mockResolvedValueOnce(result as any)
+      .mockResolvedValueOnce({ ...result, url: "http://127.0.0.1/second" } as any);
+
+    const runId = await worker.processJob(repositories.getJob(job.id));
+
+    expect(
+      dbModule
+        .getDb()
+        .prepare("SELECT status,page_count,success_count,failed_count FROM scan_runs WHERE id=?")
+        .get(runId),
+    ).toMatchObject({ status: "completed", page_count: 1, success_count: 1, failed_count: 0 });
+    expect(
+      dbModule
+        .getDb()
+        .prepare(
+          "SELECT jp.status,p.scan_status FROM job_pages jp JOIN pages p ON p.id=jp.page_id WHERE jp.job_id=? ORDER BY jp.discovery_order",
+        )
+        .all(job.id),
+    ).toEqual([
+      { status: "completed", scan_status: "success" },
+      { status: "completed", scan_status: "skipped" },
+    ]);
   });
 });

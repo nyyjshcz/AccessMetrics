@@ -33,9 +33,9 @@ export const config = (() => {
   const root = process.cwd();
   return {
     ...parsed,
-    databasePath: path.resolve(root, parsed.DATABASE_URL),
-    privateEvidenceRoot: path.resolve(root, parsed.PRIVATE_EVIDENCE_ROOT),
-    publicExportRoot: path.resolve(root, parsed.PUBLIC_EXPORT_ROOT),
+    databasePath: path.resolve(/*turbopackIgnore: true*/ root, parsed.DATABASE_URL),
+    privateEvidenceRoot: path.resolve(/*turbopackIgnore: true*/ root, parsed.PRIVATE_EVIDENCE_ROOT),
+    publicExportRoot: path.resolve(/*turbopackIgnore: true*/ root, parsed.PUBLIC_EXPORT_ROOT),
   };
 })();
 

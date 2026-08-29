@@ -6,13 +6,14 @@ import { assertSameOrigin } from "@/lib/request-security";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_request: Request, context: { params: Promise<{ runId: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
     migrate();
     const { runId } = await context.params;
     if (!getDb().prepare("SELECT id FROM scan_runs WHERE id=?").get(runId))
       throw new AppError("NOT_FOUND", "扫描不存在", 404);
-    const summary = summarizeAiRun(runId);
+    const providerConfigId = new URL(request.url).searchParams.get("providerConfigId") || undefined;
+    const summary = summarizeAiRun(runId, providerConfigId);
     return NextResponse.json({ ...summary, overlay: undefined, aiOverlay: undefined });
   } catch (error) {
     return NextResponse.json(errorEnvelope(error), {

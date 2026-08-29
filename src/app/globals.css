@@ -55,8 +55,13 @@ a:hover {
 .tab-count { background:#e5edf5; border-radius:999px; padding:2px 7px; font-size:.8rem; }
 .section-heading { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
 .run-list { display:grid; gap:8px; }
-.run-row { display:flex; justify-content:space-between; align-items:center; border:1px solid #dbe4ef; border-radius:8px; padding:12px 14px; }
-.run-row div { display:grid; gap:4px; }
+.run-row { display:flex; gap:12px; align-items:center; border:1px solid #dbe4ef; border-radius:8px; padding:12px 14px; }
+.run-row-link { display:flex; flex:1; min-width:0; justify-content:space-between; gap:16px; align-items:center; color:inherit; }
+.run-row-link:hover { text-decoration:none; }
+.run-row-info { display:grid; min-width:0; gap:4px; }
+.run-row-info strong, .run-row-info .muted { overflow-wrap:anywhere; }
+.run-row-actions { flex:0 0 auto; }
+.run-row-actions button { width:auto; margin:0; white-space:nowrap; }
 .form-card { max-width:640px; margin:32px auto; }
 .ai-settings-card { max-width: 920px; margin: 32px auto; }
 .provider-list { display:grid; gap:12px; margin-top:20px; }
@@ -136,6 +141,49 @@ button.secondary {
   background: #eef7fb;
   padding: 12px 14px;
   border-radius: 6px;
+}
+.ai-monitor {
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid #c8dce8;
+  border-radius: 10px;
+  background: #f8fcfe;
+}
+.ai-monitor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ai-monitor-heading + p {
+  margin: 10px 0 14px;
+}
+.ai-monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 8px;
+}
+.ai-monitor-grid div {
+  min-height: 72px;
+  padding: 10px;
+  border: 1px solid #dbe4ef;
+  border-radius: 8px;
+  background: #fff;
+}
+.ai-monitor-grid span,
+.ai-monitor-grid strong {
+  display: block;
+}
+.ai-monitor-grid span {
+  color: var(--muted);
+  font-size: .8rem;
+}
+.ai-monitor-grid strong {
+  margin-top: 5px;
+  font-size: 1.25rem;
+}
+.ai-monitor .notice {
+  margin: 14px 0 0;
 }
 .review-intro h1 {
   margin-top: 12px;

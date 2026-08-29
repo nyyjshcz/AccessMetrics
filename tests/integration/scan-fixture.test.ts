@@ -15,6 +15,26 @@ describe("known issue fixture scanner", () => {
         response.end("User-agent: *\nDisallow: /about.html\n");
         return;
       }
+      if (request.url === "/redirect-root.html") {
+        response.statusCode = 200;
+        response.setHeader("content-type", "text/html");
+        response.end(
+          '<!doctype html><a href="/redirect-a.html">A</a><a href="/redirect-target.html">Target</a><a href="/redirect-other.html">Other</a>',
+        );
+        return;
+      }
+      if (request.url === "/redirect-a.html") {
+        response.statusCode = 302;
+        response.setHeader("location", "/redirect-target.html");
+        response.end();
+        return;
+      }
+      if (request.url === "/redirect-target.html" || request.url === "/redirect-other.html") {
+        response.statusCode = 200;
+        response.setHeader("content-type", "text/html");
+        response.end("<!doctype html><title>redirect fixture</title>");
+        return;
+      }
       if (request.url === "/evidence.html") {
         response.statusCode = 200;
         response.setHeader("content-type", "text/html");
@@ -89,6 +109,17 @@ describe("known issue fixture scanner", () => {
       expect(first).toEqual(second);
       expect(second).toEqual(third);
       expect(first).not.toContain(`${target}about.html`);
+      await expect(
+        discoverSite(`${target}redirect-root.html`, {
+          maxPages: 3,
+          delayMs: 0,
+          networkPolicy: testPolicy,
+        }),
+      ).resolves.toEqual([
+        `${target}redirect-root.html`,
+        `${target}redirect-target.html`,
+        `${target}redirect-other.html`,
+      ]);
       await expect(
         discoverSite(`${target}spa.html`, {
           maxPages: 2,

@@ -48,6 +48,13 @@ a:hover {
 }
 .topnav { display:flex; gap:18px; align-items:center; }
 .topnav a { color:#fff; font-size:.95rem; }
+.logout-form { display:flex; gap:8px; align-items:center; margin:0; }
+.access-role { color:#c9e1ed; font-size:.84rem; white-space:nowrap; }
+.topbar-button { width:auto; margin:0; padding:6px 10px; background:transparent; border:1px solid #82aec4; color:#fff; font-size:.84rem; }
+.access-login { width:min(100%, 460px); margin:64px auto; padding:34px; background:var(--panel); border:1px solid #dbe4ef; border-radius:16px; box-shadow:0 16px 34px #0f355018; }
+.access-login h1 { margin:6px 0 10px; }
+.access-login-form { margin-top:24px; }
+.access-login-form button { margin-top:18px; }
 .eyebrow { color:var(--accent); text-transform:uppercase; letter-spacing:.08em; font-size:.78rem; font-weight:800; }
 .tabbar { display:flex; gap:4px; margin:22px -20px 0; border-top:1px solid #dbe4ef; overflow:auto; }
 .tabbar a, .tabbar button { padding:13px 16px; white-space:nowrap; border-bottom:3px solid transparent; border-radius:0; margin:0; }
@@ -248,6 +255,7 @@ button.incomplete-active {
 @media (max-width: 640px) {
   .topbar .shell { align-items:flex-start; flex-direction:column; gap:10px; }
   .topnav { gap:10px; flex-wrap:wrap; }
+  .logout-form { width:100%; justify-content:space-between; }
   .review-group-row {
     align-items: flex-start;
     flex-direction: column;

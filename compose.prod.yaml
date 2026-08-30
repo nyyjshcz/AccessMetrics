@@ -3,7 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    user: "10001:10001"
+    # Web owns private evidence. All write-capable processes share GID 10000
+    # for the SQLite directory, while retaining distinct UIDs.
+    user: "10001:10000"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -17,16 +19,19 @@ services:
       PRIVATE_EVIDENCE_ROOT: /var/lib/accesscheck/private-evidence
       PUBLIC_EXPORT_ROOT: /var/lib/accesscheck/public-exports
       SESSION_SECRET_FILE: /run/secrets/session_secret
+      ADMIN_ACCESS_KEY_FILE: /run/secrets/admin_access_key
+      VISITOR_ACCESS_KEY_FILE: /run/secrets/visitor_access_key
     volumes:
       - ./private-inputs:/var/lib/accesscheck/private-evidence:rw
       - ./data:/var/lib/accesscheck/data:rw
-      - ./data/exports:/var/lib/accesscheck/public-exports:ro
-    secrets: [session_secret]
+      - ./data/exports:/var/lib/accesscheck/public-exports:rw
+    secrets: [session_secret, admin_access_key, visitor_access_key]
+    command: ["sh", "-c", "umask 0002 && exec node standalone/server.js"]
     expose: [3000]
     networks: [app]
   worker:
     build: .
-    user: "10002:10002"
+    user: "10002:10000"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -45,12 +50,12 @@ services:
       EGRESS_PROXY_URL: http://egress-proxy:8080
     volumes:
       - ./data:/var/lib/accesscheck/data:rw
-    command: ["pnpm", "worker"]
+    command: ["sh", "-c", "umask 0002 && exec pnpm worker"]
     networks: [scan-isolated]
     depends_on: [egress-proxy]
   ai-worker:
     build: .
-    user: "10003:10003"
+    user: "10003:10000"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -66,7 +71,7 @@ services:
     volumes:
       - ./data:/var/lib/accesscheck/data:rw
     secrets: [session_secret]
-    command: ["pnpm", "ai:worker"]
+    command: ["sh", "-c", "umask 0002 && exec pnpm ai:worker"]
     networks: [app]
   egress-proxy:
     image: ${EGRESS_PROXY_IMAGE:?set a pinned Smokescreen/goproxy image digest before production deployment}
@@ -86,7 +91,11 @@ services:
     networks: [app]
 secrets:
   session_secret:
-    file: ./private-inputs/session_secret
+    file: ./.secrets/session_secret
+  admin_access_key:
+    file: ./.secrets/admin_access_key
+  visitor_access_key:
+    file: ./.secrets/visitor_access_key
 volumes:
   caddy-data:
   caddy-config:

@@ -3,11 +3,13 @@ import { getDb, migrate } from "@/lib/db";
 import { buildRunScore, serializeRunScore } from "@/lib/run-score";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { loadEffectiveOverlayForRun, summarizeAiRun } from "@/lib/ai-overlay";
+import { requireRequestRole } from "@/lib/access-control";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_request: Request, context: { params: Promise<{ runId: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
+    requireRequestRole(request, "admin");
     migrate();
     const { runId } = await context.params;
     const run = getDb()

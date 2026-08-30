@@ -3,10 +3,12 @@ import { getDb, migrate, transaction } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { renderRunReport } from "@/lib/report";
 import { assertSameOrigin } from "@/lib/request-security";
+import { requireRequestRole } from "@/lib/access-control";
 
 export async function POST(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
     assertSameOrigin(request);
+    requireRequestRole(request, "admin");
     migrate();
     const { runId } = await context.params;
     const run = getDb().prepare("SELECT status,published FROM scan_runs WHERE id=?").get(runId) as

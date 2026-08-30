@@ -7,6 +7,7 @@ import {
   saveLocalManualVerdict,
 } from "@/lib/incomplete-resolution";
 import { assertSameOrigin } from "@/lib/request-security";
+import { requireRequestRole } from "@/lib/access-control";
 
 export async function POST(
   request: Request,
@@ -14,6 +15,7 @@ export async function POST(
 ) {
   try {
     assertSameOrigin(request);
+    requireRequestRole(request, "admin");
     migrate();
     const { runId, nodeId } = await context.params;
     const body = await request.json().catch(() => null);
@@ -41,6 +43,7 @@ export async function DELETE(
 ) {
   try {
     assertSameOrigin(request);
+    requireRequestRole(request, "admin");
     migrate();
     const { runId, nodeId } = await context.params;
     return NextResponse.json(clearLocalManualVerdict({ runId, resultNodeId: nodeId }));

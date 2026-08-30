@@ -1,12 +1,13 @@
 # AccessCheck Lishui
 
-AccessCheck 是一个本地网页无障碍扫描工具：校验 URL 后发现同站页面，使用 Playwright/axe 扫描，将结果写入 SQLite，并提供问题、评分和报告。评分用于筛查和比较，不等同于人工审计或合规认证。
+AccessCheck 是一个可自托管的网页无障碍扫描工具：校验 URL 后发现同站页面，使用 Playwright/axe 扫描，将结果写入 SQLite，并提供问题、评分和报告。管理员使用访问密钥管理扫描、AI 和发布；访客密钥只能查看已发布报告。评分用于筛查和比较，不等同于人工审计或合规认证。
 
 ## 前置环境
 
 - Node.js `24.19.0`、pnpm `11.19.0`、Python `3.12.13`。
-- 复制 `.env.example` 为 `.env.local`，将 `SESSION_SECRET` 换成至少 32 个随机字符。它是 AI Provider API Key 的稳定加密密钥；生产环境不得使用示例默认值，也不要把密钥提交到 Git。
-- 生产扫描还需要显式配置 `EGRESS_PROXY_URL`；本地开发可留空。公网部署、域名、TLS 和代理属于部署者负责的外部配置。
+- 复制 `.env.example` 为 `.env.local`，将 `SESSION_SECRET` 换成至少 32 个随机字符。它同时用于 AI Provider API Key 加密和访问会话签名；不要把它提交到 Git。
+- 在 `.env.local` 设置不同的 `ADMIN_ACCESS_KEY` 和 `VISITOR_ACCESS_KEY`（均至少 16 个字符）。管理员可扫描、处理、发布和配置 AI；访客仅可读取已发布报告。
+- 生产扫描需要显式配置受控 `EGRESS_PROXY_URL`。完整的单 VPS 部署步骤见 [部署说明](docs/ops/deployment.md)。
 
 ## 本地启动
 
@@ -16,7 +17,7 @@ pnpm db:migrate
 pnpm dev
 ```
 
-`pnpm dev` 会一起启动 Web、扫描 Worker 和 AI Worker，点击扫描或 AI 处理后会自动消费队列；按 Ctrl+C 会一并停止它们。需要单独调试某个进程时，仍可另开终端运行 `pnpm worker` 或 `pnpm ai:worker`。也可以直接运行：
+`pnpm dev` 会一起启动 Web、扫描 Worker 和 AI Worker，点击扫描或 AI 处理后会自动消费队列；按 Ctrl+C 会一并停止它们。启动后先在登录页输入管理员或访客访问密钥。需要单独调试某个进程时，仍可另开终端运行 `pnpm worker` 或 `pnpm ai:worker`。也可以直接运行：
 
 ```text
 pnpm scan:site -- https://example.org --max-pages 10
@@ -39,7 +40,7 @@ pnpm scan:site -- https://example.org --max-pages 10
 
 ## 数据与安全边界
 
-Worker 只处理队列中的扫描任务并写入结果；生产 Worker 必须通过显式 egress proxy 出站，不能绕过代理访问公网。私网、环回地址、凭据 URL 和未授权目标会被拒绝。生产环境必须使用随机 `SESSION_SECRET`、独立数据目录和受控网络配置。
+Worker 只处理队列中的扫描任务并写入结果；生产 Worker 必须通过显式 egress proxy 出站，不能绕过代理访问公网。私网、环回地址、凭据 URL 和未授权目标会被拒绝。生产环境必须使用随机 `SESSION_SECRET`、不同的管理员/访客访问密钥、独立数据目录和受控网络配置。
 
 ## 容量提示
 

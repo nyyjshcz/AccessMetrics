@@ -3,6 +3,7 @@ import { deleteAiProvider, saveAiProvider } from "@/lib/ai-overlay";
 import { migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { assertSameOrigin } from "@/lib/request-security";
+import { requireRequestRole } from "@/lib/access-control";
 
 const allowed = [
   "label",
@@ -20,6 +21,7 @@ export async function PATCH(
 ) {
   try {
     assertSameOrigin(request);
+    requireRequestRole(request, "admin");
     migrate();
     const { providerId } = await context.params;
     const body = await request.json().catch(() => null);
@@ -41,6 +43,7 @@ export async function DELETE(
 ) {
   try {
     assertSameOrigin(request);
+    requireRequestRole(request, "admin");
     migrate();
     const { providerId } = await context.params;
     deleteAiProvider(providerId);

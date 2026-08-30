@@ -3,6 +3,7 @@ import { aiImpactForResolvedIncomplete } from "@/lib/ai-overlay";
 import { getDb, migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { hasActiveAiBatch, isRunPublished, RESOLUTION_VERDICTS } from "@/lib/incomplete-resolution";
+import { requireRequestRole } from "@/lib/access-control";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,7 @@ function parseJson(value: string | null, fallback: unknown) {
 
 export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
+    requireRequestRole(request, "admin");
     migrate();
     const { runId } = await context.params;
     const run = getDb().prepare("SELECT id FROM scan_runs WHERE id=?").get(runId);

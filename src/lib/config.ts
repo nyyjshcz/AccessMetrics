@@ -6,6 +6,14 @@ const envSchema = z.object({
   APP_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.string().default("./data/accesscheck.db"),
   SESSION_SECRET: z.string().min(16).default("development-session-secret-change-me"),
+  ADMIN_ACCESS_KEY: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().min(16).optional(),
+  ),
+  VISITOR_ACCESS_KEY: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+    z.string().min(16).optional(),
+  ),
   PRIVATE_EVIDENCE_ROOT: z.string().default("./private-inputs"),
   PUBLIC_EXPORT_ROOT: z.string().default("./data/exports"),
   APP_BASE_URL: z.string().url().default("http://localhost:3000"),
@@ -25,7 +33,7 @@ const envSchema = z.object({
 
 export const config = (() => {
   const fileBacked = { ...process.env } as Record<string, string | undefined>;
-  for (const key of ["SESSION_SECRET"]) {
+  for (const key of ["SESSION_SECRET", "ADMIN_ACCESS_KEY", "VISITOR_ACCESS_KEY"]) {
     const file = fileBacked[`${key}_FILE`];
     if (file && !fileBacked[key]) fileBacked[key] = fs.readFileSync(file, "utf8").trim();
   }
@@ -59,7 +67,11 @@ export function assertProductionSecrets() {
   const missing: string[] = [];
   if (config.SESSION_SECRET === "development-session-secret-change-me")
     missing.push("SESSION_SECRET");
+  if (!config.ADMIN_ACCESS_KEY) missing.push("ADMIN_ACCESS_KEY");
+  if (!config.VISITOR_ACCESS_KEY) missing.push("VISITOR_ACCESS_KEY");
   if (missing.length) throw new Error(`production secrets missing: ${missing.join(",")}`);
+  if (config.ADMIN_ACCESS_KEY === config.VISITOR_ACCESS_KEY)
+    throw new Error("ADMIN_ACCESS_KEY and VISITOR_ACCESS_KEY must differ");
 }
 
 export function assertProductionProxy() {

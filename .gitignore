@@ -20,4 +20,5 @@ data/exports/
 data/reports/
 data/public-sample/
 private-inputs/
+.secrets/
 tsconfig.tsbuildinfo

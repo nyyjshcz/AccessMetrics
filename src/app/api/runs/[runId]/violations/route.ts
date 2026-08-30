@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getDb, migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
+import { requireRequestRole } from "@/lib/access-control";
 
 export const dynamic = "force-dynamic";
 
@@ -8,8 +9,9 @@ function json(value: string | null, fallback: unknown) {
   try { return value ? JSON.parse(value) : fallback; } catch { return fallback; }
 }
 
-export async function GET(_request: Request, context: { params: Promise<{ runId: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
+    requireRequestRole(request, "admin");
     migrate();
     const { runId } = await context.params;
     if (!getDb().prepare("SELECT id FROM scan_runs WHERE id=?").get(runId)) throw new AppError("NOT_FOUND", "扫描不存在", 404);

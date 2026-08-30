@@ -17,6 +17,8 @@ export default defineConfig({
       PRIVATE_EVIDENCE_ROOT: "./data/e2e-private",
       PUBLIC_EXPORT_ROOT: "./data/e2e-exports",
       SESSION_SECRET: "e2e-session-secret-01234567890123456789",
+      ADMIN_ACCESS_KEY: "e2e-admin-access-key-01234567890123456789",
+      VISITOR_ACCESS_KEY: "e2e-visitor-access-key-01234567890123456789",
       DNS_RESOLVER_MODE: "system",
       SCAN_TEST_ALLOW_PRIVATE_ADDRESSES: "1",
     },

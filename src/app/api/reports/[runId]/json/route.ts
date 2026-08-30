@@ -3,12 +3,14 @@ import { getDb, migrate } from "@/lib/db";
 import { buildRunReportDto } from "@/lib/report";
 import { serializeRunScore } from "@/lib/run-score";
 import { AppError, errorEnvelope } from "@/lib/errors";
+import { requireRequestRole } from "@/lib/access-control";
 
 export const dynamic = "force-dynamic";
 
-/** Published reports are intentionally anonymous and immutable. */
-export async function GET(_request: Request, context: { params: Promise<{ runId: string }> }) {
+/** Published reports are immutable and visible to either authorized role. */
+export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
+    requireRequestRole(request, "visitor");
     migrate();
     const { runId } = await context.params;
     const run = getDb().prepare("SELECT published FROM scan_runs WHERE id=?").get(runId) as

@@ -53,6 +53,24 @@ if (workerBlock.includes("external-egress"))
   errors.push("production worker must not join external-egress");
 if (!workerBlock.includes("EGRESS_PROXY_URL: http://egress-proxy:8080"))
   errors.push("production worker must use explicit EGRESS_PROXY_URL");
+const webBlock =
+  productionCompose.match(
+    /web:[\s\S]*?(?=\n\s{2}\w[\w-]*:|\nnetworks:|\nsecrets:|\nvolumes:|$)/,
+  )?.[0] ?? "";
+const aiWorkerBlock =
+  productionCompose.match(
+    /ai-worker:[\s\S]*?(?=\n\s{2}\w[\w-]*:|\nnetworks:|\nsecrets:|\nvolumes:|$)/,
+  )?.[0] ?? "";
+if (
+  !webBlock.includes('user: "10001:10000"') ||
+  !workerBlock.includes('user: "10002:10000"') ||
+  !aiWorkerBlock.includes('user: "10003:10000"')
+)
+  errors.push("production write-capable services must share the SQLite group");
+if (![webBlock, workerBlock, aiWorkerBlock].every((block) => block.includes("umask 0002")))
+  errors.push("production write-capable services must preserve group-writable SQLite files");
+if (!webBlock.includes("./data/exports:/var/lib/accesscheck/public-exports:rw"))
+  errors.push("production Web must be able to publish report exports");
 if (/worker:[\s\S]*?private-evidence/i.test(productionCompose))
   errors.push("production worker must not mount private evidence");
 if (

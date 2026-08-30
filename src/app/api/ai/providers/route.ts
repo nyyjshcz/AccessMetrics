@@ -3,6 +3,7 @@ import { listAiProviders, saveAiProvider } from "@/lib/ai-overlay";
 import { migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { assertSameOrigin } from "@/lib/request-security";
+import { requireRequestRole } from "@/lib/access-control";
 
 const allowed = [
   "id",
@@ -17,8 +18,9 @@ const allowed = [
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    requireRequestRole(request, "admin");
     migrate();
     return NextResponse.json({ providers: listAiProviders() });
   } catch (error) {
@@ -31,6 +33,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
+    requireRequestRole(request, "admin");
     migrate();
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body))

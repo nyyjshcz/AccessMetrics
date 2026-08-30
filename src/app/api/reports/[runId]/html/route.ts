@@ -3,8 +3,10 @@ import { migrate } from "@/lib/db";
 import { getDb } from "@/lib/db";
 import { buildRunReportDto, renderRunReportHtml } from "@/lib/report";
 import { AppError, errorEnvelope } from "@/lib/errors";
-export async function GET(_request: Request, context: { params: Promise<{ runId: string }> }) {
+import { requireRequestRole } from "@/lib/access-control";
+export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
+    requireRequestRole(request, "visitor");
     migrate();
     const { runId } = await context.params;
     const run = getDb().prepare("SELECT published FROM scan_runs WHERE id=?").get(runId) as

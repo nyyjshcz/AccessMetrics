@@ -3,11 +3,13 @@ import { createAiBatch, summarizeAiRun } from "@/lib/ai-overlay";
 import { getDb, migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { assertSameOrigin } from "@/lib/request-security";
+import { requireRequestRole } from "@/lib/access-control";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
+    requireRequestRole(request, "admin");
     migrate();
     const { runId } = await context.params;
     if (!getDb().prepare("SELECT id FROM scan_runs WHERE id=?").get(runId))
@@ -25,6 +27,7 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
 export async function POST(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
     assertSameOrigin(request);
+    requireRequestRole(request, "admin");
     migrate();
     const { runId } = await context.params;
     const body = await request.json().catch(() => null);

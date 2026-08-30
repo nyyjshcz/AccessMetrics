@@ -1,10 +1,19 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import Database from "better-sqlite3";
 import http from "node:http";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
 const baseUrl = "http://127.0.0.1:3100";
+const adminAccessKey = "e2e-admin-access-key-01234567890123456789";
+const visitorAccessKey = "e2e-visitor-access-key-01234567890123456789";
+
+async function signIn(page: Page, accessKey: string, nextPath = "/") {
+  await page.goto(`/login?next=${encodeURIComponent(nextPath)}`);
+  await page.getByLabel("访问密钥").fill(accessKey);
+  await page.getByRole("button", { name: "进入系统" }).click();
+  await page.waitForURL((url) => url.pathname !== "/login");
+}
 
 function setE2eJobStatus(jobId: string, status: string) {
   const db = new Database(path.join(process.cwd(), "data/e2e-accesscheck-local.db"));
@@ -35,6 +44,8 @@ function runWorkerOnce() {
           PRIVATE_EVIDENCE_ROOT: "./data/e2e-private",
           PUBLIC_EXPORT_ROOT: "./data/e2e-exports",
           SESSION_SECRET: "e2e-session-secret-01234567890123456789",
+          ADMIN_ACCESS_KEY: adminAccessKey,
+          VISITOR_ACCESS_KEY: visitorAccessKey,
           DNS_RESOLVER_MODE: "system",
           SCAN_TEST_ALLOW_PRIVATE_ADDRESSES: "1",
         },
@@ -63,9 +74,13 @@ async function startFixture() {
   return { fixture, url: `http://127.0.0.1:${address.port}/` };
 }
 
-test("首页导航、新建扫描页和匿名页面可访问", async ({ page, request }) => {
+test("管理员登录后可访问扫描管理页面", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "把网站无障碍问题，一步步变成可发布的报告" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "输入访问密钥" })).toBeVisible();
+  await signIn(page, adminAccessKey);
+  await expect(
+    page.getByRole("heading", { name: "把网站无障碍问题，一步步变成可发布的报告" }),
+  ).toBeVisible();
   await expect(page.getByRole("link", { name: "新建扫描" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "活动任务", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "已发布报告", exact: true })).toBeVisible();
@@ -78,19 +93,20 @@ test("首页导航、新建扫描页和匿名页面可访问", async ({ page, re
   await expect(page.getByLabel("最多扫描页面数")).toBeVisible();
 
   for (const pathname of ["/", "/scans/new", "/settings/ai", "/?view=active", "/?view=published"]) {
-    const response = await request.get(pathname);
+    const response = await page.request.get(pathname);
     expect(response.ok(), pathname).toBeTruthy();
   }
-  const anonymousScans = await request.get("/api/scans?view=active");
-  expect(anonymousScans.ok()).toBeTruthy();
+  const adminScans = await page.request.get("/api/scans?view=active");
+  expect(adminScans.ok()).toBeTruthy();
 });
 
-test("活动任务只为已结束任务显示删除按钮并可删除", async ({ page, request }) => {
+test("活动任务只为已结束任务显示删除按钮并可删除", async ({ page }) => {
+  await signIn(page, adminAccessKey);
   const port = 40000 + (Date.now() % 10000);
   const terminalUrl = `http://127.0.0.1:${port}/`;
   const queuedUrl = `http://127.0.0.1:${port + 1}/`;
   const create = async (url: string) => {
-    const response = await request.post("/api/scans", {
+    const response = await page.request.post("/api/scans", {
       data: { url, maxPages: 1, sameOriginOnly: true, respectRobots: true },
     });
     expect(response.ok()).toBeTruthy();
@@ -119,19 +135,22 @@ test("活动任务只为已结束任务显示删除按钮并可删除", async ({
     await expect(terminalRow).toHaveCount(0);
   } finally {
     setE2eJobStatus(queued.jobId, "cancelled");
-    const cleanup = await request.delete(`/api/scans/${queued.jobId}`);
+    const cleanup = await page.request.delete(`/api/scans/${queued.jobId}`);
     expect(cleanup.ok()).toBeTruthy();
   }
 });
 
-test("匿名本地扫描可查看四标签、发布并公开读取报告", async ({ page, request }) => {
+test("管理员扫描发布后，访客只能读取已发布报告", async ({ page }) => {
   test.setTimeout(120000);
   const { fixture, url } = await startFixture();
   try {
+    await signIn(page, adminAccessKey, "/scans/new");
     await page.goto("/scans/new");
     await page.getByLabel("网站 URL").fill(url);
     await page.getByLabel("最多扫描页面数").fill("1");
-    const responsePromise = page.waitForResponse((response) => response.url().endsWith("/api/scans"));
+    const responsePromise = page.waitForResponse((response) =>
+      response.url().endsWith("/api/scans"),
+    );
     await page.getByRole("button", { name: "开始 axe 扫描" }).click();
     const createResponse = await responsePromise;
     expect([200, 202]).toContain(createResponse.status());
@@ -142,7 +161,7 @@ test("匿名本地扫描可查看四标签、发布并公开读取报告", async
     let status = "queued";
     for (let attempt = 0; attempt < 8 && ["queued", "running"].includes(status); attempt++) {
       await runWorkerOnce();
-      const jobResponse = await request.get(`/api/scans/${jobId}`);
+      const jobResponse = await page.request.get(`/api/scans/${jobId}`);
       expect(jobResponse.ok()).toBeTruthy();
       const payload = await jobResponse.json();
       status = payload.job.status;
@@ -169,14 +188,25 @@ test("匿名本地扫描可查看四标签、发布并公开读取报告", async
     await page.getByRole("button", { name: "生成并发布报告" }).click();
     await expect(page.getByText("已发布，报告现在为只读")).toBeVisible();
 
-    const publishedRun = await request.get(`/api/runs/${runId}`);
+    const publishedRun = await page.request.get(`/api/runs/${runId}`);
     expect(publishedRun.ok()).toBeTruthy();
     expect((await publishedRun.json()).run.published).toBe(1);
-    const htmlReport = await request.get(`/api/reports/${runId}/html`);
+    const htmlReport = await page.request.get(`/api/reports/${runId}/html`);
     expect(htmlReport.ok()).toBeTruthy();
     expect(await htmlReport.text()).toContain("AccessCheck");
-    await page.goto("/?view=published");
+
+    await page.context().clearCookies();
+    await signIn(page, visitorAccessKey, "/reports");
+    await expect(page.getByRole("link", { name: "新建扫描" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "活动任务" })).toHaveCount(0);
+    await page.goto("/reports");
     await expect(page.getByRole("heading", { name: "已发布报告" })).toBeVisible();
+    await page.goto("/scans/new");
+    await expect(page).toHaveURL(/\/reports$/);
+    const deniedActive = await page.request.get("/api/scans?view=active");
+    expect(deniedActive.status()).toBe(403);
+    const visitorReport = await page.request.get(`/api/reports/${runId}/html`);
+    expect(visitorReport.ok()).toBeTruthy();
   } finally {
     await new Promise<void>((resolve) => fixture.close(() => resolve()));
   }

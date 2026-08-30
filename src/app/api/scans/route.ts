@@ -6,6 +6,7 @@ import { AppError, errorEnvelope } from "@/lib/errors";
 import { getDb, migrate } from "@/lib/db";
 import { consumeRateLimit, requestClientKey } from "@/lib/rate-limit";
 import { assertSameOrigin } from "@/lib/request-security";
+import { requireRequestRole } from "@/lib/access-control";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,7 @@ export async function GET(request: Request) {
     const view = new URL(request.url).searchParams.get("view") ?? "active";
     if (view !== "active" && view !== "published")
       throw new AppError("INVALID_VIEW", "view 必须是 active 或 published", 422);
+    requireRequestRole(request, view === "published" ? "visitor" : "admin");
     const rows = getDb()
       .prepare(
         `SELECT r.id run_id,r.status run_status,r.published,r.published_at,r.started_at,r.finished_at,
@@ -38,6 +40,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     assertSameOrigin(request);
+    requireRequestRole(request, "admin");
     const rate = consumeRateLimit(requestClientKey(request, "scan-create"), 30, 60_000);
     if (!rate.allowed) throw new AppError("RATE_LIMITED", "扫描创建请求过于频繁", 429, rate);
     migrate();

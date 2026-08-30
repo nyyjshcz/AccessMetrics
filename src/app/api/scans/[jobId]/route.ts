@@ -3,11 +3,13 @@ import { deleteTerminalScanJob, getJob } from "@/lib/repositories";
 import { getDb, migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { assertSameOrigin } from "@/lib/request-security";
+import { requireRequestRole } from "@/lib/access-control";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_request: Request, context: { params: Promise<{ jobId: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ jobId: string }> }) {
   try {
+    requireRequestRole(request, "admin");
     migrate();
     const { jobId } = await context.params;
     const job = getJob(jobId);
@@ -49,6 +51,7 @@ export async function GET(_request: Request, context: { params: Promise<{ jobId:
 export async function DELETE(request: Request, context: { params: Promise<{ jobId: string }> }) {
   try {
     assertSameOrigin(request);
+    requireRequestRole(request, "admin");
     migrate();
     const { jobId } = await context.params;
     const deleted = deleteTerminalScanJob(jobId);

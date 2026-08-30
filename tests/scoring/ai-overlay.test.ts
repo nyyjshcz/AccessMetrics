@@ -1218,6 +1218,9 @@ describe("thin AI overlay", () => {
     expect(dto.nodeStatistics).toMatchObject({ pass: 1, incomplete: 4, total: 5 });
     expect(dto.issues.find((issue) => issue.resultType === "incomplete")?.nodeCount).toBe(4);
     const html = report.renderRunReportHtml(dto);
+    expect(html).toContain("优先整改事项");
+    expect(html).toContain('class="issue-card');
+    expect(html).not.toContain("全部节点证据");
     expect(html).toContain("原始 incomplete（尚未解决）");
     expect(html).not.toContain("null（已完成 AI）");
   });

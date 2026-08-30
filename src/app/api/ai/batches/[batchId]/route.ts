@@ -3,11 +3,13 @@ import { getAiBatch, pauseAiBatch, resumeAiBatch, retryAiBatch } from "@/lib/ai-
 import { migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { assertSameOrigin } from "@/lib/request-security";
+import { requireRequestRole } from "@/lib/access-control";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_request: Request, context: { params: Promise<{ batchId: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ batchId: string }> }) {
   try {
+    requireRequestRole(request, "admin");
     migrate();
     const { batchId } = await context.params;
     return NextResponse.json(getAiBatch(batchId));
@@ -21,6 +23,7 @@ export async function GET(_request: Request, context: { params: Promise<{ batchI
 export async function POST(request: Request, context: { params: Promise<{ batchId: string }> }) {
   try {
     assertSameOrigin(request);
+    requireRequestRole(request, "admin");
     migrate();
     const { batchId } = await context.params;
     const body = await request.json().catch(() => null);

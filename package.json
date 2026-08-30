@@ -37,7 +37,8 @@
     "recalculate-scores": "tsx scripts/recalculate-scores.ts",
     "backup:create": "tsx scripts/backup-create.ts",
     "backup:restore": "tsx scripts/backup-restore.ts",
-    "ops:check": "tsx scripts/check-ops.ts"
+    "ops:check": "tsx scripts/check-ops.ts",
+    "deploy:check": "tsx scripts/production-preflight.ts"
   },
   "dependencies": {
     "@axe-core/playwright": "4.13.0",

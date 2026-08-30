@@ -7,6 +7,7 @@
 - 一台受你控制的 Linux VPS，建议 Ubuntu 24.04 LTS，至少 2 vCPU、4 GB 内存和 30 GB 可用磁盘；使用本地大模型时，模型服务仍应在你可访问的受控网络中。
 - 一个域名及其 A/AAAA 记录，指向该 VPS 的公网 IP。Caddy 会自动申请和续期 HTTPS 证书，所以域名解析和 80/443 入站端口必须先就绪。
 - Docker Engine 与 Docker Compose plugin；主机防火墙只开放 SSH、80、443。
+- Node 24 与 Corepack（仅用于服务器上运行可选的 `pnpm deploy:check`；应用运行本身不依赖主机 Node）。
 - 对目标网站的检查授权，以及经过审核、固定 digest 的出站代理镜像。扫描 Worker 不可直连公网；它只通过该代理访问目标站点。
 
 ## 第一次部署
@@ -43,6 +44,16 @@ EGRESS_PROXY_IMAGE=registry.example.com/approved-egress-proxy@sha256:<immutable-
 ```
 
 其中 APP_BASE_URL 必须与浏览器实际访问的 HTTPS origin 完全一致。EGRESS_PROXY_IMAGE 必须是经安全审核的不可变镜像 digest；不要把任意开放代理、宿主机代理或本地开发代理当成生产替代品。
+
+启动前先运行检查；它会验证域名、三把密钥、目录权限、代理镜像 digest，并调用 `docker compose config`：
+
+```sh
+pnpm install --frozen-lockfile
+pnpm ops:check
+pnpm deploy:check
+```
+
+若服务器不安装 Node，可跳过这一项，但至少应在启动前运行 `docker compose --env-file .env.production -f compose.prod.yaml config --quiet`。
 
 启动：
 

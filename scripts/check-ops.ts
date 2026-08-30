@@ -6,6 +6,7 @@ if (process.argv.includes("--help")) {
 }
 const required = [
   "Dockerfile",
+  ".dockerignore",
   "docker-compose.yml",
   "compose.yaml",
   "compose.prod.yaml",
@@ -18,6 +19,7 @@ const required = [
 ];
 const missing = required.filter((file) => !fs.existsSync(file));
 const dockerfile = fs.existsSync("Dockerfile") ? fs.readFileSync("Dockerfile", "utf8") : "";
+const dockerIgnore = fs.existsSync(".dockerignore") ? fs.readFileSync(".dockerignore", "utf8") : "";
 const caddyfile = fs.existsSync("Caddyfile") ? fs.readFileSync("Caddyfile", "utf8") : "";
 const productionCompose = fs.existsSync("compose.prod.yaml")
   ? fs.readFileSync("compose.prod.yaml", "utf8")
@@ -53,6 +55,16 @@ if (workerBlock.includes("external-egress"))
   errors.push("production worker must not join external-egress");
 if (!workerBlock.includes("EGRESS_PROXY_URL: http://egress-proxy:8080"))
   errors.push("production worker must use explicit EGRESS_PROXY_URL");
+for (const ignoredPath of [
+  ".env",
+  ".env.*",
+  ".secrets/",
+  "private-inputs/",
+  "data/",
+  "node_modules/",
+])
+  if (!dockerIgnore.includes(ignoredPath))
+    errors.push(`Docker build context must exclude ${ignoredPath}`);
 const webBlock =
   productionCompose.match(
     /web:[\s\S]*?(?=\n\s{2}\w[\w-]*:|\nnetworks:|\nsecrets:|\nvolumes:|$)/,

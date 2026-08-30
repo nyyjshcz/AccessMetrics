@@ -1,0 +1,27 @@
+# Never send runtime secrets, evidence, or databases to the image build context.
+.env
+.env.*
+.secrets/
+private-inputs/
+data/
+
+# Build outputs, dependencies, test artefacts, and local-agent state are not
+# application source and make images both slower and less reproducible.
+node_modules/
+node_modules.broken-*/
+.next/
+coverage/
+playwright-report/
+test-results/
+artifacts/
+.playwright-cli/
+.claude/
+.local-agent/
+undefined/
+
+# The image is built from checked-in source only.
+.git/
+.github/
+docs/
+analysis/
+deliverables/

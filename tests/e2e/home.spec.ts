@@ -79,7 +79,7 @@ test("管理员登录后可访问扫描管理页面", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "输入访问密钥" })).toBeVisible();
   await signIn(page, adminAccessKey);
   await expect(
-    page.getByRole("heading", { name: "把网站无障碍问题，一步步变成可发布的报告" }),
+    page.getByRole("heading", { name: "把网站无障碍问题，变成可以核对的结论" }),
   ).toBeVisible();
   await expect(page.getByRole("link", { name: "新建扫描" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "活动任务", exact: true })).toBeVisible();

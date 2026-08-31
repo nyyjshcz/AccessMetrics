@@ -88,7 +88,9 @@ export default function AiOverlayCard({
         : status === "failed"
           ? "需要处理"
           : delayed > 0
-            ? waitingError.includes("限流") ? "等待 API 限额" : "自动重试等待"
+            ? waitingError.includes("限流")
+              ? "等待 API 限额"
+              : "自动重试等待"
             : running > 0
               ? "正在处理"
               : queued > 0
@@ -132,12 +134,12 @@ export default function AiOverlayCard({
   })();
   const currentProviderMatchesBatch = Boolean(
     selectedProvider &&
-      batchSnapshot &&
-      batchSnapshot.label === selectedProvider.label &&
-      batchSnapshot.baseUrl === selectedProvider.baseUrl &&
-      batchSnapshot.model === selectedProvider.model &&
-      batchSnapshot.keyFingerprint === selectedProvider.keyFingerprint &&
-      batchSnapshot.rateLimitRpm === selectedProvider.rateLimitRpm,
+    batchSnapshot &&
+    batchSnapshot.label === selectedProvider.label &&
+    batchSnapshot.baseUrl === selectedProvider.baseUrl &&
+    batchSnapshot.model === selectedProvider.model &&
+    batchSnapshot.keyFingerprint === selectedProvider.keyFingerprint &&
+    batchSnapshot.rateLimitRpm === selectedProvider.rateLimitRpm,
   );
   const canCreateWithCurrentConfig =
     (status === "failed" || status === "paused") &&
@@ -184,9 +186,11 @@ export default function AiOverlayCard({
       return;
     }
     const returnedStatus = value.batch?.status ?? value.batch?.batch?.status;
-    const returnedProviderId = value.batch?.provider_config_id ?? value.batch?.batch?.provider_config_id;
+    const returnedProviderId =
+      value.batch?.provider_config_id ?? value.batch?.batch?.provider_config_id;
     const returnedStats = value.stats ?? value.batch?.stats ?? null;
-    const returnedPending = Number(returnedStats?.queued ?? 0) + Number(returnedStats?.running ?? 0);
+    const returnedPending =
+      Number(returnedStats?.queued ?? 0) + Number(returnedStats?.running ?? 0);
     setMessage(
       returnedStatus === "failed"
         ? returnedPending > 0
@@ -194,7 +198,8 @@ export default function AiOverlayCard({
           : "当前配置已有失败批次，请点击“重试失败项”。"
         : "批次已保存，worker 会逐条继续处理。",
     );
-    if (typeof returnedProviderId === "string" && returnedProviderId) setProviderId(returnedProviderId);
+    if (typeof returnedProviderId === "string" && returnedProviderId)
+      setProviderId(returnedProviderId);
     setData((current: any) => ({ ...current, ...value }));
     onBatchChange?.();
   }
@@ -217,9 +222,12 @@ export default function AiOverlayCard({
   }
 
   return (
-    <div className="card" style={{ marginTop: 16 }}>
-      <h2>AI Incomplete 解析</h2>
-      <p className="muted">AI 只处理 incomplete；原始 axe 结果、原始分数和人工审核不会被覆盖。</p>
+    <div className="card ai-review-card">
+      <p className="section-kicker">OPTIONAL AI REVIEW</p>
+      <h2>AI 辅助复核</h2>
+      <p className="muted">
+        AI 只处理 axe 标记为 incomplete 的项目；原始 axe 结果、原始评分和人工判断都不会被覆盖。
+      </p>
       {error ? (
         <p className="error" role="alert">
           {error}
@@ -231,10 +239,16 @@ export default function AiOverlayCard({
         </p>
       ) : null}
       <div className="filters">
-        <p className="muted">处理范围：当前扫描的全部 incomplete（一次只运行一个 run-wide 批次）。</p>
+        <p className="muted">
+          处理范围：当前扫描的全部 incomplete 项目。一次扫描只运行一个覆盖全量项目的批次。
+        </p>
         <label>
-          模型配置
-          <select value={providerId} onChange={(event) => setProviderId(event.target.value)} disabled={isReadOnly}>
+          模型服务
+          <select
+            value={providerId}
+            onChange={(event) => setProviderId(event.target.value)}
+            disabled={isReadOnly}
+          >
             <option value="">请选择</option>
             {providers.map((provider) => (
               <option key={provider.id} value={provider.id}>
@@ -246,11 +260,11 @@ export default function AiOverlayCard({
         </label>
       </div>
       <p>
-        <a href="/settings/ai">管理 AI provider 配置</a>
+        <a href="/settings/ai">管理 AI 模型配置</a>
       </p>
       {selectedProvider ? (
         <p className="muted">
-          此 provider 的最大同时请求数：{selectedProvider.maxConcurrentRequests ?? 1}；
+          此模型服务的最大同时请求数：{selectedProvider.maxConcurrentRequests ?? 1}；
           {selectedProvider.rateLimitRpm === 20
             ? "已启用 20 请求/分钟策略"
             : "未启用 20 请求/分钟策略"}
@@ -269,30 +283,57 @@ export default function AiOverlayCard({
             </div>
             <p>{workerStatus}</p>
             <div className="ai-monitor-grid">
-              <div><span>总项目</span><strong>{stats.total}</strong></div>
-              <div><span>已完成</span><strong>{stats.completed}</strong></div>
-              <div><span>正在处理</span><strong>{running}</strong></div>
-              <div><span>待处理</span><strong>{queued - delayed}</strong></div>
-              <div><span>等待重试</span><strong>{delayed}</strong></div>
-              <div><span>失败</span><strong>{failed}</strong></div>
+              <div>
+                <span>总项目</span>
+                <strong>{stats.total}</strong>
+              </div>
+              <div>
+                <span>已完成</span>
+                <strong>{stats.completed}</strong>
+              </div>
+              <div>
+                <span>正在处理</span>
+                <strong>{running}</strong>
+              </div>
+              <div>
+                <span>待处理</span>
+                <strong>{queued - delayed}</strong>
+              </div>
+              <div>
+                <span>等待重试</span>
+                <strong>{delayed}</strong>
+              </div>
+              <div>
+                <span>失败</span>
+                <strong>{failed}</strong>
+              </div>
             </div>
             {delayed > 0 ? (
               <p className="notice">
-                {waitingError || "模型服务暂时不可用"}。{nextRetryAt ? `预计 ${nextRetryAt} 后自动重试。` : "Worker 会自动重试。"}
+                {waitingError || "模型服务暂时不可用"}。
+                {nextRetryAt ? `预计 ${nextRetryAt} 后自动重试。` : "Worker 会自动重试。"}
               </p>
             ) : null}
             {providerRateLimitRpm > 0 ? (
               <p className="muted">
-                当前已启用 {providerRateLimitRpm} 请求/分钟策略；服务端返回 Retry-After 时会按其等待。
+                当前已启用 {providerRateLimitRpm} 请求/分钟策略；服务端返回 Retry-After
+                时会按其等待。
               </p>
             ) : null}
-            {batch?.updated_at ? <p className="muted">每 2 秒自动刷新 · 最近状态更新：{formatTimestamp(batch.updated_at) ?? "未知"}</p> : null}
+            {batch?.updated_at ? (
+              <p className="muted">
+                每 2 秒自动刷新 · 最近状态更新：{formatTimestamp(batch.updated_at) ?? "未知"}
+              </p>
+            ) : null}
           </div>
           <p>
             已冻结模型：<strong>{batchSnapshot?.model ?? "未知"}</strong>
             {batchSnapshot?.label ? `（${batchSnapshot.label}）` : ""}
           </p>
-          <p>处理覆盖率 {stats.processedCoverage}% · 已给出 problem {stats.problem} · not_problem {stats.notProblem} · uncertain {stats.uncertain}</p>
+          <p className="ai-review-summary">
+            已处理 {stats.processedCoverage}% · 存在问题 {stats.problem} · 不构成问题{" "}
+            {stats.notProblem} · 暂不确定 {stats.uncertain}
+          </p>
         </>
       ) : (
         <p className="muted">还没有该范围的 AI batch。</p>
@@ -302,30 +343,36 @@ export default function AiOverlayCard({
           当前 provider 配置已变化；旧失败批次保持不变，可按当前配置新建批次。
         </p>
       ) : null}
-      {!isReadOnly ? <div>
-        {!hasBatch ? <button type="button" onClick={createBatch}>一键处理 incomplete</button> : null}{" "}
-        {canCreateWithCurrentConfig ? (
-          <button type="button" onClick={createBatch}>
-            按当前配置重新处理 incomplete
-          </button>
-        ) : null}{" "}
-        {status === "queued" || status === "running" ? (
-          <button type="button" className="secondary" onClick={() => action("pause")}>
-            暂停
-          </button>
-        ) : null}{" "}
-        {status === "paused" ? (
-          <button type="button" className="secondary" onClick={() => action("resume")}>
-            继续
-          </button>
-        ) : null}{" "}
-        {status === "failed" ? (
-          <button type="button" className="secondary" onClick={() => action("retry")}>
-            {failedBatchHasPending ? "继续处理未完成项" : "重试失败项"}
-          </button>
-        ) : null}
-        {status === "completed" ? <span className="pill">completed</span> : null}
-      </div> : null}
+      {!isReadOnly ? (
+        <div>
+          {!hasBatch ? (
+            <button type="button" onClick={createBatch}>
+              一键处理 incomplete
+            </button>
+          ) : null}{" "}
+          {canCreateWithCurrentConfig ? (
+            <button type="button" onClick={createBatch}>
+              按当前配置重新处理 incomplete
+            </button>
+          ) : null}{" "}
+          {status === "queued" || status === "running" ? (
+            <button type="button" className="secondary" onClick={() => action("pause")}>
+              暂停
+            </button>
+          ) : null}{" "}
+          {status === "paused" ? (
+            <button type="button" className="secondary" onClick={() => action("resume")}>
+              继续
+            </button>
+          ) : null}{" "}
+          {status === "failed" ? (
+            <button type="button" className="secondary" onClick={() => action("retry")}>
+              {failedBatchHasPending ? "继续处理未完成项" : "重试失败项"}
+            </button>
+          ) : null}
+          {status === "completed" ? <span className="pill">已完成</span> : null}
+        </div>
+      ) : null}
     </div>
   );
 }

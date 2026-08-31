@@ -1,13 +1,17 @@
 # AccessCheck Lishui
 
-AccessCheck 是一个可自托管的网页无障碍扫描工具：校验 URL 后发现同站页面，使用 Playwright/axe 扫描，将结果写入 SQLite，并提供问题、评分和报告。管理员使用访问密钥管理扫描、AI 和发布；访客密钥只能查看已发布报告。评分用于筛查和比较，不等同于人工审计或合规认证。
+AccessCheck 是一个可自托管的网页无障碍扫描工具。它从一个网址发现同站页面，用真实浏览器和 axe 扫描，把结果写入 SQLite，再生成问题、评分和报告。管理员使用访问密钥管理扫描、AI 和发布；访客密钥只能查看已发布报告。评分用于筛查和比较，不等同于人工审计或合规认证。
+
+## 先从这里开始
+
+第一次了解项目时，只读 [文档地图](docs/README.md) 里的角色路径。所有人先读 [项目说明](docs/项目说明.md)，之后按自己的工作选择一条路径，不需要通读整个 `docs/` 目录。
 
 ## 前置环境
 
 - Node.js `24.19.0`、pnpm `11.19.0`、Python `3.12.13`。
 - 复制 `.env.example` 为 `.env.local`，将 `SESSION_SECRET` 换成至少 32 个随机字符。它同时用于 AI Provider API Key 加密和访问会话签名；不要把它提交到 Git。
 - 在 `.env.local` 设置不同的 `ADMIN_ACCESS_KEY` 和 `VISITOR_ACCESS_KEY`（均至少 16 个字符）。管理员可扫描、处理、发布和配置 AI；访客仅可读取已发布报告。
-- 生产扫描需要显式配置受控 `EGRESS_PROXY_URL`。完整的单 VPS 部署步骤见 [部署说明](docs/ops/deployment.md)。
+- 生产扫描 Worker 的受控 `EGRESS_PROXY_URL` 由 `compose.prod.yaml` 固定注入；部署者不需要在 `.env.production` 中填写它。完整的单 VPS 部署步骤见 [部署说明](docs/ops/deployment.md)。
 
 ## 本地启动
 
@@ -17,7 +21,13 @@ pnpm db:migrate
 pnpm dev
 ```
 
-`pnpm dev` 会一起启动 Web、扫描 Worker 和 AI Worker，点击扫描或 AI 处理后会自动消费队列；按 Ctrl+C 会一并停止它们。启动后先在登录页输入管理员或访客访问密钥。需要单独调试某个进程时，仍可另开终端运行 `pnpm worker` 或 `pnpm ai:worker`。也可以直接运行：
+`pnpm db:migrate` 会创建或升级本地 SQLite 数据库结构。`pnpm dev` 会一起启动 Web、扫描 Worker 和 AI Worker。
+
+- **Web 和数据库**：访问 `http://localhost:3000/api/health` 返回 `status: ok`。
+- **扫描 Worker**：两个 Worker 启动后会持续运行并轮询队列；提交一次扫描后，看到扫描任务从 queued 进入 running 或完成，并看到扫描 Worker 的 `scan job started` 日志。终端没有 `worker crashed` 或进程退出，表示进程已就绪。
+- **AI Worker**：提交 AI 复核批次后，看到批次从 queued 进入 running 或完成。终端没有 `worker crashed` 或进程退出，表示进程已就绪。
+
+扫描 Worker 处理扫描队列，AI Worker 处理 AI 复核队列。默认访问地址是 `http://localhost:3000`，端口由 `APP_BASE_URL` 控制，未另行设置时为 `3000`。按 Ctrl+C 会一并停止三个进程。启动异常或需要排障时，请转读 [运维说明](docs/operations.md)，不要打印或粘贴任何密钥。启动后先在登录页输入管理员或访客访问密钥。需要单独调试某个进程时，仍可另开终端运行 `pnpm worker` 或 `pnpm ai:worker`。`pnpm scan:site` 用于从给定网址发现并扫描同站页面，结果写入数据库；例如：
 
 ```text
 pnpm scan:site -- https://example.org --max-pages 10
@@ -40,8 +50,8 @@ pnpm scan:site -- https://example.org --max-pages 10
 
 ## 数据与安全边界
 
-Worker 只处理队列中的扫描任务并写入结果；生产 Worker 必须通过显式 egress proxy 出站，不能绕过代理访问公网。私网、环回地址、凭据 URL 和未授权目标会被拒绝。生产环境必须使用随机 `SESSION_SECRET`、不同的管理员/访客访问密钥、独立数据目录和受控网络配置。
+扫描 Worker 只处理队列中的扫描任务并写入结果，AI Worker 只处理 AI 复核队列并写入辅助结论；两者都不会把密钥发送给浏览器。生产 Worker 必须通过显式 egress proxy 出站，不能绕过代理访问公网。私网、环回地址、凭据 URL 和未授权目标会被拒绝。生产环境必须使用随机 `SESSION_SECRET`、不同的管理员/访客访问密钥、独立数据目录和受控网络配置。完整边界见 [安全边界](docs/安全边界.md)。
 
 ## 容量提示
 
-本地 SQLite 适合约 10–20 个网站、约 100–300 个成功页面及其 axe 结果。更大规模或正式部署需要另行设计存储、网络和运维方案。
+本地 SQLite 适合约 10 到 20 个网站、约 100 到 300 个成功页面及其 axe 结果。更大规模或正式部署需要另行设计存储、网络和运维方案。

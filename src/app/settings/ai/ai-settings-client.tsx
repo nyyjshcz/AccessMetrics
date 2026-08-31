@@ -117,7 +117,7 @@ export default function AiSettingsClient() {
         setModels(data.models ?? []);
         setNotice({
           kind: "success",
-          text: `已从“${saved.label}”读取 ${data.models?.length ?? 0} 个可选模型。`,
+          text: `服务端返回 ${data.models?.length ?? 0} 个模型 ID；这不表示模型已下载或一定可调用。选择后请再运行连接测试。`,
         });
       } else setNotice({ kind: "success", text: "连接测试成功。" });
     } catch (error) {
@@ -147,16 +147,17 @@ export default function AiSettingsClient() {
 
   return (
     <section className="card ai-settings-card">
-      <p className="eyebrow">AI 设置</p>
+      <p className="eyebrow">MODEL SERVICES</p>
       <div className="section-heading">
         <div>
-          <h1>AI provider</h1>
-          <p className="muted">
-            仅支持 OpenAI-compatible API。AI 只辅助判断 incomplete，不会覆盖原始 axe 结果。
+          <h1>AI 模型配置</h1>
+          <p className="settings-lede">
+            仅支持 OpenAI-compatible API。AI 只辅助处理需要进一步判断的项目，不会覆盖原始 axe
+            结果或人工判断。
           </p>
         </div>
         <button type="button" onClick={() => edit()}>
-          添加 provider
+          添加模型服务
         </button>
       </div>
       {notice && (
@@ -166,7 +167,7 @@ export default function AiSettingsClient() {
       )}
       {!providers.length && !draft && (
         <p className="notice">
-          还没有模型配置。点击“添加 provider”，填写 Base URL、模型名称和 API Key 后保存。
+          还没有模型配置。点击“添加模型服务”，填写 Base URL、模型名称和 API Key 后保存。
         </p>
       )}
       <div className="provider-list">
@@ -236,8 +237,8 @@ export default function AiSettingsClient() {
               .finally(() => setBusy(null));
           }}
         >
-          <h2>{draft.id ? "编辑 provider" : "添加 provider"}</h2>
-          <label htmlFor="provider-label">名称</label>
+          <h2>{draft.id ? "编辑模型服务" : "添加模型服务"}</h2>
+          <label htmlFor="provider-label">显示名称</label>
           <input
             id="provider-label"
             required
@@ -285,7 +286,8 @@ export default function AiSettingsClient() {
             }
           />
           <small className="muted">
-            同一 provider 的所有扫描共用此上限；本地 LM Studio 通常设为 1，OpenRouter 免费模型建议先设为 1。
+            同一模型服务的所有扫描共用此上限；本地 LM Studio 通常设为 1，OpenRouter
+            免费模型建议先设为 1。
           </small>
           <label htmlFor="provider-rate-limit">请求速率策略</label>
           <select
@@ -302,7 +304,8 @@ export default function AiSettingsClient() {
             <option value="20">启用 20 请求/分钟策略</option>
           </select>
           <small className="muted">
-            只影响新建的 AI 批次；最大并发仍独立生效。OpenRouter 免费模型可用此策略避免超过官方速率。
+            只影响新建的 AI 批次；最大并发仍独立生效。启用后会按 20 请求/分钟节流，适合 OpenRouter
+            免费模型。
           </small>
           <label htmlFor="provider-api-key">API Key</label>
           <input

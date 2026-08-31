@@ -2,11 +2,11 @@
 
 - 当前状态：`WAITING_EXTERNAL_INPUT`
 - 薄 AI Overlay 自动化实现：已完成；不改变原始 axe、原始 score、人工审核、WCAG catalog、human `study_final` 或现有 CSV contract。迁移 27 增加 `result_nodes` 三个 evidence 字段与 `ai_provider_configs`、`ai_review_batches`、`ai_review_items` 三张表；迁移 28 增加 study freeze 的 catalog/rule-catalog 版本快照；AI worker、OpenAI-compatible provider 设置、动态三值评分映射、formal `study_final_ai` 导出和现有页面 AI 卡片已接入。旧扫描缺 evidence 时只返回 `RESCAN_REQUIRED`。
-- 2026-08-25 按《AccessMetrics 薄 AI Overlay：最终实施计划》逐条自审并收紧：formal batch 创建前重新校验 frozen population digest/数量；终态 `failed` batch 必须走“重试失败项”后才能继续；页面范围优先读取页面 batch 并显示已冻结模型；新增真实 Playwright incomplete evidence 断言、population 失配和失败续跑测试。详细核对表见 [docs/ai-overlay-plan-audit.md](docs/ai-overlay-plan-audit.md)。
+- 2026-08-25 按《AccessMetrics 薄 AI Overlay：最终实施计划》逐条自审并收紧：formal batch 创建前重新校验 frozen population digest/数量；终态 `failed` batch 必须走“重试失败项”后才能继续；页面范围优先读取页面 batch 并显示已冻结模型；新增真实 Playwright incomplete evidence 断言、population 失配和失败续跑测试。详细核对表见 [历史 AI 方案审计](legacy/plans/ai-overlay-plan-audit.md)。
 - 2026-08-26 按最终 15 项收敛清单完成实现与自审：CI 先安装 pnpm；Web/Scan Worker 启动检查拆分；Caddy CSP 去重；discover 与 page scan 均有 job/page heartbeat；评分读取扫描时冻结的 `scoring_eligible`/principles；study freeze 保存 `catalogVersion`/`ruleCatalogHash`；TypeScript/Python/导出统一评分语义；研究汇总与普通已发布 run 分区；报告完成状态/时间文案修正；URL 安全覆盖 mapped IPv6 与 0/8。`pnpm test:all` 最终全绿，详见下方 2026-08-26 质量门记录。
 - 当前自动化基线 commit：本提交（以 `git rev-parse HEAD` 获取完整 SHA；未创建 release tag，未公网发布）。
 - 自动化实现：已完成计划步骤 1–17，以及步骤 18/19 所有不依赖真人或外部单位的代码、契约、脚手架、fixture、报告生成器、可复现分析管线和 fail-closed 校验。
-- 真实阻塞：R1–R5 真人确认、真实研究站点/许可/标准来源、生产服务器/域名/密钥/镜像与渲染器 digest。详见 [EXTERNAL_INPUTS.md](EXTERNAL_INPUTS.md)。
+- 真实阻塞：R1–R5 真人确认、真实研究站点/许可/标准来源、生产服务器/域名/密钥/镜像与渲染器 digest。详见 [EXTERNAL_INPUTS.md](legacy/validation/EXTERNAL_INPUTS.md)。
 
 ## 已实现链路
 
@@ -23,7 +23,7 @@
 - 可复现分析管线：只接受带 `manifest.json`/`manifest.sha256` 的已验证导出，输出 `report-data-v1`、站点分数/常见规则/严重度/四原则/敏感性/人工样本边界、确定性图表和数据表；Jupyter notebook 在缺真实导出时明确等待，不生成假研究结论。
 - `analysis:run` 现在会执行并保存 `accesscheck_analysis.executed.ipynb`；优先使用 Jupyter/nbconvert，缺少该命令时使用仓库内标准库 runner，代码 cell 异常会使命令失败。
 - 扫描器对 HTTP/HTTPS、SSRF、robots 重定向、service worker、同源/跨源 frame、axe 超时和非 HTML 响应统一记录；coverage 状态使用 `full`、`no_child_frames`、`coverage_limited` 并保存原因。
-- 真实公开站点 smoke 复核发现并修复同一页面多个执行上下文返回同一 axe 规则时的唯一键冲突：现在会合并规则元数据、保留所有 frame 节点证据，避免把正常页面错误记成 `SQLITE_CONSTRAINT_UNIQUE`；新增集成回归覆盖该路径。丽水候选站点侦察和三份私有 run export 见 `docs/research/丽水市残联站点调研与人工审核说明.md`，不改变 `WAITING_EXTERNAL_INPUT`。
+- 真实公开站点 smoke 复核发现并修复同一页面多个执行上下文返回同一 axe 规则时的唯一键冲突：现在会合并规则元数据、保留所有 frame 节点证据，避免把正常页面错误记成 `SQLITE_CONSTRAINT_UNIQUE`；新增集成回归覆盖该路径。丽水候选站点侦察和三份私有 run export 见 `legacy/research/丽水市残联站点调研与人工审核说明.md`，不改变 `WAITING_EXTERNAL_INPUT`。
 - 任务完成页可直接进入结果页；结果与重算 API 将精确分数的 BigInt 序列化为字符串；输入页、结果页、研究页、HTML/PDF 报告均显示统一项目边界免责声明。
 - 本地 Compose Web 使用 standalone server 启动，生产 Caddy 使用外部 `CADDY_SITE`，仅在 HTTPS 请求上启用 HSTS；运维静态检查会拒绝误用 `next start` 的 compose 配置。
 - 仓库发布卫生门 `pnpm hygiene:check` 会检查密钥/证书模式、超大文件、符号链接、治理文件和 `.gitignore` 隔离；发行验证脚本会在外部输入齐全后执行 candidate 单 parent/白名单差异、manifest/gate hash、DB CAS、clean clone、镜像 provenance 和 publish-readiness 核验。

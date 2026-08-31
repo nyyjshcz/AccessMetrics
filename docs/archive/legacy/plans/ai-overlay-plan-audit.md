@@ -1,5 +1,7 @@
 # 薄 AI Overlay 最终实施计划：逐条自审记录
 
+> **历史参考。** 本文是 AI 方案演进时的自审记录；当前行为以 [架构](../../../architecture.md) 和代码为准。
+
 日期：2026-08-25  
 审计对象：当前 `codex/thin-ai-overlay` 工作区  
 审计原则：只核对最终实施计划，不把 fixture、fake provider 或模型草稿当成正式研究证据；发现外部输入缺失时保持 `WAITING_EXTERNAL_INPUT`。
@@ -61,4 +63,4 @@
 - 生产服务器、域名、密钥、egress proxy、Docker/镜像和 Playwright/文档渲染器 digest；
 - LibreOffice/Poppler 的正式视觉 QA 和负责人签收。
 
-因此当前项目状态仍是 `WAITING_EXTERNAL_INPUT`。收到真实输入后，按 `EXTERNAL_INPUTS.md` 记录并使用 `pnpm project:resume` 幂等续跑。
+因此当前项目状态仍是 `WAITING_EXTERNAL_INPUT`。收到真实输入后，按[旧版外部输入说明](../validation/EXTERNAL_INPUTS.md)记录并使用 `pnpm project:resume` 幂等续跑。

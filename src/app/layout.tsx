@@ -8,9 +8,15 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     <html lang="zh-CN">
       <body>
         <header className="topbar">
-          <div className="shell">
+          <div className="shell topbar-inner">
             <Link className="brand" href={role === "visitor" ? "/reports" : "/"}>
-              AccessCheck Lishui
+              <span className="brand-mark" aria-hidden="true">
+                AC
+              </span>
+              <span className="brand-copy">
+                <span>AccessCheck Lishui</span>
+                <small>网页无障碍评估</small>
+              </span>
             </Link>
             <nav className="topnav" aria-label="主导航">
               {role === "admin" && (

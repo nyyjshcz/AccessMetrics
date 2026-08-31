@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import StatusBadge from "@/components/status-badge";
 
 type HomeClientProps = {
   view: "active" | "published";
@@ -18,6 +19,13 @@ type ScanListRow = {
 };
 
 const deletableStatuses = new Set(["completed", "failed", "cancelled"]);
+
+const principles = [
+  ["可感知", "P", "替代文本、颜色对比度、内容结构"],
+  ["可操作", "O", "键盘操作、焦点、链接与控件名称"],
+  ["易理解", "U", "语言、标题、表单标签与反馈"],
+  ["兼容性", "R", "ARIA 语义、ID 与辅助技术兼容性"],
+];
 
 export default function HomeClient({ view }: HomeClientProps) {
   const isPublishedView = view === "published";
@@ -66,51 +74,113 @@ export default function HomeClient({ view }: HomeClientProps) {
     }
   }
 
+  const heroTitle = isPublishedView ? "已发布报告" : "把网站无障碍问题，变成可以核对的结论";
+
   return (
     <>
-      <section className="card">
-        <p className="eyebrow">AccessCheck Lishui</p>
-        <h1>{isPublishedView ? "已发布报告" : "把网站无障碍问题，一步步变成可发布的报告"}</h1>
-        <p className="muted">
-          {isPublishedView
-            ? "这里仅提供已发布、只读的无障碍扫描报告。"
-            : "输入一个公开网站，系统会在同站范围内发现页面，使用 Playwright + axe-core 扫描，将规则结果、节点证据和可复核评分保存到 SQLite，并生成结构化导出。"}
-        </p>
-        <p className="muted" role="note">
-          本项目仅评价 axe-core 能够自动判断的网页无障碍检查项。分数不等同于完整人工审计、官方 WCAG
-          合规认证或“符合 WCAG 的百分比”。需要人工判断的项目会单独列出。
-        </p>
-        {!isPublishedView ? (
-          <>
-            <p>
-              <span className="pill">评分模型 accesscheck-score-v1</span>{" "}
-              <span className="pill">WCAG 2.2 映射</span> <span className="pill">可追溯导出</span>
-            </p>
-            <Link href="/scans/new">
-              <button style={{ width: "auto", paddingInline: 24 }}>新建扫描</button>
-            </Link>
-          </>
-        ) : null}
+      <section className={`home-hero ${isPublishedView ? "home-hero-reports" : ""}`}>
+        <div className="home-hero-copy">
+          <p className="eyebrow">
+            {isPublishedView ? "REPORT LIBRARY" : "ACCESSIBILITY RESEARCH WORKBENCH"}
+          </p>
+          <h1>{heroTitle}</h1>
+          <p className="home-hero-lede">
+            {isPublishedView
+              ? "这是面向评审者的只读报告库。每份报告从优先整改事项开始，并保留评分、覆盖范围和节点级证据。"
+              : "从公开网站开始，系统完成同站页面发现、浏览器渲染检查、规则归类与可追溯报告。分数用于比较和筛查，证据用于复核。"}
+          </p>
+          {!isPublishedView ? (
+            <div className="hero-actions">
+              <Link className="button-link" href="/scans/new">
+                新建扫描
+              </Link>
+              <Link className="text-link" href="/reports">
+                查看已发布报告 <span aria-hidden="true">→</span>
+              </Link>
+            </div>
+          ) : null}
+        </div>
+        <aside className="home-method" aria-label={isPublishedView ? "报告阅读说明" : "评估方法"}>
+          {isPublishedView ? (
+            <>
+              <p className="method-label">阅读顺序</p>
+              <ol className="method-list">
+                <li>
+                  <span>01</span>
+                  <strong>先看有效评分与覆盖范围</strong>
+                </li>
+                <li>
+                  <span>02</span>
+                  <strong>再看高优先级整改事项</strong>
+                </li>
+                <li>
+                  <span>03</span>
+                  <strong>必要时展开节点证据核对</strong>
+                </li>
+              </ol>
+            </>
+          ) : (
+            <>
+              <p className="method-label">评估路径</p>
+              <ol className="method-list">
+                <li>
+                  <span>01</span>
+                  <strong>发现同站页面</strong>
+                </li>
+                <li>
+                  <span>02</span>
+                  <strong>以真实浏览器状态运行 axe</strong>
+                </li>
+                <li>
+                  <span>03</span>
+                  <strong>把规则、节点与结论写入报告</strong>
+                </li>
+              </ol>
+            </>
+          )}
+        </aside>
       </section>
-      <section className="card" style={{ marginTop: 16 }}>
-        <div className="section-heading">
+
+      <section className="content-section">
+        <div className="section-heading section-heading-spacious">
           <div>
+            <p className="section-kicker">
+              {isPublishedView ? "PUBLISHED OUTPUT" : "CURRENT WORK"}
+            </p>
             <h2>{isPublishedView ? "报告列表" : "活动任务"}</h2>
             <p className="muted">
               {isPublishedView
-                ? "已发布的结果为只读，可随时打开或下载。"
-                : "正在扫描或尚未发布的任务。"}
+                ? "报告一经发布即为只读，管理员和报告访客看到的内容一致。"
+                : "这里显示正在扫描、等待处理或尚未发布的任务；已发布内容移至报告库。"}
             </p>
           </div>
-          {!isPublishedView ? <Link href="/reports">查看已发布报告</Link> : null}
+          {!isPublishedView ? (
+            <Link className="text-link" href="/reports">
+              打开报告库 <span aria-hidden="true">→</span>
+            </Link>
+          ) : null}
         </div>
+
         {deleteError ? (
-          <p className="error" role="alert">
+          <p className="error notice" role="alert">
             {deleteError}
           </p>
         ) : null}
+
         {runs.length === 0 ? (
-          <p className="muted">暂无记录。</p>
+          <div className="empty-state app-empty-state">
+            <strong>{isPublishedView ? "还没有已发布报告" : "当前没有活动任务"}</strong>
+            <p>
+              {isPublishedView
+                ? "完成扫描并发布后，报告会出现在这里，供持有访客密钥的人只读查看。"
+                : "从一个公开网站开始创建扫描；系统会记录页面覆盖、规则结果和可复核的节点证据。"}
+            </p>
+            {!isPublishedView ? (
+              <Link className="button-link button-link-compact" href="/scans/new">
+                新建扫描
+              </Link>
+            ) : null}
+          </div>
         ) : (
           <div className="run-list">
             {runs.map((row) => {
@@ -121,50 +191,59 @@ export default function HomeClient({ view }: HomeClientProps) {
                 status === "completed" || status === "completed_with_errors"
                   ? (`/scans/${row.run_id ?? row.job_id}` as `/scans/${string}`)
                   : (`/scans/jobs/${row.job_id}` as `/scans/jobs/${string}`);
+
               return (
-                <div className="run-row" key={row.run_id ?? row.job_id}>
+                <article className="run-row" key={row.run_id ?? row.job_id}>
                   <Link className="run-row-link" href={destination}>
                     <div className="run-row-info">
                       <strong>{row.name}</strong>
                       <span className="muted">{row.origin}</span>
                     </div>
-                    <span className="pill">{row.published ? "已发布" : status}</span>
+                    <span className="run-row-open" aria-hidden="true">
+                      查看 <span>→</span>
+                    </span>
                   </Link>
-                  {deletable ? (
-                    <div className="run-row-actions">
+                  <div className="run-row-meta">
+                    <StatusBadge status={status} published={row.published === 1} />
+                    {deletable ? (
                       <button
                         type="button"
-                        className="danger-button"
+                        className="danger-button compact-button"
                         disabled={deletingJobId !== null}
                         onClick={() => void deleteTask(row)}
                       >
                         {deletingJobId === row.job_id ? "删除中…" : "删除"}
                       </button>
-                    </div>
-                  ) : null}
-                </div>
+                    ) : null}
+                  </div>
+                </article>
               );
             })}
           </div>
         )}
       </section>
+
       {!isPublishedView ? (
-        <section className="grid" style={{ marginTop: 16 }}>
-          <div className="card">
-            <h2>可感知</h2>
-            <p>图片替代文本、颜色对比度、内容结构等。</p>
+        <section className="principle-section" aria-labelledby="principle-heading">
+          <div className="section-heading section-heading-spacious">
+            <div>
+              <p className="section-kicker">WCAG PRINCIPLES</p>
+              <h2 id="principle-heading">四项评估维度</h2>
+            </div>
+            <p className="muted principle-summary">
+              结果按可感知、可操作、易理解和兼容性组织；它们是报告的阅读框架，不是“合规百分比”。
+            </p>
           </div>
-          <div className="card">
-            <h2>可操作</h2>
-            <p>键盘操作、链接和按钮名称、焦点路径等。</p>
-          </div>
-          <div className="card">
-            <h2>易理解</h2>
-            <p>语言、标题、表单标签和错误提示等。</p>
-          </div>
-          <div className="card">
-            <h2>兼容性</h2>
-            <p>ARIA 角色、重复 ID 与辅助技术语义等。</p>
+          <div className="principle-overview">
+            {principles.map(([name, initials, description]) => (
+              <article key={name}>
+                <span aria-hidden="true">{initials}</span>
+                <div>
+                  <h3>{name}</h3>
+                  <p>{description}</p>
+                </div>
+              </article>
+            ))}
           </div>
         </section>
       ) : null}

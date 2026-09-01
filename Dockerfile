@@ -15,10 +15,16 @@ RUN pnpm build
 # `.next/` is excluded from the Docker build context, so copy the standalone
 # output from the build stage's filesystem instead of asking Docker to read it
 # from the host context. Next's standalone server does not include these two
-# asset directories by default.
+# asset directories by default. Playwright's browser descriptor is also
+# loaded through a runtime-computed path, so it is copied explicitly below.
 RUN cp -r .next/standalone ./standalone \
     && cp -r .next/static ./standalone/.next/ \
     && cp -r public ./standalone/public \
+    && playwright_core_json="$(find node_modules/.pnpm -path '*/playwright-core/browsers.json' -print -quit)" \
+    && standalone_core_dir="$(find standalone/node_modules/.pnpm -type d -path '*/playwright-core' -print -quit)" \
+    && test -n "$playwright_core_json" \
+    && test -n "$standalone_core_dir" \
+    && cp "$playwright_core_json" "$standalone_core_dir/browsers.json" \
     && rm -rf /app/.next
 COPY scripts/healthcheck.mjs ./scripts/healthcheck.mjs
 RUN mkdir -p /app/data /app/artifacts/private /app/artifacts/public

@@ -21,5 +21,9 @@ RUN cp -r .next/standalone ./standalone \
     && cp -r public ./standalone/public
 COPY scripts/healthcheck.mjs ./scripts/healthcheck.mjs
 RUN mkdir -p /app/data /app/artifacts/private /app/artifacts/public
+# The runtime containers intentionally use non-root UIDs.  Make the checked-in
+# application, standalone output, and static assets readable/traversable while
+# keeping runtime data on the mounted volumes.
+RUN chmod -R a+rX /app
 EXPOSE 3000
 CMD ["node", "standalone/server.js"]

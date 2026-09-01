@@ -4,7 +4,7 @@ RUN set -eux; \
     if ! getent group proxy >/dev/null; then groupadd --system proxy; fi; \
     if ! getent passwd proxy >/dev/null; then useradd --system --gid proxy --no-create-home proxy; fi
 WORKDIR /app
-COPY proxy.mjs acl.yaml ./
+COPY --chown=proxy:proxy proxy.mjs acl.yaml ./
 USER proxy
 EXPOSE 8080
 CMD ["node", "proxy.mjs"]

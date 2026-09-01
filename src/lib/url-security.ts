@@ -13,6 +13,36 @@ type DohAnswer = { type?: number; data?: string; TTL?: number };
 type DohResponse = { Status?: number; Answer?: DohAnswer[] };
 type ProxyResolution = { addresses?: unknown };
 
+function parseIpv6Words(address: string): number[] | null {
+  let value = address.toLowerCase();
+  if (value.includes(".")) {
+    const separator = value.lastIndexOf(":");
+    if (separator < 0) return null;
+    const octets = value
+      .slice(separator + 1)
+      .split(".")
+      .map(Number);
+    if (
+      octets.length !== 4 ||
+      octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+    )
+      return null;
+    value = `${value.slice(0, separator)}:${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
+  }
+  const halves = value.split("::");
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  if ([...left, ...right].some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return null;
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) return null;
+  return [
+    ...left.map((part) => Number.parseInt(part, 16)),
+    ...Array.from({ length: missing }, () => 0),
+    ...right.map((part) => Number.parseInt(part, 16)),
+  ];
+}
+
 const dohCache = new Map<string, { addresses: string[]; expiresAt: number }>();
 
 export function parseDohAnswers(payload: DohResponse, recordType: 1 | 28) {
@@ -141,14 +171,11 @@ export function isPrivateIp(address: string): boolean {
     // bypass the same policy applied to ordinary IPv4 results.
     const compatibleDotted = normalized.match(/^::(\d+\.\d+\.\d+\.\d+)$/)?.[1];
     if (compatibleDotted) return isPrivateIp(compatibleDotted);
-    const words = normalized.split("::");
-    if (words.length === 2 && words[0] === "" && words[1]) {
-      const tail = words[1].split(":");
-      if (tail.length === 2 && tail.every((part) => /^[0-9a-f]{1,4}$/.test(part))) {
-        const high = Number.parseInt(tail[0], 16);
-        const low = Number.parseInt(tail[1], 16);
-        return isPrivateIp([high >>> 8, high & 255, low >>> 8, low & 255].join("."));
-      }
+    const words = parseIpv6Words(normalized);
+    if (words?.slice(0, 6).every((word) => word === 0)) {
+      const high = words[6];
+      const low = words[7];
+      return isPrivateIp([high >>> 8, high & 255, low >>> 8, low & 255].join("."));
     }
     return false;
   }

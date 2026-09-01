@@ -29,7 +29,7 @@ APP_BASE_URL=https://nas-name.tailnet-name.ts.net
 
 迁移当前数据前，先停止本机 Web、扫描 Worker 和 AI Worker，并用项目备份流程得到一致副本。迁移 `data/`、`private-inputs/`、`data/exports/` 和三个 secret 文件。`session_secret` 必须保留原值，否则已保存的远程 AI Provider Key 无法解密。不迁移指向 `127.0.0.1:1234` 的 LM Studio 等本机 AI Provider；远程 Provider 可保留。
 
-不要把密钥写进 Compose、`.env.nas`、Shell 历史或 Git。按 Compose 使用的 UID/GID 设置权限：
+不要把密钥写进 Compose、`.env.nas`、Shell 历史或 Git。NAS 使用非 Swarm Compose 时，Compose 的 `uid`、`gid`、`mode` 字段不会改变 secret bind mount 的权限；因此必须直接设置宿主机文件的数字组和权限。让 secret 文件归 root 所有、属于共享读取组 10000，并设为 0440：
 
 ```sh
 chown 10001:10001 private-inputs
@@ -37,10 +37,12 @@ chmod 700 private-inputs
 chown -R 10001:10000 data
 find data -type d -exec chmod 2770 {} +
 find data -type f -exec chmod 0660 {} +
-chmod 700 .secrets
-chmod 600 .secrets/*
+chown root:10000 .secrets/*
+chmod 0440 .secrets/*
 docker compose --env-file .env.nas -f compose.nas.yaml config --quiet
 ```
+
+这三个文件分别供 Web 读取访问控制和会话密钥，AI Worker 读取会话密钥。Compose 会把它们挂载到 `/run/secrets/`；应用容器仍以非 root 用户运行，依靠组 10000 读取。`deploy:nas:check` 会只检查文件类型、权限和组，不会输出密钥内容。
 
 启动并检查：
 

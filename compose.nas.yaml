@@ -28,19 +28,10 @@ services:
     secrets:
       - source: session_secret
         target: session_secret
-        uid: "10001"
-        gid: "10000"
-        mode: 0440
       - source: admin_access_key
         target: admin_access_key
-        uid: "10001"
-        gid: "10000"
-        mode: 0440
       - source: visitor_access_key
         target: visitor_access_key
-        uid: "10001"
-        gid: "10000"
-        mode: 0440
     command: ["sh", "-c", "umask 0002 && exec node standalone/server.js"]
     expose: [3000]
     healthcheck:
@@ -103,9 +94,6 @@ services:
     secrets:
       - source: session_secret
         target: session_secret
-        uid: "10003"
-        gid: "10000"
-        mode: 0440
     # Invoke the bundled CLI directly; see the worker comment above.
     command: ["sh", "-c", "umask 0002 && exec node node_modules/tsx/dist/cli.mjs src/worker/ai.ts"]
     networks: [app]

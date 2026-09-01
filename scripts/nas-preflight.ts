@@ -60,8 +60,12 @@ function checkSecret(secretsDir: string, name: string, minimumLength: number) {
         `${path.relative(process.cwd(), file)} must contain at least ${minimumLength} characters`,
       );
     }
-    if (process.platform !== "win32" && (stat.mode & 0o777) !== 0o600)
-      errors.push(`${path.relative(process.cwd(), file)} permissions must be 0600`);
+    if (process.platform !== "win32") {
+      if ((stat.mode & 0o777) !== 0o440)
+        errors.push(`${path.relative(process.cwd(), file)} permissions must be 0440`);
+      if (stat.gid !== 10000)
+        errors.push(`${path.relative(process.cwd(), file)} must use group 10000`);
+    }
     return value;
   } catch {
     errors.push(`missing readable secret file: ${path.relative(process.cwd(), file)}`);

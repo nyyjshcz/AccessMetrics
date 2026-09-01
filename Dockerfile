@@ -23,7 +23,10 @@ COPY scripts/healthcheck.mjs ./scripts/healthcheck.mjs
 RUN mkdir -p /app/data /app/artifacts/private /app/artifacts/public
 # The runtime containers intentionally use non-root UIDs.  Make the checked-in
 # application, standalone output, and static assets readable/traversable while
-# keeping runtime data on the mounted volumes.
-RUN chmod -R a+rX /app
+# keeping runtime data on the mounted volumes.  Skip node_modules: its package
+# files already have standard readable modes, and walking it here is very slow
+# on the NAS overlay filesystem.
+RUN find /app \( -path /app/node_modules -o -path /app/standalone/node_modules \) -prune -o -type d -exec chmod a+rx {} + \
+    && find /app \( -path /app/node_modules -o -path /app/standalone/node_modules \) -prune -o -type f -exec chmod a+r {} +
 EXPOSE 3000
 CMD ["node", "standalone/server.js"]

@@ -110,16 +110,24 @@ export class DestinationPolicy {
     this.lookupAll = lookupAll;
   }
 
-  async resolve(hostname, port) {
+  async lookup(hostname) {
     const host = normalizeHost(hostname);
-    if (!ALLOWED_PORTS.has(Number(port))) throw new Error("port not allowed");
     if (METADATA_HOSTS.has(host)) throw new Error("metadata destination not allowed");
-    const addresses = net.isIP(host) ? [{ address: host }] : await this.lookupAll(host);
-    if (!addresses.length || addresses.some((entry) => isForbiddenAddress(entry.address)))
+    const entries = net.isIP(host) ? [{ address: host }] : await this.lookupAll(host);
+    const addresses = entries
+      .map((entry) => (typeof entry === "string" ? entry : entry.address))
+      .filter((address) => typeof address === "string" && net.isIP(address) !== 0);
+    if (!addresses.length || addresses.some((address) => isForbiddenAddress(address)))
       throw new Error("private destination not allowed");
+    return { host, addresses: [...new Set(addresses)] };
+  }
+
+  async resolve(hostname, port) {
+    if (!ALLOWED_PORTS.has(Number(port))) throw new Error("port not allowed");
+    const resolved = await this.lookup(hostname);
     // The chosen address is returned to the caller and used by the dialer;
     // the original hostname is never passed to a downstream socket resolver.
-    return { host, port: Number(port), address: addresses[0].address };
+    return { host: resolved.host, port: Number(port), address: resolved.addresses[0] };
   }
 }
 
@@ -160,6 +168,18 @@ function audit(event, details) {
 export function createProxyServer({ policy = new DestinationPolicy() } = {}) {
   const server = http.createServer(async (request, response) => {
     try {
+      const requestUrl = new URL(request.url ?? "/", "http://egress-proxy.internal");
+      if (request.method === "GET" && requestUrl.pathname === "/resolve") {
+        const hostname = requestUrl.searchParams.get("name");
+        if (!hostname) throw new Error("resolver name is required");
+        const resolved = await policy.lookup(hostname);
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+        });
+        response.end(JSON.stringify({ addresses: resolved.addresses }));
+        return;
+      }
       const { target, port } = requestTarget(request.url);
       const resolved = await policy.resolve(target.hostname, port);
       audit("forward", {

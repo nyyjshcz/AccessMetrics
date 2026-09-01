@@ -11,6 +11,7 @@ export interface NetworkPolicy {
 
 type DohAnswer = { type?: number; data?: string; TTL?: number };
 type DohResponse = { Status?: number; Answer?: DohAnswer[] };
+type ProxyResolution = { addresses?: unknown };
 
 const dohCache = new Map<string, { addresses: string[]; expiresAt: number }>();
 
@@ -56,10 +57,36 @@ async function dohLookupAll(hostname: string) {
   return addresses;
 }
 
+export function parseProxyResolution(payload: ProxyResolution) {
+  if (!Array.isArray(payload.addresses)) return [];
+  return payload.addresses.filter(
+    (address): address is string => typeof address === "string" && net.isIP(address) !== 0,
+  );
+}
+
+const proxyLookupAll = async (hostname: string) => {
+  if (!config.EGRESS_PROXY_URL) throw new Error("EGRESS_PROXY_URL is not configured");
+  const endpoint = new URL("/resolve", config.EGRESS_PROXY_URL);
+  endpoint.searchParams.set("name", hostname);
+  const response = await fetch(endpoint, {
+    redirect: "error",
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error(`proxy resolver failed: ${response.status}`);
+  const addresses = parseProxyResolution((await response.json()) as ProxyResolution);
+  if (addresses.length === 0) throw new Error("proxy resolver returned no address");
+  return addresses;
+};
+
 const systemLookupAll = async (host: string) =>
   (await dns.lookup(host, { all: true })).map((item) => item.address);
 const defaultPolicy: NetworkPolicy = {
-  lookupAll: config.DNS_RESOLVER_MODE === "doh" ? dohLookupAll : systemLookupAll,
+  lookupAll:
+    config.DNS_RESOLVER_MODE === "doh"
+      ? dohLookupAll
+      : config.DNS_RESOLVER_MODE === "proxy"
+        ? proxyLookupAll
+        : systemLookupAll,
   allowPrivateAddresses:
     config.APP_ENV === "test" && process.env.SCAN_TEST_ALLOW_PRIVATE_ADDRESSES === "1",
 };

@@ -66,6 +66,7 @@ services:
       HTTP_PROXY: http://egress-proxy:8080
       NO_PROXY: localhost,127.0.0.1
       EGRESS_PROXY_URL: http://egress-proxy:8080
+      DNS_RESOLVER_MODE: proxy
     volumes:
       - ./data:/var/lib/accesscheck/data:rw
     # Invoke the bundled CLI directly. Running through pnpm would make

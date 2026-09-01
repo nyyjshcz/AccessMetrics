@@ -23,7 +23,7 @@ const envSchema = z.object({
   SCAN_RETRY_COUNT: z.coerce.number().int().min(0).max(3).default(1),
   MAX_CRAWL_DEPTH: z.coerce.number().int().min(0).max(10).default(2),
   MAX_SITE_DURATION_MS: z.coerce.number().int().min(1000).max(1800000).default(600000),
-  DNS_RESOLVER_MODE: z.enum(["system", "doh"]).default("system"),
+  DNS_RESOLVER_MODE: z.enum(["system", "doh", "proxy"]).default("system"),
   DNS_OVER_HTTPS_URL: z.string().url().optional(),
   EGRESS_PROXY_URL: z.preprocess(
     (value) => (value === "" ? undefined : value),
@@ -80,6 +80,11 @@ export function assertProductionProxy() {
 }
 
 export function assertDnsResolver() {
+  if (config.DNS_RESOLVER_MODE === "proxy") {
+    if (!config.EGRESS_PROXY_URL)
+      throw new Error("EGRESS_PROXY_URL is required when DNS_RESOLVER_MODE=proxy");
+    return;
+  }
   if (config.DNS_RESOLVER_MODE !== "doh") return;
   if (config.APP_ENV === "production")
     throw new Error("DNS_RESOLVER_MODE=doh is not allowed in production");

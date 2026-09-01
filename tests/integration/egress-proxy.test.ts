@@ -1,0 +1,26 @@
+import { describe, expect, it } from "vitest";
+import { createProxyServer, DestinationPolicy } from "../../tools/egress-proxy/proxy.mjs";
+
+describe("controlled egress DNS resolver", () => {
+  it("resolves through the proxy endpoint and rejects private results", async () => {
+    const policy = new DestinationPolicy({
+      lookupAll: async (host: string) =>
+        host === "public.example" ? [{ address: "93.184.216.34" }] : [{ address: "127.0.0.1" }],
+    });
+    const server = createProxyServer({ policy });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    try {
+      const allowed = await fetch(`http://127.0.0.1:${port}/resolve?name=public.example`);
+      expect(allowed.status).toBe(200);
+      expect(await allowed.json()).toEqual({ addresses: ["93.184.216.34"] });
+      const blocked = await fetch(`http://127.0.0.1:${port}/resolve?name=private.example`);
+      expect(blocked.status).toBe(403);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error?: Error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+});

@@ -3,6 +3,7 @@ import {
   canonicalizeUrl,
   isPrivateIp,
   parseDohAnswers,
+  parseProxyResolution,
   validateTargetUrl,
 } from "@/lib/url-security";
 
@@ -98,6 +99,13 @@ describe("target URL security", () => {
       addresses: ["112.124.240.62", "198.18.0.67"],
       ttlMs: 120_000,
     });
+  });
+
+  it("accepts only IP addresses from the controlled proxy resolver", () => {
+    expect(parseProxyResolution({ addresses: ["93.184.216.34", "not-an-ip", 42] })).toEqual([
+      "93.184.216.34",
+    ]);
+    expect(parseProxyResolution({ addresses: "93.184.216.34" })).toEqual([]);
   });
 
   it("turns resolver failures into a safe client error", async () => {

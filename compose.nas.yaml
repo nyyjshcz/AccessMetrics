@@ -14,6 +14,7 @@ services:
       - /tmp
     environment:
       APP_ENV: production
+      HOSTNAME: 0.0.0.0
       APP_BASE_URL: ${APP_BASE_URL:?set the Tailscale HTTPS URL}
       DATABASE_URL: /var/lib/accesscheck/data/accesscheck.db
       PRIVATE_EVIDENCE_ROOT: /var/lib/accesscheck/private-evidence

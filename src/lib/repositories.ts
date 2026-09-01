@@ -101,18 +101,17 @@ const DELETABLE_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
  */
 export function deleteTerminalScanJob(jobId: string) {
   return transaction((db) => {
-    const job = db
-      .prepare("SELECT id,status FROM scan_jobs WHERE id=?")
-      .get(jobId) as { id: string; status: string } | undefined;
+    const job = db.prepare("SELECT id,status FROM scan_jobs WHERE id=?").get(jobId) as
+      | { id: string; status: string }
+      | undefined;
     if (!job) throw new AppError("NOT_FOUND", "任务不存在", 404);
     if (!DELETABLE_JOB_STATUSES.has(job.status))
       throw new AppError("SCAN_JOB_NOT_TERMINAL", "仅已结束的任务可以删除", 409);
 
-    const run = db
-      .prepare("SELECT id,published FROM scan_runs WHERE job_id=?")
-      .get(jobId) as { id: string; published: number } | undefined;
-    if (run?.published)
-      throw new AppError("RUN_PUBLISHED_READ_ONLY", "已发布报告不能删除", 409);
+    const run = db.prepare("SELECT id,published FROM scan_runs WHERE job_id=?").get(jobId) as
+      | { id: string; published: number }
+      | undefined;
+    if (run?.published) throw new AppError("RUN_PUBLISHED_READ_ONLY", "已发布报告不能删除", 409);
 
     if (run) {
       const studyReference = db
@@ -285,7 +284,14 @@ export function finishJob(jobId: string, status: string, error?: unknown, worker
       : error
         ? "JOB_FAILED"
         : null;
-  const message = error instanceof Error ? error.message : error ? String(error) : null;
+  const message =
+    error instanceof Error
+      ? error.message
+      : error && typeof error === "object" && "message" in error
+        ? String((error as { message?: unknown }).message)
+        : error
+          ? String(error)
+          : null;
   const changed = workerId
     ? getDb()
         .prepare(
@@ -490,9 +496,7 @@ export function savePageResult(
         throw new AppError("PAGE_LEASE_LOST", "页面租约已失效，拒绝写入结果", 409);
     }
     const duplicate = tx
-      .prepare(
-        "SELECT id FROM pages WHERE run_id=? AND normalized_url=? AND id<>? LIMIT 1",
-      )
+      .prepare("SELECT id FROM pages WHERE run_id=? AND normalized_url=? AND id<>? LIMIT 1")
       .get(runId, finalUrl, pageId) as { id: string } | undefined;
     if (duplicate) {
       // A crawler can encounter multiple URLs that redirect to one final

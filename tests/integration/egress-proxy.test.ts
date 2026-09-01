@@ -37,4 +37,27 @@ describe("controlled egress DNS resolver", () => {
       );
     }
   });
+
+  it("exposes temporary resolver unavailability without leaking resolver details", async () => {
+    const policy = new DestinationPolicy({
+      lookupAll: async () => {
+        throw Object.assign(new Error("internal resolver address=10.0.0.2"), {
+          code: "EAI_AGAIN",
+        });
+      },
+    });
+    const server = createProxyServer({ policy });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/resolve?name=public.example`);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "resolver_unavailable" });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error?: Error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
 });

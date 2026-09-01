@@ -166,6 +166,12 @@ const catalog: Record<string, { "zh-CN": string; en: string }> = {
   JOB_LEASE_LOST: { "zh-CN": "任务租约已失效", en: "The job lease expired" },
 };
 
+/** Return the stable, localized description for a stored application error code. */
+export function localizedErrorMessage(code: unknown, locale: Locale): string | null {
+  if (typeof code !== "string") return null;
+  return catalog[code]?.[locale] ?? null;
+}
+
 export function localeFromRequest(request: Request): Locale {
   const url = new URL(request.url);
   const nextCookie = (

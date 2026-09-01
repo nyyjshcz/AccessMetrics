@@ -137,6 +137,45 @@ describe("scan worker failure handling", () => {
     ]);
   });
 
+  it("records a discovery failure without fabricating a failed page", async () => {
+    const site = repositories.upsertSite("http://127.0.0.1");
+    const job = repositories.createScanJob(
+      site.origin,
+      { maxPages: 1, sameOriginOnly: true, respectRobots: true },
+      "test",
+      "worker-zero-page-discovery-failure",
+    );
+    const workerId = `worker-${process.pid}`;
+    expect(repositories.leaseNextJob(workerId)?.id).toBe(job.id);
+    vi.mocked(crawler.discoverSite).mockRejectedValueOnce({
+      code: "DNS_LOOKUP_FAILED",
+      message: "lookup failed for test target",
+    });
+
+    await expect(worker.processJob(repositories.getJob(job.id))).rejects.toMatchObject({
+      code: "DNS_LOOKUP_FAILED",
+    });
+
+    const db = dbModule.getDb();
+    expect(db.prepare("SELECT COUNT(*) count FROM job_pages WHERE job_id=?").get(job.id)).toEqual({
+      count: 0,
+    });
+    expect(
+      db.prepare("SELECT status,error_code,error_message FROM scan_jobs WHERE id=?").get(job.id),
+    ).toMatchObject({
+      status: "failed",
+      error_code: "DNS_LOOKUP_FAILED",
+      error_message: "lookup failed for test target",
+    });
+    expect(
+      db.prepare("SELECT status,page_count,failed_count FROM scan_runs WHERE job_id=?").get(job.id),
+    ).toMatchObject({
+      status: "failed",
+      page_count: 0,
+      failed_count: 0,
+    });
+  });
+
   it("persists top-level axe failures after the bounded retry policy", async () => {
     const site = repositories.upsertSite("http://127.0.0.1");
     const job = repositories.createScanJob(
@@ -157,11 +196,15 @@ describe("scan worker failure handling", () => {
     const runId = await worker.processJob(repositories.getJob(job.id));
     expect(scanner.scanPage).toHaveBeenCalledTimes(workerConfig.config.SCAN_RETRY_COUNT + 1);
     const db = dbModule.getDb();
-    expect(db.prepare("SELECT scan_status,error_code FROM pages WHERE run_id=?").get(runId)).toMatchObject({
+    expect(
+      db.prepare("SELECT scan_status,error_code FROM pages WHERE run_id=?").get(runId),
+    ).toMatchObject({
       scan_status: "failed",
       error_code: "AXE_TOP_LEVEL_FAILED",
     });
-    expect(db.prepare("SELECT status,failed_count FROM scan_runs WHERE id=?").get(runId)).toMatchObject({
+    expect(
+      db.prepare("SELECT status,failed_count FROM scan_runs WHERE id=?").get(runId),
+    ).toMatchObject({
       status: "failed",
       failed_count: 1,
     });

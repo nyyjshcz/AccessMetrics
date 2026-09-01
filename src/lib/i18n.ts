@@ -113,6 +113,10 @@ export const messages = {
       activity: "当前活动",
       progress: "扫描进度",
       terminalSummary: "扫描已结束。请先查看页面覆盖，再打开结果查看规则与评分。",
+      discoveryFailureTitle: "页面发现前失败",
+      discoveryFailureBody: "任务在发现任何页面前失败；没有生成失败页面记录。",
+      discoveryFailureCode: "失败代码",
+      discoveryFailureMessage: "失败原因",
       waiting: "等待扫描器领取页面",
       discovered: "已发现",
       pages: "页面",
@@ -311,6 +315,11 @@ export const messages = {
       progress: "Scan progress",
       terminalSummary:
         "Scanning has ended. Review page coverage first, then open the results for rules and scores.",
+      discoveryFailureTitle: "Failed before page discovery",
+      discoveryFailureBody:
+        "The task failed before discovering any pages; no failed-page records were fabricated.",
+      discoveryFailureCode: "Failure code",
+      discoveryFailureMessage: "Failure reason",
       waiting: "Waiting for scanner to claim a page",
       discovered: "Discovered",
       pages: "pages",

@@ -56,6 +56,8 @@ export default function JobClient({ jobId, locale = "zh-CN" }: { jobId: string; 
     // The scan remains readable even if an old job has malformed options.
   }
   const terminal = success + failed + deduplicated + Number(progress.cancelled ?? 0);
+  const failedBeforeDiscovery =
+    done && discovered === 0 && data.job.status === "failed" && data.failure;
   const progressBase = Math.max(1, discovered);
   const currentTarget = data.currentPage?.canonical_url ?? copy.waiting;
 
@@ -74,10 +76,23 @@ export default function JobClient({ jobId, locale = "zh-CN" }: { jobId: string; 
         <div className="scan-progress-context">
           <p className="section-kicker">{copy.activity}</p>
           <p>
-            {done
-              ? copy.terminalSummary
-              : currentTarget}
+            {failedBeforeDiscovery
+              ? copy.discoveryFailureBody
+              : done
+                ? copy.terminalSummary
+                : currentTarget}
           </p>
+          {failedBeforeDiscovery ? (
+            <div className="error notice" role="alert">
+              <strong>{copy.discoveryFailureTitle}</strong>
+              <dl>
+                <dt>{copy.discoveryFailureCode}</dt>
+                <dd>{String(data.failure.code).slice(0, 128)}</dd>
+                <dt>{copy.discoveryFailureMessage}</dt>
+                <dd>{String(data.failure.message ?? copy.discoveryFailureBody).slice(0, 1000)}</dd>
+              </dl>
+            </div>
+          ) : null}
         </div>
         <div
           className="progress-bar scan-progress-bar"
@@ -93,7 +108,9 @@ export default function JobClient({ jobId, locale = "zh-CN" }: { jobId: string; 
           <div>
             <span>{copy.discovered}</span>
             <strong>{discovered}</strong>
-            <small>{maxPages === null ? copy.pages : copy.limit.replace("{count}", String(maxPages))}</small>
+            <small>
+              {maxPages === null ? copy.pages : copy.limit.replace("{count}", String(maxPages))}
+            </small>
           </div>
           <div>
             <span>{copy.success}</span>
@@ -108,11 +125,14 @@ export default function JobClient({ jobId, locale = "zh-CN" }: { jobId: string; 
           <div>
             <span>{copy.pending}</span>
             <strong>{queued + scanning}</strong>
-            <small>{scanning > 0 ? copy.scanning.replace("{count}", String(scanning)) : copy.worker}</small>
+            <small>
+              {scanning > 0 ? copy.scanning.replace("{count}", String(scanning)) : copy.worker}
+            </small>
           </div>
         </div>
         <p className="scan-progress-note">
-          {copy.note}{deduplicated > 0 ? ` ${copy.merged.replace("{count}", String(deduplicated))}` : ""}
+          {copy.note}
+          {deduplicated > 0 ? ` ${copy.merged.replace("{count}", String(deduplicated))}` : ""}
         </p>
         {data.run && done ? (
           <a className="button-link" href={`/scans/${data.run.id}`}>

@@ -13,6 +13,24 @@ type DohAnswer = { type?: number; data?: string; TTL?: number };
 type DohResponse = { Status?: number; Answer?: DohAnswer[] };
 type ProxyResolution = { addresses?: unknown };
 
+const MAX_RESOLUTION_ATTEMPTS = 3;
+const RESOLUTION_RETRY_DELAY_MS = 150;
+const TRANSIENT_RESOLVER_CODES = new Set([
+  "EAI_AGAIN",
+  "ETIMEOUT",
+  "TEMPORARY_RESOLVER_UNAVAILABLE",
+]);
+
+function isTransientResolverError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string" &&
+    TRANSIENT_RESOLVER_CODES.has(error.code)
+  );
+}
+
 function parseIpv6Words(address: string): number[] | null {
   let value = address.toLowerCase();
   if (value.includes(".")) {
@@ -102,6 +120,12 @@ const proxyLookupAll = async (hostname: string) => {
     redirect: "error",
     signal: AbortSignal.timeout(5000),
   });
+  if (response.status === 503) {
+    const error = new Error("proxy resolver temporarily unavailable");
+    error.name = "TemporaryResolverError";
+    Object.assign(error, { code: "TEMPORARY_RESOLVER_UNAVAILABLE" });
+    throw error;
+  }
   if (!response.ok) throw new Error(`proxy resolver failed: ${response.status}`);
   const addresses = parseProxyResolution((await response.json()) as ProxyResolution);
   if (addresses.length === 0) throw new Error("proxy resolver returned no address");
@@ -222,10 +246,17 @@ export async function validateTargetUrl(
   if (!policy.allowPrivateAddresses && isPrivateIp(hostname))
     throw new AppError("PRIVATE_TARGET", "目标地址是本机或云元数据地址", 422);
   let addresses: string[];
-  try {
-    addresses = await policy.lookupAll(hostname);
-  } catch {
-    throw new AppError("DNS_LOOKUP_FAILED", "目标域名无法解析", 422);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      addresses = await policy.lookupAll(hostname);
+      break;
+    } catch (error) {
+      if (!isTransientResolverError(error) || attempt >= MAX_RESOLUTION_ATTEMPTS)
+        throw new AppError("DNS_LOOKUP_FAILED", "目标域名无法解析", 422);
+      await new Promise((resolve) =>
+        setTimeout(resolve, RESOLUTION_RETRY_DELAY_MS * 2 ** (attempt - 1)),
+      );
+    }
   }
   if (addresses.length === 0 || (!policy.allowPrivateAddresses && addresses.some(isPrivateIp)))
     throw new AppError("PRIVATE_TARGET", "目标地址解析到禁止的内网或本机地址", 422);

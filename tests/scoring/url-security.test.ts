@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   canonicalizeUrl,
   isPrivateIp,
@@ -8,6 +8,8 @@ import {
 } from "@/lib/url-security";
 
 describe("target URL security", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("rejects any private address returned by DNS policy", async () => {
     await expect(
       validateTargetUrl("https://example.test", {
@@ -124,5 +126,61 @@ describe("target URL security", () => {
         },
       }),
     ).rejects.toMatchObject({ code: "DNS_LOOKUP_FAILED", status: 422 });
+  });
+
+  it("recovers from a transient resolver failure within the bounded retry budget", async () => {
+    let calls = 0;
+    const url = await validateTargetUrl("https://example.test", {
+      lookupAll: async () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error("try again"), { code: "EAI_AGAIN" });
+        return ["93.184.216.34"];
+      },
+    });
+    expect(url.hostname).toBe("example.test");
+    expect(calls).toBe(2);
+  });
+
+  it("backs off before retrying transient resolver failures", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const pending = validateTargetUrl("https://example.test", {
+      lookupAll: async () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error("try again"), { code: "EAI_AGAIN" });
+        return ["93.184.216.34"];
+      },
+    });
+    await Promise.resolve();
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(149);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toMatchObject({ hostname: "example.test" });
+    expect(calls).toBe(2);
+  });
+
+  it("does not retry permanent resolver failures or retry after exhaustion", async () => {
+    let permanentCalls = 0;
+    await expect(
+      validateTargetUrl("https://example.test", {
+        lookupAll: async () => {
+          permanentCalls += 1;
+          throw Object.assign(new Error("not found"), { code: "ENOTFOUND" });
+        },
+      }),
+    ).rejects.toMatchObject({ code: "DNS_LOOKUP_FAILED" });
+    expect(permanentCalls).toBe(1);
+
+    let transientCalls = 0;
+    await expect(
+      validateTargetUrl("https://example.test", {
+        lookupAll: async () => {
+          transientCalls += 1;
+          throw Object.assign(new Error("still unavailable"), { code: "EAI_AGAIN" });
+        },
+      }),
+    ).rejects.toMatchObject({ code: "DNS_LOOKUP_FAILED" });
+    expect(transientCalls).toBe(3);
   });
 });

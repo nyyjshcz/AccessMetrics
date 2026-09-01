@@ -172,6 +172,10 @@ function audit(event, details) {
   console.log(JSON.stringify({ event, ...details }));
 }
 
+function isTemporaryResolverError(error) {
+  return ["EAI_AGAIN", "ETIMEOUT"].includes(error?.code);
+}
+
 export function createProxyServer({ policy = new DestinationPolicy() } = {}) {
   const server = http.createServer(async (request, response) => {
     try {
@@ -179,7 +183,20 @@ export function createProxyServer({ policy = new DestinationPolicy() } = {}) {
       if (request.method === "GET" && requestUrl.pathname === "/resolve") {
         const hostname = requestUrl.searchParams.get("name");
         if (!hostname) throw new Error("resolver name is required");
-        const resolved = await policy.lookup(hostname);
+        let resolved;
+        try {
+          resolved = await policy.lookup(hostname);
+        } catch (error) {
+          if (isTemporaryResolverError(error)) {
+            response.writeHead(503, {
+              "content-type": "application/json",
+              "cache-control": "no-store",
+            });
+            response.end(JSON.stringify({ error: "resolver_unavailable" }));
+            return;
+          }
+          throw error;
+        }
         response.writeHead(200, {
           "content-type": "application/json",
           "cache-control": "no-store",

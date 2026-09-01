@@ -222,11 +222,15 @@ describe("scans list route", () => {
       ["ai_review_items", "batch_id", batch.batch.id],
       ["manual_reviews", "result_node_id", node.id],
     ] as const) {
-      expect(db.prepare(`SELECT COUNT(*) count FROM ${table} WHERE ${column}=?`).get(value)).toEqual({
+      expect(
+        db.prepare(`SELECT COUNT(*) count FROM ${table} WHERE ${column}=?`).get(value),
+      ).toEqual({
         count: 0,
       });
     }
-    expect(db.prepare("SELECT COUNT(*) count FROM ai_provider_configs WHERE id=?").get(provider.id)).toEqual({
+    expect(
+      db.prepare("SELECT COUNT(*) count FROM ai_provider_configs WHERE id=?").get(provider.id),
+    ).toEqual({
       count: 1,
     });
 
@@ -278,14 +282,19 @@ describe("scans list route", () => {
       expect(db.prepare("SELECT id FROM scan_jobs WHERE id=?").get(job.id)).toBeDefined();
     }
 
-    const publishedJob = repositories.createScanJob(`https://keep-published-${Math.random()}.example`, {
-      maxPages: 1,
-      sameOriginOnly: true,
-      respectRobots: true,
-    });
+    const publishedJob = repositories.createScanJob(
+      `https://keep-published-${Math.random()}.example`,
+      {
+        maxPages: 1,
+        sameOriginOnly: true,
+        respectRobots: true,
+      },
+    );
     const publishedRun = repositories.createRun(publishedJob);
     db.prepare("UPDATE scan_jobs SET status='completed' WHERE id=?").run(publishedJob.id);
-    db.prepare("UPDATE scan_runs SET status='completed',published=1 WHERE id=?").run(publishedRun.id);
+    db.prepare("UPDATE scan_runs SET status='completed',published=1 WHERE id=?").run(
+      publishedRun.id,
+    );
     const publishedResponse = await scanJobRoute.DELETE(
       new Request(`http://localhost:3000/api/scans/${publishedJob.id}`, { method: "DELETE" }),
       { params: Promise.resolve({ jobId: publishedJob.id }) },
@@ -341,5 +350,45 @@ describe("scans list route", () => {
     expect(studyResponse.status).toBe(409);
     expect((await studyResponse.json()).error).toMatchObject({ code: "SCAN_STUDY_REFERENCED" });
     expect(db.prepare("SELECT id FROM scan_runs WHERE id=?").get(studyRun.id)).toBeDefined();
+  });
+
+  it("returns a localized pre-discovery failure separately from page progress", async () => {
+    const job = repositories.createScanJob("https://discovery-failure-api.example", {
+      maxPages: 1,
+      sameOriginOnly: true,
+      respectRobots: true,
+    });
+    const db = dbModule.getDb();
+    db.prepare(
+      "UPDATE scan_jobs SET status='failed',finished_at=?,error_code=?,error_message=? WHERE id=?",
+    ).run(new Date().toISOString(), "DNS_LOOKUP_FAILED", "raw lookup detail", job.id);
+
+    const response = await scanJobRoute.GET(
+      new Request(`http://localhost/api/scans/${job.id}?lang=en`),
+      { params: Promise.resolve({ jobId: job.id }) },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      job: { id: job.id, status: "failed", error_code: "DNS_LOOKUP_FAILED" },
+      progress: { discovered: 0, failed: 0 },
+      failure: {
+        code: "DNS_LOOKUP_FAILED",
+        message: "The target domain could not be resolved",
+      },
+    });
+
+    db.prepare("UPDATE scan_jobs SET error_code=?,error_message=? WHERE id=?").run(
+      "INTERNAL_RESOLVER_DETAIL",
+      "secret resolver internals",
+      job.id,
+    );
+    const unknownResponse = await scanJobRoute.GET(
+      new Request(`http://localhost/api/scans/${job.id}?lang=en`),
+      { params: Promise.resolve({ jobId: job.id }) },
+    );
+    expect((await unknownResponse.json()).failure).toEqual({
+      code: "INTERNAL_RESOLVER_DETAIL",
+      message: "The scan failed before page discovery",
+    });
   });
 });

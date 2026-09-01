@@ -58,15 +58,26 @@ export async function processJob(job: any) {
     await validateTargetUrl(entryUrl);
     const crawlOptions = JSON.parse(job.options_json);
     let detailedDiscovery: typeof crawler.discoverSiteDetailed | undefined;
-    try { detailedDiscovery = crawler.discoverSiteDetailed; } catch { detailedDiscovery = undefined; }
-    const detailed = typeof detailedDiscovery === "function"
-      ? await detailedDiscovery(entryUrl, crawlOptions)
-      : { urls: await crawler.discoverSite(entryUrl, crawlOptions), summary: {
-          requestedPageLimit: Math.min(crawlOptions.maxPages ?? config.SCAN_MAX_PAGES, config.SCAN_MAX_PAGES),
-          scanTargetCount: 0,
-          skippedNotFoundCount: 0,
-          stopReason: "queue_exhausted" as const,
-        } };
+    try {
+      detailedDiscovery = crawler.discoverSiteDetailed;
+    } catch {
+      detailedDiscovery = undefined;
+    }
+    const detailed =
+      typeof detailedDiscovery === "function"
+        ? await detailedDiscovery(entryUrl, crawlOptions)
+        : {
+            urls: await crawler.discoverSite(entryUrl, crawlOptions),
+            summary: {
+              requestedPageLimit: Math.min(
+                crawlOptions.maxPages ?? config.SCAN_MAX_PAGES,
+                config.SCAN_MAX_PAGES,
+              ),
+              scanTargetCount: 0,
+              skippedNotFoundCount: 0,
+              stopReason: "queue_exhausted" as const,
+            },
+          };
     const urls = detailed.urls;
     saveCrawlSummary(run.id, { ...detailed.summary, scanTargetCount: urls.length });
     if (leaseLost) throw new AppError("JOB_LEASE_LOST", "扫描任务租约已失效", 409);
@@ -191,6 +202,9 @@ export async function processJob(job: any) {
       | undefined;
     if (activeRun?.status === "running")
       finishRun(run.id, "failed", getRunPageCounts(run.id), workerId);
+    // Persist discovery/entry failures here as well as in main(), so callers
+    // invoking processJob directly still expose a useful terminal diagnostic.
+    finishJob(job.id, "failed", error, workerId);
     throw error;
   } finally {
     if (heartbeatTimer) clearInterval(heartbeatTimer);

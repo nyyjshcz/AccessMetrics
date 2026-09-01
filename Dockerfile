@@ -12,9 +12,13 @@ RUN apt-get update \
 RUN pnpm exec playwright install --with-deps chromium && chmod -R a+rx /ms-playwright
 COPY . .
 RUN pnpm build
-COPY .next/standalone ./standalone
-COPY .next/static ./standalone/.next/static
-COPY public ./standalone/public
+# `.next/` is excluded from the Docker build context, so copy the standalone
+# output from the build stage's filesystem instead of asking Docker to read it
+# from the host context. Next's standalone server does not include these two
+# asset directories by default.
+RUN cp -r .next/standalone ./standalone \
+    && cp -r .next/static ./standalone/.next/ \
+    && cp -r public ./standalone/public
 COPY scripts/healthcheck.mjs ./scripts/healthcheck.mjs
 RUN mkdir -p /app/data /app/artifacts/private /app/artifacts/public
 EXPOSE 3000

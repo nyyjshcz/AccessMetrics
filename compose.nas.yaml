@@ -76,6 +76,7 @@ services:
     networks: [app]
 
   egress-proxy:
+    image: accesscheck-nas-egress:local
     build:
       context: ./tools/egress-proxy
       dockerfile: Dockerfile

@@ -135,6 +135,21 @@ export function isPrivateIp(address: string): boolean {
       const low = Number.parseInt(mappedHex[2], 16);
       return isPrivateIp([high >>> 8, high & 255, low >>> 8, low & 255].join("."));
     }
+    // IPv4-compatible IPv6 (::/96) can encode an IPv4 address either in
+    // dotted-decimal or hexadecimal form. Normalize the embedded address so
+    // loopback, private, link-local, and other forbidden IPv4 ranges cannot
+    // bypass the same policy applied to ordinary IPv4 results.
+    const compatibleDotted = normalized.match(/^::(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+    if (compatibleDotted) return isPrivateIp(compatibleDotted);
+    const words = normalized.split("::");
+    if (words.length === 2 && words[0] === "" && words[1]) {
+      const tail = words[1].split(":");
+      if (tail.length === 2 && tail.every((part) => /^[0-9a-f]{1,4}$/.test(part))) {
+        const high = Number.parseInt(tail[0], 16);
+        const low = Number.parseInt(tail[1], 16);
+        return isPrivateIp([high >>> 8, high & 255, low >>> 8, low & 255].join("."));
+      }
+    }
     return false;
   }
   // Node's URL parser accepts decimal/hex/octal IPv4 spellings. Normalize those

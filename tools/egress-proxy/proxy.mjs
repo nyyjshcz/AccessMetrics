@@ -95,6 +95,13 @@ function ipv6Forbidden(address) {
     // bypass the policy's explicit IPv4/IPv6 boundary.
     return true;
   }
+  // IPv4-compatible IPv6 (::/96) embeds an IPv4 address in the final two
+  // words. Apply the IPv4 policy to that embedded address as well.
+  if (words.slice(0, 6).every((word) => word === 0)) {
+    const high = words[6];
+    const low = words[7];
+    return ipv4Forbidden([high >>> 8, high & 255, low >>> 8, low & 255].join("."));
+  }
   return false;
 }
 

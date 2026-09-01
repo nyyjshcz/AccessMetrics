@@ -5,7 +5,11 @@ describe("controlled egress DNS resolver", () => {
   it("resolves through the proxy endpoint and rejects private results", async () => {
     const policy = new DestinationPolicy({
       lookupAll: async (host: string) =>
-        host === "public.example" ? [{ address: "93.184.216.34" }] : [{ address: "127.0.0.1" }],
+      host === "public.example"
+        ? [{ address: "93.184.216.34" }]
+        : host === "compatible-private.example"
+          ? [{ address: "::7f00:1" }]
+          : [{ address: "127.0.0.1" }],
     });
     const server = createProxyServer({ policy });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -17,6 +21,10 @@ describe("controlled egress DNS resolver", () => {
       expect(await allowed.json()).toEqual({ addresses: ["93.184.216.34"] });
       const blocked = await fetch(`http://127.0.0.1:${port}/resolve?name=private.example`);
       expect(blocked.status).toBe(403);
+      const compatibleBlocked = await fetch(
+        `http://127.0.0.1:${port}/resolve?name=compatible-private.example`,
+      );
+      expect(compatibleBlocked.status).toBe(403);
     } finally {
       await new Promise<void>((resolve, reject) =>
         server.close((error?: Error) => (error ? reject(error) : resolve())),

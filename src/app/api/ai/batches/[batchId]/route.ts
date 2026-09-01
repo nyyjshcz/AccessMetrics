@@ -14,7 +14,7 @@ export async function GET(request: Request, context: { params: Promise<{ batchId
     const { batchId } = await context.params;
     return NextResponse.json(getAiBatch(batchId));
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }
@@ -37,7 +37,7 @@ export async function POST(request: Request, context: { params: Promise<{ batchI
           : retryAiBatch(batchId);
     return NextResponse.json(result);
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

@@ -31,7 +31,7 @@ export async function POST(
       saveLocalManualVerdict({ runId, resultNodeId: nodeId, verdict: body.verdict, note: body.note }),
     );
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }
@@ -48,7 +48,7 @@ export async function DELETE(
     const { runId, nodeId } = await context.params;
     return NextResponse.json(clearLocalManualVerdict({ runId, resultNodeId: nodeId }));
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

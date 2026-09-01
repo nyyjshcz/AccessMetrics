@@ -2,8 +2,11 @@
 
 import { useEffect, useState } from "react";
 import StatusBadge from "@/components/status-badge";
+import { getMessages, type Locale } from "@/lib/i18n";
 
-export default function JobClient({ jobId }: { jobId: string }) {
+export default function JobClient({ jobId, locale = "zh-CN" }: { jobId: string; locale?: Locale }) {
+  const copy = getMessages(locale).job;
+  const failedMessage = copy.failed;
   const [id] = useState(jobId);
   const [data, setData] = useState<any>();
   const [error, setError] = useState("");
@@ -15,7 +18,7 @@ export default function JobClient({ jobId }: { jobId: string }) {
       const response = await fetch(`/api/scans/${id}`);
       const value = await response.json();
       if (!response.ok) {
-        setError(value.error?.message ?? "读取任务失败");
+        setError(value.error?.message ?? failedMessage);
         return;
       }
       setData(value);
@@ -25,7 +28,7 @@ export default function JobClient({ jobId }: { jobId: string }) {
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [id]);
+  }, [failedMessage, id]);
 
   if (error)
     return (
@@ -33,7 +36,7 @@ export default function JobClient({ jobId }: { jobId: string }) {
         {error}
       </p>
     );
-  if (!data) return <p role="status">正在准备扫描…</p>;
+  if (!data) return <p role="status">{copy.preparing}</p>;
 
   const done = ["completed", "completed_with_errors", "failed", "cancelled"].includes(
     data.job.status,
@@ -54,31 +57,31 @@ export default function JobClient({ jobId }: { jobId: string }) {
   }
   const terminal = success + failed + deduplicated + Number(progress.cancelled ?? 0);
   const progressBase = Math.max(1, discovered);
-  const currentTarget = data.currentPage?.canonical_url ?? "等待扫描器领取页面";
+  const currentTarget = data.currentPage?.canonical_url ?? copy.waiting;
 
   return (
     <section className="scan-progress-page">
       <div className="scan-progress-hero">
         <div>
           <p className="eyebrow">SCAN IN PROGRESS</p>
-          <h1>{done ? "扫描任务已结束" : "正在检查网站"}</h1>
+          <h1>{done ? copy.ended : copy.checking}</h1>
           <p className="scan-origin">{data.job.origin}</p>
         </div>
-        <StatusBadge status={data.job.status} />
+        <StatusBadge status={data.job.status} locale={locale} />
       </div>
 
-      <section className="scan-progress-panel" aria-label="扫描进度">
+      <section className="scan-progress-panel" aria-label={copy.progress}>
         <div className="scan-progress-context">
-          <p className="section-kicker">CURRENT ACTIVITY</p>
+          <p className="section-kicker">{copy.activity}</p>
           <p>
             {done
-              ? "本次扫描已停止更新。请先看页面覆盖，再打开结果理解规则与评分。"
+              ? copy.terminalSummary
               : currentTarget}
           </p>
         </div>
         <div
           className="progress-bar scan-progress-bar"
-          aria-label="已处理页面比例"
+          aria-label={copy.processed}
           aria-valuemin={0}
           aria-valuemax={progressBase}
           aria-valuenow={Math.min(terminal, progressBase)}
@@ -88,33 +91,32 @@ export default function JobClient({ jobId }: { jobId: string }) {
         </div>
         <div className="scan-progress-grid">
           <div>
-            <span>已发现</span>
+            <span>{copy.discovered}</span>
             <strong>{discovered}</strong>
-            <small>{maxPages === null ? "页面" : `本次上限 ${maxPages} 页`}</small>
+            <small>{maxPages === null ? copy.pages : copy.limit.replace("{count}", String(maxPages))}</small>
           </div>
           <div>
-            <span>成功扫描</span>
+            <span>{copy.success}</span>
             <strong>{success}</strong>
-            <small>已写入规则结果</small>
+            <small>{copy.successNote}</small>
           </div>
           <div>
-            <span>页面异常</span>
+            <span>{copy.failedPages}</span>
             <strong>{failed}</strong>
-            <small>可在结果页查看原因</small>
+            <small>{copy.failedNote}</small>
           </div>
           <div>
-            <span>仍待处理</span>
+            <span>{copy.pending}</span>
             <strong>{queued + scanning}</strong>
-            <small>{scanning > 0 ? `其中 ${scanning} 页正在扫描` : "等待 Worker 处理"}</small>
+            <small>{scanning > 0 ? copy.scanning.replace("{count}", String(scanning)) : copy.worker}</small>
           </div>
         </div>
         <p className="scan-progress-note">
-          “最多扫描页面数”是本次上限，不代表一定会发现同样多的可扫描页面。
-          {deduplicated > 0 ? ` 本次有 ${deduplicated} 个重定向或重复页面已合并。` : ""}
+          {copy.note}{deduplicated > 0 ? ` ${copy.merged.replace("{count}", String(deduplicated))}` : ""}
         </p>
         {data.run && done ? (
           <a className="button-link" href={`/scans/${data.run.id}`}>
-            查看扫描结果
+            {copy.results}
           </a>
         ) : null}
       </section>

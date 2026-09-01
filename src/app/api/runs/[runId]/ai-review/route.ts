@@ -18,7 +18,7 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
     const summary = summarizeAiRun(runId, providerConfigId);
     return NextResponse.json({ ...summary, overlay: undefined, aiOverlay: undefined });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+      return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }
@@ -40,7 +40,7 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
     const result = createAiBatch({ runId, providerConfigId: body.providerConfigId });
     return NextResponse.json(result, { status: 201 });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

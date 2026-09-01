@@ -2,7 +2,12 @@ import { NextResponse } from "next/server";
 import { aiImpactForResolvedIncomplete } from "@/lib/ai-overlay";
 import { getDb, migrate } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
-import { hasActiveAiBatch, isRunPublished, RESOLUTION_VERDICTS } from "@/lib/incomplete-resolution";
+import {
+  hasActiveAiBatch,
+  isRunPublished,
+  RESOLUTION_VERDICTS,
+  summarizeIncompleteResolutions,
+} from "@/lib/incomplete-resolution";
 import { requireRequestRole } from "@/lib/access-control";
 
 export const dynamic = "force-dynamic";
@@ -27,13 +32,8 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
     const pageSize = Math.min(100, Math.max(1, Number(url.searchParams.get("pageSize") ?? "20")));
     if (!Number.isInteger(page) || !Number.isInteger(pageSize))
       throw new AppError("INVALID_PAGINATION", "分页参数无效", 422);
-    const total = Number(
-      (getDb()
-        .prepare(
-          "SELECT COUNT(*) count FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=? AND rr.result_type='incomplete'",
-        )
-        .get(runId) as { count: number }).count,
-    );
+    const resolution = summarizeIncompleteResolutions(runId);
+    const { total } = resolution;
     const rows = getDb()
       .prepare(
         `SELECT n.id,n.ordinal,n.target_json,n.html_sanitized,n.failure_summary,n.any_json,n.all_json,n.none_json,
@@ -109,12 +109,18 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
     });
     return NextResponse.json({
       items,
-      pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
+        resolution,
+      },
       manualLocked: Boolean(hasActiveAiBatch(runId)),
       readOnly: isRunPublished(runId),
     });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

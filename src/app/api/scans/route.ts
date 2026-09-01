@@ -31,7 +31,7 @@ export async function GET(request: Request) {
       .all();
     return NextResponse.json({ view, runs: rows });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }
@@ -71,7 +71,7 @@ export async function POST(request: Request) {
       { status: job.reused ? 200 : 202 },
     );
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

@@ -42,7 +42,7 @@ export async function GET(request: Request, context: { params: Promise<{ jobId: 
       .get(jobId);
     return NextResponse.json({ job, progress, currentPage: currentPage ?? null, run: run ?? null });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }
@@ -57,7 +57,7 @@ export async function DELETE(request: Request, context: { params: Promise<{ jobI
     const deleted = deleteTerminalScanJob(jobId);
     return NextResponse.json({ ok: true, ...deleted });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

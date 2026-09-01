@@ -17,11 +17,17 @@ export function loadLocalManualVerdicts(runId: string) {
          AND mr.review_context='ad_hoc' AND mr.reviewer='local' AND mr.is_current=1
        ORDER BY mr.reviewed_at DESC,mr.id DESC`,
     )
-    .all(runId) as Array<{ result_node_id: string; verdict: string; reviewed_at: string; id: string }>;
+    .all(runId) as Array<{
+    result_node_id: string;
+    verdict: string;
+    reviewed_at: string;
+    id: string;
+  }>;
   const result = new Map<string, ResolutionVerdict>();
   for (const row of rows) {
     if (!RESOLUTION_VERDICTS.includes(row.verdict as ResolutionVerdict)) continue;
-    if (!result.has(row.result_node_id)) result.set(row.result_node_id, row.verdict as ResolutionVerdict);
+    if (!result.has(row.result_node_id))
+      result.set(row.result_node_id, row.verdict as ResolutionVerdict);
   }
   return result;
 }
@@ -34,6 +40,63 @@ export function applyHumanPrecedence(
   const result = new Map(ai);
   for (const [nodeId, verdict] of human) result.set(nodeId, verdict);
   return result;
+}
+
+/** Counts the raw inventory and effective conclusions without double-counting human-overridden AI items. */
+export function summarizeIncompleteResolutions(runId: string) {
+  const db = getDb();
+  const total = Number(
+    (
+      db
+        .prepare(
+          "SELECT COUNT(*) count FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=? AND rr.result_type='incomplete'",
+        )
+        .get(runId) as { count: number }
+    ).count,
+  );
+  const manualResolved = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) count FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id
+     WHERE rr.run_id=? AND rr.result_type='incomplete' AND EXISTS (
+       SELECT 1 FROM manual_reviews mr WHERE mr.result_node_id=n.id AND mr.sample_id IS NULL
+         AND mr.review_context='ad_hoc' AND mr.reviewer='local' AND mr.is_current=1
+         AND mr.verdict IN ('problem','not_problem','uncertain'))`,
+        )
+        .get(runId) as { count: number }
+    ).count,
+  );
+  const aiResolved = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) count FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id
+     WHERE rr.run_id=? AND rr.result_type='incomplete' AND EXISTS (
+       SELECT 1 FROM ai_review_items i JOIN ai_review_batches b ON b.id=i.batch_id
+       WHERE i.result_node_id=n.id AND i.status='completed' AND i.verdict IN ('problem','not_problem','uncertain')
+         AND b.run_id=? AND b.page_id IS NULL AND b.study_freeze_id IS NULL)`,
+        )
+        .get(runId, runId) as { count: number }
+    ).count,
+  );
+  const resolved = Number(
+    (
+      db
+        .prepare(
+          `SELECT COUNT(*) count FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id
+     WHERE rr.run_id=? AND rr.result_type='incomplete' AND (
+       EXISTS (SELECT 1 FROM manual_reviews mr WHERE mr.result_node_id=n.id AND mr.sample_id IS NULL
+         AND mr.review_context='ad_hoc' AND mr.reviewer='local' AND mr.is_current=1
+         AND mr.verdict IN ('problem','not_problem','uncertain')) OR EXISTS (
+       SELECT 1 FROM ai_review_items i JOIN ai_review_batches b ON b.id=i.batch_id
+       WHERE i.result_node_id=n.id AND i.status='completed' AND i.verdict IN ('problem','not_problem','uncertain')
+         AND b.run_id=? AND b.page_id IS NULL AND b.study_freeze_id IS NULL))`,
+        )
+        .get(runId, runId) as { count: number }
+    ).count,
+  );
+  return { total, manualResolved, aiResolved, resolved, unresolved: Math.max(0, total - resolved) };
 }
 
 export function resolveRunVerdicts(
@@ -70,7 +133,7 @@ export function assertManualEditingAllowed(runId: string) {
   if (hasActiveAiBatch(runId)) {
     throw new AppError(
       "AI_REVIEW_ACTIVE",
-      "AI 批处理运行期间不能修改人工结论；请先暂停或等待它结束",
+      "AI 批处理运行期间不能修改人工结论（verdict）；请先暂停或等待它结束",
       409,
     );
   }
@@ -83,10 +146,16 @@ export function saveLocalManualVerdict(input: {
   note?: string | null;
 }) {
   if (!RESOLUTION_VERDICTS.includes(input.verdict))
-    throw new AppError("MANUAL_VERDICT_INVALID", "人工结论必须是 problem、not_problem 或 uncertain", 422);
+    throw new AppError(
+      "MANUAL_VERDICT_INVALID",
+      "人工结论必须是 problem、not_problem 或 uncertain",
+      422,
+    );
   assertManualEditingAllowed(input.runId);
   const timestamp = new Date().toISOString();
-  const note = String(input.note ?? "").trim().slice(0, 4000);
+  const note = String(input.note ?? "")
+    .trim()
+    .slice(0, 4000);
   const db = getDb();
   const node = db
     .prepare(
@@ -96,7 +165,7 @@ export function saveLocalManualVerdict(input: {
        WHERE n.id=? AND rr.run_id=? AND rr.result_type='incomplete'`,
     )
     .get(input.resultNodeId, input.runId) as { id: string } | undefined;
-  if (!node) throw new AppError("INCOMPLETE_NODE_NOT_FOUND", "待判断节点不存在", 404);
+  if (!node) throw new AppError("INCOMPLETE_NODE_NOT_FOUND", "axe 标记的 incomplete 节点不存在", 404);
   const existing = db
     .prepare(
       `SELECT id,revision
@@ -143,7 +212,7 @@ export function clearLocalManualVerdict(input: { runId: string; resultNodeId: st
        WHERE n.id=? AND rr.run_id=? AND rr.result_type='incomplete'`,
     )
     .get(input.resultNodeId, input.runId) as { id: string } | undefined;
-  if (!node) throw new AppError("INCOMPLETE_NODE_NOT_FOUND", "待判断节点不存在", 404);
+  if (!node) throw new AppError("INCOMPLETE_NODE_NOT_FOUND", "axe 标记的 incomplete 节点不存在", 404);
   const result = db
     .prepare(
       `UPDATE manual_reviews SET is_current=0

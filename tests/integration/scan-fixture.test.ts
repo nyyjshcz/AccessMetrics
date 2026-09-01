@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { describe, expect, it } from "vitest";
-import { discoverSite } from "@/lib/crawler";
+import { discoverSite, discoverSiteDetailed } from "@/lib/crawler";
 import { scanPage, closeScanner } from "@/lib/scan-page";
 
 describe("known issue fixture scanner", () => {
@@ -51,6 +51,30 @@ describe("known issue fixture scanner", () => {
         );
         return;
       }
+      if (request.url === "/delayed.html") {
+        response.statusCode = 200;
+        response.setHeader("content-type", "text/html");
+        response.end('<!doctype html><html><body><script>setTimeout(() => { const b = document.createElement("button"); document.body.append(b); }, 100);</script></body></html>');
+        return;
+      }
+      if (request.url === "/replacement-root.html") {
+        response.statusCode = 200;
+        response.setHeader("content-type", "text/html");
+        response.end('<!doctype html><a href="/missing-replacement.html">missing</a><a href="/gone-replacement.html">gone</a><a href="/replacement.html">replacement</a>');
+        return;
+      }
+      if (request.url === "/gone-replacement.html") {
+        response.statusCode = 410;
+        response.setHeader("content-type", "text/html");
+        response.end("gone");
+        return;
+      }
+      if (request.url === "/replacement.html") {
+        response.statusCode = 200;
+        response.setHeader("content-type", "text/html");
+        response.end("<!doctype html><title>replacement</title>");
+        return;
+      }
       if (request.url === "/status-401") {
         response.statusCode = 401;
         response.end("auth required");
@@ -59,6 +83,16 @@ describe("known issue fixture scanner", () => {
       if (request.url === "/status-403") {
         response.statusCode = 403;
         response.end("forbidden");
+        return;
+      }
+      if (request.url === "/status-503") {
+        response.statusCode = 503;
+        response.setHeader("content-type", "text/html");
+        response.end("temporarily unavailable");
+        return;
+      }
+      if (request.url === "/navigation-failure") {
+        response.destroy();
         return;
       }
       const file = path.join(
@@ -131,6 +165,23 @@ describe("known issue fixture scanner", () => {
       const ruleIds = result.axe.violations.map((item) => item.id);
       expect(ruleIds).toEqual(expect.arrayContaining(["image-alt", "button-name", "link-name"]));
       expect(result.axe.passes.length).toBeGreaterThan(0);
+      const delayed = await scanPage(`${target}delayed.html`, 5000, testPolicy);
+      expect(delayed.axe.violations.some((rule) => rule.id === "button-name")).toBe(true);
+      const detailed = await discoverSiteDetailed(`${target}replacement-root.html`, {
+        maxPages: 2,
+        delayMs: 0,
+        networkPolicy: testPolicy,
+      });
+      expect(detailed.urls).toEqual([
+        `${target}replacement-root.html`,
+        `${target}replacement.html`,
+      ]);
+      expect(detailed.summary).toMatchObject({
+        requestedPageLimit: 2,
+        scanTargetCount: 2,
+        skippedNotFoundCount: 2,
+        stopReason: "page_limit",
+      });
       const evidenceResult = await scanPage(`${target}evidence.html`, 30000, testPolicy);
       const incompleteNodes = evidenceResult.axe.incomplete.flatMap((rule) => rule.nodes);
       expect(incompleteNodes.length).toBeGreaterThan(0);
@@ -205,6 +256,20 @@ describe("known issue fixture scanner", () => {
       await expect(scanPage(`${target}status-403`, 5000, testPolicy)).rejects.toMatchObject({
         code: "HTTP_FORBIDDEN",
       });
+      await expect(
+        discoverSite(`${target}status-503`, { maxPages: 1, delayMs: 0, networkPolicy: testPolicy }),
+      ).resolves.toEqual([`${target}status-503`]);
+      await expect(scanPage(`${target}status-503`, 5000, testPolicy)).rejects.toMatchObject({
+        code: "HTTP_ERROR",
+        details: { status: 503 },
+      });
+      await expect(
+        discoverSite(`${target}navigation-failure`, {
+          maxPages: 1,
+          delayMs: 0,
+          networkPolicy: testPolicy,
+        }),
+      ).resolves.toEqual([`${target}navigation-failure`]);
     } finally {
       await closeScanner();
       await new Promise<void>((resolve) => server.close(() => resolve()));

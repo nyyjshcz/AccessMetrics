@@ -318,6 +318,11 @@ export function finishRun(
     )
     .run(status, now(), counts.pages, counts.success, counts.failed, runId);
 }
+export function saveCrawlSummary(runId: string, summary: unknown) {
+  getDb()
+    .prepare("UPDATE scan_runs SET crawl_summary_json=? WHERE id=?")
+    .run(JSON.stringify(summary), runId);
+}
 export function pendingJobs() {
   return getDb()
     .prepare(

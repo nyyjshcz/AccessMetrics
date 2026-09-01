@@ -24,7 +24,7 @@ export async function GET(request: Request) {
     migrate();
     return NextResponse.json({ providers: listAiProviders() });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+      return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }
@@ -42,7 +42,7 @@ export async function POST(request: Request) {
       throw new AppError("UNKNOWN_FIELD", "AI provider 请求包含未知字段", 400);
     return NextResponse.json({ provider: saveAiProvider(body) }, { status: body.id ? 200 : 201 });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+      return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

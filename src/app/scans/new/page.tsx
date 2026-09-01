@@ -1,7 +1,8 @@
 import { requirePageRole } from "@/lib/access-control";
+import { getLocale } from "@/lib/i18n-server";
 import NewScanClient from "./new-scan-client";
 
 export default async function NewScanPage() {
   await requirePageRole("admin", "/scans/new");
-  return <NewScanClient />;
+  return <NewScanClient locale={await getLocale()} />;
 }

@@ -15,6 +15,16 @@ async function signIn(page: Page, accessKey: string, nextPath = "/") {
   await page.waitForURL((url) => url.pathname !== "/login");
 }
 
+async function chooseLocale(page: Page, locale: "zh-CN" | "en") {
+  const preference = page.waitForResponse(
+    (response) => response.url().endsWith("/api/preferences/locale") && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: locale === "en" ? "EN" : "中文", exact: true }).click();
+  expect((await preference).status()).toBe(200);
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", locale);
+}
+
 function setE2eJobStatus(jobId: string, status: string) {
   const db = new Database(path.join(process.cwd(), "data/e2e-accesscheck-local.db"));
   try {
@@ -73,6 +83,34 @@ async function startFixture() {
   if (!address || typeof address === "string") throw new Error("fixture 未取得端口");
   return { fixture, url: `http://127.0.0.1:${address.port}/` };
 }
+
+test("语言切换会持久化，并覆盖登录、管理员导航和扫描页", async ({ page, context }) => {
+  await page.goto("/login");
+  await expect(page.getByRole("heading", { name: "输入访问密钥" })).toBeVisible();
+
+  await chooseLocale(page, "en");
+  await expect(page.getByRole("heading", { name: "Enter your access key" })).toBeVisible();
+  await expect((await context.cookies()).find((cookie) => cookie.name === "accesscheck_locale")?.value).toBe("en");
+
+  await page.getByLabel("Access key").fill(adminAccessKey);
+  await page.getByRole("button", { name: "Enter system" }).click();
+  await page.waitForURL((url) => url.pathname !== "/login");
+  await expect(page.getByRole("heading", { name: "Turn accessibility issues into checkable conclusions" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Main navigation" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "New scan" }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: "Active tasks", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Published reports", exact: true })).toBeVisible();
+
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.getByRole("heading", { name: "Turn accessibility issues into checkable conclusions" })).toBeVisible();
+  await page.goto("/scans/new");
+  await expect(page.getByRole("heading", { name: "Scan a public website" })).toBeVisible();
+  await expect(page.getByLabel("Website URL")).toBeVisible();
+
+  await chooseLocale(page, "zh-CN");
+  await expect(page.getByRole("heading", { name: "扫描一个公开网站" })).toBeVisible();
+});
 
 test("管理员登录后可访问扫描管理页面", async ({ page }) => {
   await page.goto("/");
@@ -178,12 +216,16 @@ test("管理员扫描发布后，访客只能读取已发布报告", async ({ pa
     const tabs = page.getByRole("tab");
     await expect(page.getByRole("tablist")).toBeVisible();
     await expect(tabs).toHaveCount(4);
-    for (const tabName of ["概览", "自动问题", "incomplete 扫描结果", "报告"]) {
+    for (const tabName of ["概览", "自动问题", "原始 incomplete 清单", "报告"]) {
       const tab = tabs.filter({ hasText: new RegExp(`^${tabName}(?: \\(\\d+\\))?$`) });
       await expect(tab).toBeVisible();
       await tab.click();
       await expect(tab).toHaveAttribute("aria-selected", "true");
       await expect(page.locator("main")).toBeVisible();
+      if (tabName === "原始 incomplete 清单") {
+        await expect(page.getByRole("heading", { name: "原始 incomplete 清单" })).toBeVisible();
+        await expect(page.locator(".review-resolution-summary").getByText(/尚无结论/)).toBeVisible();
+      }
     }
     await page.getByRole("button", { name: "生成并发布报告" }).click();
     await expect(page.getByText("已发布，报告现在为只读")).toBeVisible();
@@ -201,12 +243,56 @@ test("管理员扫描发布后，访客只能读取已发布报告", async ({ pa
     await expect(page.getByRole("link", { name: "活动任务" })).toHaveCount(0);
     await page.goto("/reports");
     await expect(page.getByRole("heading", { name: "已发布报告" })).toBeVisible();
+    await chooseLocale(page, "en");
+    await expect(page.getByRole("heading", { name: "Published reports" })).toBeVisible();
+    await expect((await page.context().cookies()).find((cookie) => cookie.name === "accesscheck_locale")?.value).toBe("en");
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Published reports" })).toBeVisible();
+    const publishedRow = page.locator(".run-row", { hasText: new URL(url).origin });
+    await expect(publishedRow.getByRole("link")).toHaveAttribute(
+      "href",
+      `/api/reports/${runId}/html`,
+    );
+    await publishedRow.getByRole("link").click();
+    await expect(page).toHaveURL(new RegExp(`/api/reports/${runId}/html$`));
+    await expect(page).toHaveTitle(/AccessCheck Accessibility Report/);
+    await expect(page.locator("body")).toContainText("Effective score");
+    await expect(page.getByRole("button", { name: "中文", exact: true })).toBeVisible();
+
+    await page.goto("/reports");
+    await chooseLocale(page, "zh-CN");
+    await expect(page.getByRole("heading", { name: "已发布报告" })).toBeVisible();
+    await page.goto(`/api/reports/${runId}/html?lang=zh-CN`);
+    await expect(page).toHaveTitle(/AccessCheck 无障碍报告/);
+
+    await page.context().clearCookies();
+    await signIn(page, adminAccessKey, `/scans/${runId}`);
+    await page.goto(`/scans/${runId}`);
+    await page.getByRole("tab", { name: "报告" }).click();
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "撤回发布" }).click();
+    await expect(page.getByText("已撤回发布")).toBeVisible();
+
+    await page.context().clearCookies();
+    await signIn(page, visitorAccessKey, "/reports");
+    const withdrawnReport = await page.request.get(`/api/reports/${runId}/html`);
+    expect(withdrawnReport.status()).toBe(404);
     await page.goto("/scans/new");
     await expect(page).toHaveURL(/\/reports$/);
     const deniedActive = await page.request.get("/api/scans?view=active");
     expect(deniedActive.status()).toBe(403);
     const visitorReport = await page.request.get(`/api/reports/${runId}/html`);
-    expect(visitorReport.ok()).toBeTruthy();
+    expect(visitorReport.status()).toBe(404);
+
+    await page.context().clearCookies();
+    await signIn(page, adminAccessKey, `/scans/${runId}`);
+    const republish = await page.request.post(`/api/runs/${runId}/publish`);
+    expect(republish.ok()).toBeTruthy();
+
+    await page.context().clearCookies();
+    await signIn(page, visitorAccessKey, "/reports");
+    const republishedReport = await page.request.get(`/api/reports/${runId}/html`);
+    expect(republishedReport.ok()).toBeTruthy();
   } finally {
     await new Promise<void>((resolve) => fixture.close(() => resolve()));
   }

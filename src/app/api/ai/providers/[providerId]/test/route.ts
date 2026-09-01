@@ -13,7 +13,7 @@ export async function POST(request: Request, context: { params: Promise<{ provid
     const { providerId } = await context.params;
     return NextResponse.json(await testAiProvider(providerId));
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

@@ -19,7 +19,8 @@ const runScore = await import("@/lib/run-score");
 const resolution = await import("@/lib/incomplete-resolution");
 const report = await import("@/lib/report");
 const reportJsonRoute = await import("@/app/api/reports/[runId]/json/route");
-const incompleteReviewRoute = await import("@/app/api/runs/[runId]/incomplete/[nodeId]/review/route");
+const incompleteReviewRoute =
+  await import("@/app/api/runs/[runId]/incomplete/[nodeId]/review/route");
 
 function completeEvidence(target: string) {
   const json = canonicalize({
@@ -128,7 +129,9 @@ describe("thin AI overlay", () => {
       expect.arrayContaining(["ai_evidence_json", "ai_evidence_hash", "ai_evidence_version"]),
     );
     const providerColumns = (
-      dbModule.getDb().prepare("PRAGMA table_info(ai_provider_configs)").all() as Array<{ name: string }>
+      dbModule.getDb().prepare("PRAGMA table_info(ai_provider_configs)").all() as Array<{
+        name: string;
+      }>
     ).map((row) => row.name);
     expect(providerColumns).toEqual(
       expect.arrayContaining(["max_concurrent_requests", "rate_limit_rpm"]),
@@ -223,15 +226,21 @@ describe("thin AI overlay", () => {
     const timestamp = new Date().toISOString();
     dbModule
       .getDb()
-      .prepare("UPDATE ai_review_items SET status='completed',verdict='problem',completed_at=?,updated_at=? WHERE id=?")
+      .prepare(
+        "UPDATE ai_review_items SET status='completed',verdict='problem',completed_at=?,updated_at=? WHERE id=?",
+      )
       .run(timestamp, timestamp, node.id);
     dbModule
       .getDb()
-      .prepare("UPDATE ai_review_batches SET status='completed',completed_at=?,updated_at=? WHERE id=?")
+      .prepare(
+        "UPDATE ai_review_batches SET status='completed',completed_at=?,updated_at=? WHERE id=?",
+      )
       .run(timestamp, timestamp, batch.batch.id);
 
     const raw = runScore.buildRunScore(item.run.id);
-    const effective = runScore.buildRunScore(item.run.id, { aiOverlay: ai.loadEffectiveOverlayForRun(item.run.id) });
+    const effective = runScore.buildRunScore(item.run.id, {
+      aiOverlay: ai.loadEffectiveOverlayForRun(item.run.id),
+    });
 
     expect(raw.resultNodeCounts.incomplete).toBe(1);
     expect(effective.resultNodeCounts.incomplete).toBe(1);
@@ -247,7 +256,9 @@ describe("thin AI overlay", () => {
     const db = dbModule.getDb();
     for (const status of ["queued", "running", "paused", "failed", "completed"] as const) {
       db.prepare("UPDATE ai_review_batches SET status=? WHERE id=?").run(status, batch.batch.id);
-      expect(ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id }).batch.status).toBe(status);
+      expect(
+        ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id }).batch.status,
+      ).toBe(status);
     }
   });
 
@@ -384,7 +395,9 @@ describe("thin AI overlay", () => {
       const current = ai.getAiBatch(batch.batch.id) as any;
       const row = dbModule
         .getDb()
-        .prepare("SELECT status,attempt_count,last_error,lease_until FROM ai_review_items WHERE batch_id=?")
+        .prepare(
+          "SELECT status,attempt_count,last_error,lease_until FROM ai_review_items WHERE batch_id=?",
+        )
         .get(batch.batch.id) as any;
       expect(current.batch.status).toBe("queued");
       expect(current.stats).toMatchObject({ queued: 1, delayed: 1, failed: 0 });
@@ -533,10 +546,13 @@ describe("thin AI overlay", () => {
 
   it("paces OpenRouter free requests at 20 RPM without changing the configured concurrency", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
     );
     try {
       const item = fixture(2, true);
@@ -568,10 +584,13 @@ describe("thin AI overlay", () => {
 
   it("does not apply the free-model pace to a paid OpenRouter model", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
     );
     try {
       const item = fixture(2, true);
@@ -596,11 +615,15 @@ describe("thin AI overlay", () => {
   });
 
   it("does not pace an OpenRouter free model when the optional strategy is disabled", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
-      new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
     );
     try {
       const item = fixture(2, true);
@@ -703,10 +726,13 @@ describe("thin AI overlay", () => {
       .spyOn(globalThis, "fetch")
       .mockRejectedValueOnce(new TypeError("fetch failed"))
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ choices: [{ message: { content: '{\"verdict\":\"problem\"}' } }] }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
+        new Response(
+          JSON.stringify({ choices: [{ message: { content: '{\"verdict\":\"problem\"}' } }] }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
       );
     try {
       const item = fixture(1, true);
@@ -751,11 +777,9 @@ describe("thin AI overlay", () => {
     db.prepare(
       "UPDATE ai_review_items SET status='failed',attempt_count=3,last_error='模型请求失败（HTTP 429）',completed_at=?,updated_at=? WHERE id=?",
     ).run(timestamp, timestamp, first.id);
-    db.prepare("UPDATE ai_review_batches SET status='failed',completed_at=?,updated_at=? WHERE id=?").run(
-      timestamp,
-      timestamp,
-      batch.batch.id,
-    );
+    db.prepare(
+      "UPDATE ai_review_batches SET status='failed',completed_at=?,updated_at=? WHERE id=?",
+    ).run(timestamp, timestamp, batch.batch.id);
 
     expect(await ai.processNextAiItem("legacy-recovery-worker")).toBe(false);
     expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
@@ -841,11 +865,9 @@ describe("thin AI overlay", () => {
     db.prepare(
       "UPDATE ai_review_items SET status='failed',attempt_count=3,last_error='模型请求失败（HTTP 429）',completed_at=?,updated_at=? WHERE id=?",
     ).run(timestamp, timestamp, first.id);
-    db.prepare("UPDATE ai_review_batches SET status='failed',completed_at=?,updated_at=? WHERE id=?").run(
-      timestamp,
-      timestamp,
-      batch.batch.id,
-    );
+    db.prepare(
+      "UPDATE ai_review_batches SET status='failed',completed_at=?,updated_at=? WHERE id=?",
+    ).run(timestamp, timestamp, batch.batch.id);
     ai.saveAiProvider({
       id: config.id,
       label: "测试 Qwen",
@@ -899,7 +921,9 @@ describe("thin AI overlay", () => {
     const server = http.createServer((request, response) => {
       if (request.url === "/v1/chat/completions" && request.method === "POST") {
         response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }));
+        response.end(
+          JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
+        );
         return;
       }
       response.statusCode = 404;
@@ -912,16 +936,29 @@ describe("thin AI overlay", () => {
       const legacy = fixture(1, true);
       const config = provider(`http://127.0.0.1:${port}/v1`);
       const legacyBatch = ai.createAiBatch({ runId: legacy.run.id, providerConfigId: config.id });
-      dbModule.getDb().prepare("UPDATE ai_review_batches SET page_id=?,created_at=? WHERE id=?").run(
-        legacy.pageId,
-        "2000-01-01T00:00:00.000Z",
-        legacyBatch.batch.id,
-      );
+      dbModule
+        .getDb()
+        .prepare("UPDATE ai_review_batches SET page_id=?,created_at=? WHERE id=?")
+        .run(legacy.pageId, "2000-01-01T00:00:00.000Z", legacyBatch.batch.id);
       const runWide = fixture(1, true);
       const runWideBatch = ai.createAiBatch({ runId: runWide.run.id, providerConfigId: config.id });
       expect(await ai.processNextAiItem("scope-worker")).toBe(true);
-      expect((dbModule.getDb().prepare("SELECT status FROM ai_review_items WHERE batch_id=?").get(legacyBatch.batch.id) as { status: string }).status).toBe("queued");
-      expect((dbModule.getDb().prepare("SELECT status FROM ai_review_items WHERE batch_id=?").get(runWideBatch.batch.id) as { status: string }).status).toBe("completed");
+      expect(
+        (
+          dbModule
+            .getDb()
+            .prepare("SELECT status FROM ai_review_items WHERE batch_id=?")
+            .get(legacyBatch.batch.id) as { status: string }
+        ).status,
+      ).toBe("queued");
+      expect(
+        (
+          dbModule
+            .getDb()
+            .prepare("SELECT status FROM ai_review_items WHERE batch_id=?")
+            .get(runWideBatch.batch.id) as { status: string }
+        ).status,
+      ).toBe("completed");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
@@ -933,7 +970,9 @@ describe("thin AI overlay", () => {
       if (request.url === "/v1/chat/completions" && request.method === "POST") {
         requests += 1;
         response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }));
+        response.end(
+          JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
+        );
         return;
       }
       response.statusCode = 404;
@@ -955,7 +994,9 @@ describe("thin AI overlay", () => {
       const leaseUntil = new Date(Date.now() + 60_000).toISOString();
       dbModule
         .getDb()
-        .prepare("UPDATE ai_review_items SET status='running',lease_owner='other-worker',lease_until=?,attempt_count=1 WHERE id=?")
+        .prepare(
+          "UPDATE ai_review_items SET status='running',lease_owner='other-worker',lease_until=?,attempt_count=1 WHERE id=?",
+        )
         .run(leaseUntil, rows[0].id);
       expect(await ai.processNextAiItem("single-provider-worker")).toBe(false);
       expect(requests).toBe(0);
@@ -985,7 +1026,9 @@ describe("thin AI overlay", () => {
       if (request.url === "/v1/chat/completions" && request.method === "POST") {
         requests += 1;
         response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }));
+        response.end(
+          JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
+        );
         return;
       }
       response.statusCode = 404;
@@ -1005,7 +1048,9 @@ describe("thin AI overlay", () => {
       const leaseUntil = new Date(Date.now() + 60_000).toISOString();
       dbModule
         .getDb()
-        .prepare("UPDATE ai_review_items SET status='running',lease_owner='other-worker',lease_until=?,attempt_count=1 WHERE id=?")
+        .prepare(
+          "UPDATE ai_review_items SET status='running',lease_owner='other-worker',lease_until=?,attempt_count=1 WHERE id=?",
+        )
         .run(leaseUntil, rows[0].id);
 
       expect(await ai.processNextAiItem("parallel-provider-worker")).toBe(true);
@@ -1097,29 +1142,39 @@ describe("thin AI overlay", () => {
 
   it("always gives a local ad_hoc verdict precedence over AI", () => {
     const item = fixture(1, true);
-    const nodeId = (dbModule
-      .getDb()
-      .prepare("SELECT n.id FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=?")
-      .get(item.run.id) as { id: string }).id;
+    const nodeId = (
+      dbModule
+        .getDb()
+        .prepare(
+          "SELECT n.id FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=?",
+        )
+        .get(item.run.id) as { id: string }
+    ).id;
     resolution.saveLocalManualVerdict({
       runId: item.run.id,
       resultNodeId: nodeId,
       verdict: "not_problem",
     });
     expect(
-      resolution.applyHumanPrecedence(
-        new Map([[nodeId, "problem" as const]]),
-        resolution.loadLocalManualVerdicts(item.run.id),
-      ).get(nodeId),
+      resolution
+        .applyHumanPrecedence(
+          new Map([[nodeId, "problem" as const]]),
+          resolution.loadLocalManualVerdicts(item.run.id),
+        )
+        .get(nodeId),
     ).toBe("not_problem");
   });
 
   it("clears a local verdict and restores the AI or raw state", async () => {
     const item = fixture(1, true);
-    const nodeId = (dbModule
-      .getDb()
-      .prepare("SELECT n.id FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=?")
-      .get(item.run.id) as { id: string }).id;
+    const nodeId = (
+      dbModule
+        .getDb()
+        .prepare(
+          "SELECT n.id FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=?",
+        )
+        .get(item.run.id) as { id: string }
+    ).id;
     const context = { params: Promise.resolve({ runId: item.run.id, nodeId }) };
 
     const saved = await incompleteReviewRoute.POST(
@@ -1132,10 +1187,12 @@ describe("thin AI overlay", () => {
     );
     expect(saved.status).toBe(200);
     expect(
-      resolution.applyHumanPrecedence(
-        new Map([[nodeId, "problem" as const]]),
-        resolution.loadLocalManualVerdicts(item.run.id),
-      ).get(nodeId),
+      resolution
+        .applyHumanPrecedence(
+          new Map([[nodeId, "problem" as const]]),
+          resolution.loadLocalManualVerdicts(item.run.id),
+        )
+        .get(nodeId),
     ).toBe("not_problem");
 
     const cleared = await incompleteReviewRoute.DELETE(
@@ -1146,10 +1203,12 @@ describe("thin AI overlay", () => {
     expect(await cleared.json()).toMatchObject({ cleared: true });
     expect(resolution.loadLocalManualVerdicts(item.run.id).has(nodeId)).toBe(false);
     expect(
-      resolution.applyHumanPrecedence(
-        new Map([[nodeId, "problem" as const]]),
-        resolution.loadLocalManualVerdicts(item.run.id),
-      ).get(nodeId),
+      resolution
+        .applyHumanPrecedence(
+          new Map([[nodeId, "problem" as const]]),
+          resolution.loadLocalManualVerdicts(item.run.id),
+        )
+        .get(nodeId),
     ).toBe("problem");
     expect(
       dbModule
@@ -1163,23 +1222,57 @@ describe("thin AI overlay", () => {
     const item = fixture(1, true);
     const config = provider();
     const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
-    const nodeId = (dbModule
-      .getDb()
-      .prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?")
-      .get(batch.batch.id) as { result_node_id: string }).result_node_id;
-    expect(() => resolution.saveLocalManualVerdict({ runId: item.run.id, resultNodeId: nodeId, verdict: "problem" }))
-      .toThrowError(expect.objectContaining({ code: "AI_REVIEW_ACTIVE" }));
+    const nodeId = (
+      dbModule
+        .getDb()
+        .prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?")
+        .get(batch.batch.id) as { result_node_id: string }
+    ).result_node_id;
+    expect(() =>
+      resolution.saveLocalManualVerdict({
+        runId: item.run.id,
+        resultNodeId: nodeId,
+        verdict: "problem",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "AI_REVIEW_ACTIVE" }));
     ai.pauseAiBatch(batch.batch.id);
-    expect(resolution.saveLocalManualVerdict({ runId: item.run.id, resultNodeId: nodeId, verdict: "problem" }).updated)
-      .toBe(false);
+    expect(
+      resolution.saveLocalManualVerdict({
+        runId: item.run.id,
+        resultNodeId: nodeId,
+        verdict: "problem",
+      }).updated,
+    ).toBe(false);
     const running = fixture(1, true);
     const runningBatch = ai.createAiBatch({ runId: running.run.id, providerConfigId: config.id });
-    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='running' WHERE id=?").run(runningBatch.batch.id);
-    const runningNode = (dbModule.getDb().prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?").get(runningBatch.batch.id) as { result_node_id: string }).result_node_id;
-    expect(() => resolution.saveLocalManualVerdict({ runId: running.run.id, resultNodeId: runningNode, verdict: "problem" }))
-      .toThrowError(expect.objectContaining({ code: "AI_REVIEW_ACTIVE" }));
-    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='completed' WHERE id=?").run(runningBatch.batch.id);
-    expect(resolution.saveLocalManualVerdict({ runId: running.run.id, resultNodeId: runningNode, verdict: "not_problem" }).updated).toBe(false);
+    dbModule
+      .getDb()
+      .prepare("UPDATE ai_review_batches SET status='running' WHERE id=?")
+      .run(runningBatch.batch.id);
+    const runningNode = (
+      dbModule
+        .getDb()
+        .prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?")
+        .get(runningBatch.batch.id) as { result_node_id: string }
+    ).result_node_id;
+    expect(() =>
+      resolution.saveLocalManualVerdict({
+        runId: running.run.id,
+        resultNodeId: runningNode,
+        verdict: "problem",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "AI_REVIEW_ACTIVE" }));
+    dbModule
+      .getDb()
+      .prepare("UPDATE ai_review_batches SET status='completed' WHERE id=?")
+      .run(runningBatch.batch.id);
+    expect(
+      resolution.saveLocalManualVerdict({
+        runId: running.run.id,
+        resultNodeId: runningNode,
+        verdict: "not_problem",
+      }).updated,
+    ).toBe(false);
   });
 
   it("removes manually resolved items when create, resume, or retry revisits a batch", () => {
@@ -1188,16 +1281,39 @@ describe("thin AI overlay", () => {
       const item = fixture(1, true);
       const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
       ai.pauseAiBatch(batch.batch.id);
-      const nodeId = (dbModule.getDb().prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id) as { result_node_id: string }).result_node_id;
-      resolution.saveLocalManualVerdict({ runId: item.run.id, resultNodeId: nodeId, verdict: "not_problem" });
-      if (action === "create") ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      const nodeId = (
+        dbModule
+          .getDb()
+          .prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?")
+          .get(batch.batch.id) as { result_node_id: string }
+      ).result_node_id;
+      resolution.saveLocalManualVerdict({
+        runId: item.run.id,
+        resultNodeId: nodeId,
+        verdict: "not_problem",
+      });
+      if (action === "create")
+        ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
       if (action === "resume") ai.resumeAiBatch(batch.batch.id);
       if (action === "retry") {
-        dbModule.getDb().prepare("UPDATE ai_review_items SET status='failed' WHERE batch_id=?").run(batch.batch.id);
-        dbModule.getDb().prepare("UPDATE ai_review_batches SET status='failed' WHERE id=?").run(batch.batch.id);
+        dbModule
+          .getDb()
+          .prepare("UPDATE ai_review_items SET status='failed' WHERE batch_id=?")
+          .run(batch.batch.id);
+        dbModule
+          .getDb()
+          .prepare("UPDATE ai_review_batches SET status='failed' WHERE id=?")
+          .run(batch.batch.id);
         ai.retryAiBatch(batch.batch.id);
       }
-      expect((dbModule.getDb().prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?").get(batch.batch.id) as { count: number }).count).toBe(0);
+      expect(
+        (
+          dbModule
+            .getDb()
+            .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?")
+            .get(batch.batch.id) as { count: number }
+        ).count,
+      ).toBe(0);
     }
   });
 
@@ -1221,8 +1337,17 @@ describe("thin AI overlay", () => {
     expect(html).toContain("优先整改事项");
     expect(html).toContain('class="issue-card');
     expect(html).not.toContain("全部节点证据");
-    expect(html).toContain("原始 incomplete（尚未解决）");
+    expect(html).toContain("尚无结论（原始 incomplete）");
     expect(html).not.toContain("null（已完成 AI）");
+    const english = report.renderRunReportHtml(dto, "en");
+    expect(english).toContain("No conclusion yet");
+    expect(english).toContain("Raw incomplete inventory");
+    expect(english).toContain("Report boundary");
+    expect(english).not.toContain("扫描摘要");
+    expect(english).not.toContain("报告边界");
+    expect(english).not.toContain("原始 incomplete 清单");
+    expect(english).not.toContain("尚无结论");
+    expect(english).not.toContain("axe-core 无法在当前页面状态下自动给出通过或问题结论");
   });
 
   it("downloads a published report as JSON", async () => {
@@ -1241,10 +1366,14 @@ describe("thin AI overlay", () => {
 
   it("rejects manual review mutations on published runs with a client error", async () => {
     const item = fixture(1, true);
-    const nodeId = (dbModule
-      .getDb()
-      .prepare("SELECT id FROM result_nodes WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id=?)")
-      .get(item.run.id) as { id: string }).id;
+    const nodeId = (
+      dbModule
+        .getDb()
+        .prepare(
+          "SELECT id FROM result_nodes WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id=?)",
+        )
+        .get(item.run.id) as { id: string }
+    ).id;
     dbModule.getDb().prepare("UPDATE scan_runs SET published=1 WHERE id=?").run(item.run.id);
 
     const response = await incompleteReviewRoute.POST(
@@ -1265,7 +1394,60 @@ describe("thin AI overlay", () => {
     expect(clearResponse.status).toBe(409);
     expect((await clearResponse.json()).error).toMatchObject({ code: "RUN_PUBLISHED_READ_ONLY" });
     expect(
-      (dbModule.getDb().prepare("SELECT COUNT(*) AS count FROM manual_reviews WHERE result_node_id=?").get(nodeId) as { count: number }).count,
+      (
+        dbModule
+          .getDb()
+          .prepare("SELECT COUNT(*) AS count FROM manual_reviews WHERE result_node_id=?")
+          .get(nodeId) as { count: number }
+      ).count,
     ).toBe(0);
+  });
+
+  it("counts AI and manual conclusions as a de-duplicated union", () => {
+    const item = fixture(2, true);
+    const model = provider();
+    const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: model.id });
+    const nodes = dbModule
+      .getDb()
+      .prepare(
+        "SELECT id FROM result_nodes WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id=?) ORDER BY id",
+      )
+      .all(item.run.id) as Array<{ id: string }>;
+    const timestamp = new Date().toISOString();
+    dbModule
+      .getDb()
+      .prepare(
+        "UPDATE ai_review_items SET status='completed',verdict='problem',completed_at=?,updated_at=? WHERE batch_id=?",
+      )
+      .run(timestamp, timestamp, batch.batch.id);
+    dbModule
+      .getDb()
+      .prepare(
+        "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,is_current,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+      )
+      .run(
+        `manual_overlap_${crypto.randomUUID()}`,
+        nodes[0].id,
+        null,
+        "ad_hoc",
+        "local",
+        "not_problem",
+        "override",
+        1,
+        1,
+        timestamp,
+      );
+
+    const summary = resolution.summarizeIncompleteResolutions(item.run.id);
+    expect(summary).toMatchObject({
+      total: 2,
+      aiResolved: 2,
+      manualResolved: 1,
+      resolved: 2,
+      unresolved: 0,
+    });
+    const resolvedHtml = report.renderRunReportHtml(report.buildRunReportDto(item.run.id));
+    expect(resolvedHtml).toContain("尚无结论");
+    expect(resolvedHtml).not.toContain("需进一步确认</span><strong>2");
   });
 });

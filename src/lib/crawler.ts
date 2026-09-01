@@ -14,10 +14,23 @@ export interface CrawlOptions {
   respectRobots?: boolean;
   networkPolicy?: NetworkPolicy;
 }
+export interface CrawlSummary {
+  requestedPageLimit: number;
+  scanTargetCount: number;
+  skippedNotFoundCount: number;
+  stopReason: "page_limit" | "queue_exhausted" | "duration_limit";
+}
+export interface DetailedDiscoveryResult { urls: string[]; summary: CrawlSummary }
 export async function discoverSite(
   startUrl: string,
   options: CrawlOptions = {},
 ): Promise<string[]> {
+  return (await discoverSiteDetailed(startUrl, options)).urls;
+}
+export async function discoverSiteDetailed(
+  startUrl: string,
+  options: CrawlOptions = {},
+): Promise<DetailedDiscoveryResult> {
   const maxPages = Math.min(options.maxPages ?? config.SCAN_MAX_PAGES, config.SCAN_MAX_PAGES);
   const maxDepth = options.maxDepth ?? config.MAX_CRAWL_DEPTH;
   const maxDurationMs = options.maxDurationMs ?? config.MAX_SITE_DURATION_MS;
@@ -31,6 +44,8 @@ export async function discoverSite(
   const visited = new Set<string>();
   const queued = new Set<string>([firstUrl]);
   const discovered = new Set<string>();
+  let skippedNotFoundCount = 0;
+  const candidateReserve = Math.min(100, Math.max(maxPages * 5, maxPages));
   const browser: Browser = await chromium.launch(chromiumLaunchOptions());
   try {
     const context = await browser.newContext({ serviceWorkers: "block" });
@@ -86,9 +101,14 @@ export async function discoverSite(
         // If a direct link to the final page is already waiting, it no longer
         // needs a separate crawl or a second scan result.
         visited.add(normalizedFinalUrl);
+        const status = response?.status() ?? 0;
+        if (status === 404 || status === 410) {
+          skippedNotFoundCount += 1;
+          continue;
+        }
         if (discovered.has(normalizedFinalUrl)) continue;
         discovered.add(normalizedFinalUrl);
-        if ((response?.status() ?? 0) >= 400) continue;
+        if (status >= 400) continue;
         await page
           .locator("a[href]")
           .first()
@@ -111,7 +131,7 @@ export async function discoverSite(
               // A few candidate URLs may collapse to one final redirect URL.
               // Keep enough discovery candidates to still reach the requested
               // scan cap when another candidate is a duplicate redirect.
-              queue.length < maxPages
+              queue.length < candidateReserve
             )
               if (!isDisallowed(new URL(normalized).pathname, robots)) {
                 queue.push({ url: normalized, depth: currentEntry.depth + 1 });
@@ -122,7 +142,8 @@ export async function discoverSite(
           }
         }
       } catch {
-        /* failed pages stay in the job as failed attempts */
+        // Navigation errors remain targets so the worker records a failure.
+        if (!discovered.has(current)) discovered.add(current);
       }
       if ((options.delayMs ?? config.SCAN_DELAY_MS) > 0)
         await new Promise((resolve) =>
@@ -130,7 +151,22 @@ export async function discoverSite(
         );
     }
     await context.close();
-    return [...discovered];
+    const elapsed = Date.now() - crawlStarted;
+    const stopReason: CrawlSummary["stopReason"] =
+      discovered.size >= maxPages
+        ? "page_limit"
+        : elapsed >= maxDurationMs
+          ? "duration_limit"
+          : "queue_exhausted";
+    return {
+      urls: [...discovered].slice(0, maxPages),
+      summary: {
+        requestedPageLimit: maxPages,
+        scanTargetCount: Math.min(discovered.size, maxPages),
+        skippedNotFoundCount,
+        stopReason,
+      },
+    };
   } finally {
     await browser.close();
   }

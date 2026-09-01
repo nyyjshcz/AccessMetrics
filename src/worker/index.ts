@@ -17,8 +17,9 @@ import {
   savePageFailure,
   markExhaustedPages,
   heartbeatJobAndPage,
+  saveCrawlSummary,
 } from "../lib/repositories";
-import { discoverSite } from "../lib/crawler";
+import * as crawler from "../lib/crawler";
 import { scanPage, closeScanner } from "../lib/scan-page";
 import { validateTargetUrl, canonicalizeUrl } from "../lib/url-security";
 import { persistRunScores } from "../lib/run-score";
@@ -55,7 +56,19 @@ export async function processJob(job: any) {
     heartbeatTimer.unref?.();
     const entryUrl = job.submitted_url ?? job.origin;
     await validateTargetUrl(entryUrl);
-    const urls = await discoverSite(entryUrl, JSON.parse(job.options_json));
+    const crawlOptions = JSON.parse(job.options_json);
+    let detailedDiscovery: typeof crawler.discoverSiteDetailed | undefined;
+    try { detailedDiscovery = crawler.discoverSiteDetailed; } catch { detailedDiscovery = undefined; }
+    const detailed = typeof detailedDiscovery === "function"
+      ? await detailedDiscovery(entryUrl, crawlOptions)
+      : { urls: await crawler.discoverSite(entryUrl, crawlOptions), summary: {
+          requestedPageLimit: Math.min(crawlOptions.maxPages ?? config.SCAN_MAX_PAGES, config.SCAN_MAX_PAGES),
+          scanTargetCount: 0,
+          skippedNotFoundCount: 0,
+          stopReason: "queue_exhausted" as const,
+        } };
+    const urls = detailed.urls;
+    saveCrawlSummary(run.id, { ...detailed.summary, scanTargetCount: urls.length });
     if (leaseLost) throw new AppError("JOB_LEASE_LOST", "扫描任务租约已失效", 409);
     addDiscoveredPages(job.id, job.site_id, urls);
     while (true) {

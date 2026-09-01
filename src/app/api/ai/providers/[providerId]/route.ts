@@ -31,7 +31,7 @@ export async function PATCH(
       throw new AppError("UNKNOWN_FIELD", "AI provider 请求包含未知字段", 400);
     return NextResponse.json({ provider: saveAiProvider({ ...body, id: providerId }) });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+      return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }
@@ -49,7 +49,7 @@ export async function DELETE(
     deleteAiProvider(providerId);
     return NextResponse.json({ ok: true });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

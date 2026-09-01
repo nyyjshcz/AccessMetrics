@@ -266,7 +266,17 @@ export function buildRunReportDto(runId: string): AuthorizedRunReportDto {
   };
 }
 
-export function renderRunReportHtml(dto: AuthorizedRunReportDto) {
+export type ReportLocale = "zh-CN" | "en";
+
+const reportCopy = {
+  "zh-CN": {
+    lang: "zh-CN", sentenceEnd: "。", notRecorded: "未记录", notSavedHtml: "（未保存 HTML 片段）", highPriorityTypes: "critical / serious", labelSeparator: "：", itemSeparator: "；", footerSeparator: " · ", title: "AccessCheck 无障碍报告", eyebrow: "ACCESSIBILITY AUDIT · 扫描报告", finished: "扫描完成", generated: "生成", pages: "个页面", score: "有效评分", rawScore: "原始评分", scoreLabel: "评分说明", scoreLead: "先看有效评分，再处理高优先级问题。", scoreBody: "有效评分会纳入已完成的人工与 AI 对 incomplete 的结论；判定优先级为：人工 > AI > 原始 incomplete。", model: "评分模型", nodes: "统计节点", node: "节点 #", high: "高优先级节点", automatic: "自动发现", further: "尚无结论", coverage: "页面覆盖", violationNodes: "violation 节点", incompleteNodes: "incomplete 节点", needsAttention: "个页面需关注", allSuccess: "全部页面成功", principles: ["可感知", "可操作", "易理解", "兼容性"], breakdown: "四项原则评分", breakdownBody: "原始结果与有效结论并列，便于核对 AI / 人工处理是否改变了评分。", action: "优先整改事项", actionBody: "按严重程度排列。展开单条可查看页面、元素定位、清理后的片段与当前有效结论。", emptyIssues: "没有可展示的问题项", emptyIssuesBody: "本次扫描没有 violation 或 incomplete 结果。", review: "incomplete 复核情况", reviewBody: "这些结论不会覆盖原始 axe 结果，只用于生成有效评分与整改判断。", originalIncomplete: "原始 incomplete 清单", manual: "人工已判定", ai: "AI 已判定", unresolved: "尚无结论", problem: "存在问题", notProblem: "不构成问题", uncertain: "暂不确定", remains: "仍未得出结论", exceptions: "失败或未完成页面", exceptionsBody: "没有成功完成扫描的页面会在此列出，不会被计入“成功覆盖”。", page: "页面", status: "状态", error: "结构化错误", http: "HTTP", noExceptions: "没有页面例外", noExceptionsBody: "所有已发现页面都已成功完成扫描。", boundary: "报告边界", boundaryBody: "axe-core 无法在当前页面状态下自动给出通过或问题结论的项目会标为 incomplete；这不代表项目一定存在问题。", runId: "运行 ID", runStatus: "运行状态", footer: "自动检查报告", issueAutomatic: "自动发现", issueFurther: "尚无结论", nodesUnit: "个节点", openPage: "打开问题页面", conclusion: "当前结论：", rule: "查看规则说明", evidence: "查看 {n} 条可复现证据", ruleNodes: "该规则记录 {n} 个节点", noEvidence: "本条规则没有保存节点级证据", rawIncomplete: "尚无结论（原始 incomplete）", automaticIssue: "自动发现的问题", manualPrefix: "人工确认：", aiPrefix: "AI 判断：", noConclusion: "尚无结论", critical: "严重", serious: "高优先级", moderate: "中等优先级", minor: "低优先级", unknown: "未标注影响", language: "English" },
+  en: {
+    lang: "en-US", sentenceEnd: ".", notRecorded: "Not recorded", notSavedHtml: "(HTML snippet not saved)", highPriorityTypes: "critical / serious", labelSeparator: ": ", itemSeparator: "; ", footerSeparator: " · ", title: "AccessCheck Accessibility Report", eyebrow: "ACCESSIBILITY AUDIT · SCAN REPORT", finished: "Completed", generated: "Generated", pages: "pages", score: "Effective score", rawScore: "Raw score", scoreLabel: "Score context", scoreLead: "Review the effective score first, then address high-priority issues.", scoreBody: "The effective score includes completed human and AI conclusions for incomplete results; precedence is human > AI > raw incomplete.", model: "Scoring model", nodes: "nodes counted", node: "Node #", high: "High-priority nodes", automatic: "Automatically found", further: "No conclusion yet", coverage: "Page coverage", violationNodes: "violation nodes", incompleteNodes: "incomplete nodes", needsAttention: "pages need attention", allSuccess: "All pages succeeded", principles: ["Perceivable", "Operable", "Understandable", "Robust"], breakdown: "Four-principle score", breakdownBody: "Raw results and effective conclusions are shown together so AI and human review changes can be checked.", action: "Priority remediation", actionBody: "Sorted by impact. Expand an item to inspect the page, target, sanitized snippet, and current conclusion.", emptyIssues: "No issues to display", emptyIssuesBody: "This scan has no violation or incomplete results.", review: "Incomplete review status", reviewBody: "These conclusions do not replace raw axe results; they only inform the effective score and remediation decisions.", originalIncomplete: "Raw incomplete inventory", manual: "Human decisions", ai: "AI decisions", unresolved: "No conclusion yet", problem: "Problem", notProblem: "Not a problem", uncertain: "Uncertain", remains: "No conclusion yet", exceptions: "Failed or incomplete pages", exceptionsBody: "Pages that did not complete successfully are listed here and are excluded from successful coverage.", page: "Page", status: "Status", error: "Structured error", http: "HTTP", noExceptions: "No page exceptions", noExceptionsBody: "All discovered pages completed successfully.", boundary: "Report boundary", boundaryBody: "This report reflects web accessibility results that axe-core can determine automatically. It is not a complete manual audit, official WCAG certification, or a percentage of WCAG conformance. Items that axe-core cannot classify as passing or problematic in the current page state are marked incomplete; this does not mean an issue is confirmed.", runId: "Run ID", runStatus: "Run status", footer: "Automated accessibility report", issueAutomatic: "Automatically found", issueFurther: "No conclusion yet", nodesUnit: "nodes", openPage: "Open affected page", conclusion: "Current conclusion:", rule: "View rule guidance", evidence: "View {n} reproducible evidence items", ruleNodes: "This rule records {n} nodes", noEvidence: "No node-level evidence was saved for this rule", rawIncomplete: "No conclusion yet (raw incomplete)", automaticIssue: "Automatically detected issue", manualPrefix: "Human decision: ", aiPrefix: "AI decision: ", noConclusion: "No conclusion yet", critical: "Critical", serious: "High priority", moderate: "Moderate priority", minor: "Low priority", unknown: "Impact not labeled", language: "中文" },
+} as const;
+
+export function renderRunReportHtml(dto: AuthorizedRunReportDto, locale: ReportLocale = "zh-CN"): string {
+  const copy = reportCopy[locale] ?? reportCopy["zh-CN"];
   const score = dto.score;
   const resolvedScore = dto.resolvedScore;
   const relevantIssues = dto.issues.filter(
@@ -275,9 +285,9 @@ export function renderRunReportHtml(dto: AuthorizedRunReportDto) {
   const automaticNodeCount = relevantIssues
     .filter((issue) => issue.resultType === "violation")
     .reduce((total, issue) => total + issue.nodeCount, 0);
-  const incompleteNodeCount = relevantIssues
-    .filter((issue) => issue.resultType === "incomplete")
-    .reduce((total, issue) => total + issue.nodeCount, 0);
+  // The summary card is about items still lacking a conclusion, not the raw
+  // incomplete population. The full raw total is shown in REVIEW STATUS.
+  const incompleteNodeCount = dto.incompleteResolutions.unresolved;
   const successfulPages = dto.pages.filter(
     (page) => page.scanStatus === "success" && !page.errorCode,
   ).length;
@@ -285,71 +295,79 @@ export function renderRunReportHtml(dto: AuthorizedRunReportDto) {
   const highPriorityCount = relevantIssues
     .filter((issue) => issue.impact === "critical" || issue.impact === "serious")
     .reduce((total, issue) => total + issue.nodeCount, 0);
-  const issueCards = relevantIssues.map((issue) => renderIssueCard(issue)).join("");
-  const failedRows = dto.pages
+  const issueCardsRaw = relevantIssues.map((issue) => renderIssueCard(issue, copy)).join("");
+  const issueCards = issueCardsRaw;
+  const failedRowsRaw = dto.pages
     .filter((page) => page.scanStatus !== "success" || page.errorCode)
     .map(
       (page) =>
-        `<tr><td><a href="${safeReportUrl(page.canonicalUrl)}">${escapeHtml(page.canonicalUrl)}</a></td><td>${escapeHtml(pageStatusLabel(page.scanStatus))}</td><td>${escapeHtml(page.errorCode ?? "—")}</td><td>${page.httpStatus ?? "—"}</td></tr>`,
+        `<tr><td><a href="${safeReportUrl(page.canonicalUrl)}">${escapeHtml(page.canonicalUrl)}</a></td><td>${escapeHtml(pageStatusLabel(page.scanStatus, copy))}</td><td>${escapeHtml(page.errorCode ?? "—")}</td><td>${page.httpStatus ?? "—"}</td></tr>`,
     )
     .join("");
+  const failedRows = failedRowsRaw;
   const principleRows = [
-    ["可感知", score.perceivable, resolvedScore.perceivable],
-    ["可操作", score.operable, resolvedScore.operable],
-    ["易理解", score.understandable, resolvedScore.understandable],
-    ["兼容性", score.robust, resolvedScore.robust],
+    [copy.principles[0], score.perceivable, resolvedScore.perceivable],
+    [copy.principles[1], score.operable, resolvedScore.operable],
+    [copy.principles[2], score.understandable, resolvedScore.understandable],
+    [copy.principles[3], score.robust, resolvedScore.robust],
   ] as const;
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>AccessCheck 无障碍报告 - ${escapeHtml(dto.site.name)}</title><style>${reportStyles()}</style></head><body><main class="report-shell"><header class="report-hero"><div class="report-title"><p class="eyebrow">ACCESSIBILITY AUDIT · 扫描报告</p><h1>${escapeHtml(dto.site.name)}</h1><p class="origin"><a href="${safeReportUrl(dto.site.origin)}">${escapeHtml(dto.site.origin)}</a></p><p class="report-meta">扫描完成：${escapeHtml(dto.run.finishedAt ?? dto.run.startedAt ?? dto.run.createdAt ?? "未记录")}<span aria-hidden="true">·</span>生成：${escapeHtml(dto.generatedAt)}<span aria-hidden="true">·</span>${dto.pages.length} 个页面</p></div><div class="score-stamp"><span>有效评分</span><strong>${displayScore(resolvedScore.overall)}</strong><small>原始评分 ${displayScore(score.overall)}</small></div></header><section class="score-context" aria-label="评分说明"><p><strong>先看有效评分，再处理高优先级问题。</strong>有效评分会纳入已完成的人工与 AI 对 incomplete 的结论；判定优先级为：人工 &gt; AI &gt; 原始 incomplete。</p><p class="muted">评分模型：${escapeHtml(score.modelVersion)}；统计节点：${dto.nodeStatistics.total}。</p></section><section class="summary-grid" aria-label="扫描摘要"><article><span>高优先级节点</span><strong>${highPriorityCount}</strong><small>critical / serious</small></article><article><span>自动发现</span><strong>${automaticNodeCount}</strong><small>violation 节点</small></article><article><span>需进一步确认</span><strong>${incompleteNodeCount}</strong><small>incomplete 节点</small></article><article><span>页面覆盖</span><strong>${successfulPages} / ${dto.pages.length}</strong><small>${attentionPages ? `${attentionPages} 个页面需关注` : "全部页面成功"}</small></article></section><section class="report-section score-section"><div class="section-heading"><div><p class="section-kicker">SCORE BREAKDOWN</p><h2>四项原则评分</h2></div><p>原始结果与有效结论并列，便于核对 AI / 人工处理是否改变了评分。</p></div><div class="principle-grid">${principleRows.map(([name, raw, effective]) => `<article><span>${escapeHtml(name)}</span><strong>${displayScore(effective)}</strong><small>原始 ${displayScore(raw)}</small></article>`).join("")}</div></section><section class="report-section"><div class="section-heading"><div><p class="section-kicker">ACTION QUEUE</p><h2>优先整改事项</h2></div><p>按严重程度排列。展开单条可查看页面、元素定位、清理后的片段与当前有效结论。</p></div><div class="issue-list">${issueCards || '<div class="empty-state"><strong>没有可展示的问题项</strong><p>本次扫描没有 violation 或 incomplete 结果。</p></div>'}</div></section><section class="report-section"><div class="section-heading"><div><p class="section-kicker">REVIEW STATUS</p><h2>进一步确认项的处理情况</h2></div><p>这些结论不会覆盖原始 axe 结果，只用于生成有效评分与整改判断。</p></div><div class="resolution-grid"><article><span>原始 incomplete</span><strong>${dto.incompleteResolutions.total}</strong></article><article><span>人工已判定</span><strong>${sumVerdicts(dto.incompleteResolutions.manual)}</strong><small>存在问题 ${dto.incompleteResolutions.manual.problem} · 不构成问题 ${dto.incompleteResolutions.manual.not_problem} · 暂不确定 ${dto.incompleteResolutions.manual.uncertain}</small></article><article><span>AI 已判定</span><strong>${sumVerdicts(dto.incompleteResolutions.ai)}</strong><small>存在问题 ${dto.incompleteResolutions.ai.problem} · 不构成问题 ${dto.incompleteResolutions.ai.not_problem} · 暂不确定 ${dto.incompleteResolutions.ai.uncertain}</small></article><article><span>尚未解决</span><strong>${dto.incompleteResolutions.unresolved}</strong><small>仍保留原始 incomplete</small></article></div></section><section class="report-section"><div class="section-heading"><div><p class="section-kicker">PAGE EXCEPTIONS</p><h2>失败或未完成页面</h2></div><p>没有成功完成扫描的页面会在此列出，不会被计入“成功覆盖”。</p></div>${failedRows ? `<div class="table-scroll"><table><thead><tr><th scope="col">页面</th><th scope="col">状态</th><th scope="col">结构化错误</th><th scope="col">HTTP</th></tr></thead><tbody>${failedRows}</tbody></table></div>` : '<div class="empty-state"><strong>没有页面例外</strong><p>所有已发现页面都已成功完成扫描。</p></div>'}</section><aside class="report-boundary"><strong>报告边界</strong><p>本报告反映 axe-core 能够自动判断的网页无障碍结果。它不等同于完整人工审计、官方 WCAG 合规认证或“符合 WCAG 的百分比”。需要进一步判断的项目已明确标为 incomplete。</p></aside><footer>运行 ID：${escapeHtml(dto.runId)} · 运行状态：${escapeHtml(dto.run.status)} · AccessCheck Lishui</footer></main></body></html>`;
+  const emptyIssues = `<div class="empty-state"><strong>${copy.emptyIssues}</strong><p>${copy.emptyIssuesBody}</p></div>`;
+  const emptyExceptions = `<div class="empty-state"><strong>${copy.noExceptions}</strong><p>${copy.noExceptionsBody}</p></div>`;
+  return `<!doctype html><html lang="${copy.lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${copy.title} - ${escapeHtml(dto.site.name)}</title><style>${reportStyles()}</style></head><body><main class="report-shell"><header class="report-hero"><div class="report-title"><p class="eyebrow">${copy.eyebrow}</p><h1>${escapeHtml(dto.site.name)}</h1><p class="origin"><a href="${safeReportUrl(dto.site.origin)}">${escapeHtml(dto.site.origin)}</a></p><p class="report-meta">${copy.finished}${copy.labelSeparator}${escapeHtml(dto.run.finishedAt ?? dto.run.startedAt ?? dto.run.createdAt ?? copy.notRecorded)}<span aria-hidden="true">·</span>${copy.generated}${copy.labelSeparator}${escapeHtml(dto.generatedAt)}<span aria-hidden="true">·</span>${dto.pages.length} ${copy.pages}</p></div><div class="score-stamp"><span>${copy.score}</span><strong>${displayScore(resolvedScore.overall)}</strong><small>${copy.rawScore} ${displayScore(score.overall)}</small></div></header><section class="score-context" aria-label="${copy.scoreLabel}"><p><strong>${copy.scoreLead}</strong>${copy.scoreBody}</p><p class="muted">${copy.model}${copy.labelSeparator}${escapeHtml(score.modelVersion)}${copy.itemSeparator}${copy.nodes}${copy.labelSeparator}${dto.nodeStatistics.total}${copy.sentenceEnd}</p></section><section class="summary-grid" aria-label="${copy.scoreLabel}"><article><span>${copy.high}</span><strong>${highPriorityCount}</strong><small>${copy.highPriorityTypes}</small></article><article><span>${copy.automatic}</span><strong>${automaticNodeCount}</strong><small>${copy.violationNodes}</small></article><article><span>${copy.further}</span><strong>${incompleteNodeCount}</strong><small>${copy.incompleteNodes}</small></article><article><span>${copy.coverage}</span><strong>${successfulPages} / ${dto.pages.length}</strong><small>${attentionPages ? `${attentionPages} ${copy.needsAttention}` : copy.allSuccess}</small></article></section><section class="report-section score-section"><div class="section-heading"><div><p class="section-kicker">SCORE BREAKDOWN</p><h2>${copy.breakdown}</h2></div><p>${copy.breakdownBody}</p></div><div class="principle-grid">${principleRows.map(([name, raw, effective]) => `<article><span>${escapeHtml(name)}</span><strong>${displayScore(effective)}</strong><small>${copy.rawScore} ${displayScore(raw)}</small></article>`).join("")}</div></section><section class="report-section"><div class="section-heading"><div><p class="section-kicker">ACTION QUEUE</p><h2>${copy.action}</h2></div><p>${copy.actionBody}</p></div><div class="issue-list">${issueCards || emptyIssues}</div></section><section class="report-section"><div class="section-heading"><div><p class="section-kicker">REVIEW STATUS</p><h2>${copy.review}</h2></div><p>${copy.reviewBody}</p></div><div class="resolution-grid"><article><span>${copy.originalIncomplete}</span><strong>${dto.incompleteResolutions.total}</strong></article><article><span>${copy.manual}</span><strong>${sumVerdicts(dto.incompleteResolutions.manual)}</strong><small>${copy.problem} ${dto.incompleteResolutions.manual.problem} · ${copy.notProblem} ${dto.incompleteResolutions.manual.not_problem} · ${copy.uncertain} ${dto.incompleteResolutions.manual.uncertain}</small></article><article><span>${copy.ai}</span><strong>${sumVerdicts(dto.incompleteResolutions.ai)}</strong><small>${copy.problem} ${dto.incompleteResolutions.ai.problem} · ${copy.notProblem} ${dto.incompleteResolutions.ai.not_problem} · ${copy.uncertain} ${dto.incompleteResolutions.ai.uncertain}</small></article><article><span>${copy.further}</span><strong>${dto.incompleteResolutions.unresolved}</strong><small>${copy.remains}</small></article></div></section><section class="report-section"><div class="section-heading"><div><p class="section-kicker">PAGE EXCEPTIONS</p><h2>${copy.exceptions}</h2></div><p>${copy.exceptionsBody}</p></div>${failedRows ? `<div class="table-scroll"><table><thead><tr><th scope="col">${copy.page}</th><th scope="col">${copy.status}</th><th scope="col">${copy.error}</th><th scope="col">HTTP</th></tr></thead><tbody>${failedRows}</tbody></table></div>` : emptyExceptions}</section><aside class="report-boundary"><strong>${copy.boundary}</strong><p>${copy.boundaryBody}</p></aside><footer>${copy.runId}${copy.labelSeparator}${escapeHtml(dto.runId)}${copy.footerSeparator}${copy.runStatus}${copy.labelSeparator}${escapeHtml(dto.run.status)}${copy.footerSeparator} AccessCheck Lishui</footer></main></body></html>`;
 }
 
-function renderIssueCard(issue: AuthorizedRunReportDto["issues"][number]) {
-  const impact = normalizeImpact(issue.impact);
-  const issueType = issue.resultType === "violation" ? "自动发现" : "需进一步确认";
+function renderIssueCard(issue: AuthorizedRunReportDto["issues"][number], copy: (typeof reportCopy)[ReportLocale]) {
+  const impact = normalizeImpact(issue.impact, copy);
+  const issueType = issue.resultType === "violation" ? copy.issueAutomatic : copy.originalIncomplete;
   const evidence = issue.nodes
     .map((node) => {
-      const resolution = resolutionText(node.resolution, issue.resultType);
-      return `<details class="node-evidence"><summary><span>节点 #${node.ordinal}</span><span>${escapeHtml(shortUrl(node.pageUrl))}</span><span class="resolution ${resolution.className}">${escapeHtml(resolution.label)}</span></summary><div class="node-evidence-body"><div class="evidence-meta"><a href="${safeReportUrl(node.pageUrl)}">打开问题页面</a><code>${escapeHtml(stringifyEvidence(node.target))}</code></div>${node.failureSummary ? `<p class="failure-summary">${escapeHtml(node.failureSummary)}</p>` : ""}<p class="resolution-copy"><strong>当前结论：</strong>${escapeHtml(resolution.label)}</p><pre>${escapeHtml(node.html || "（未保存 HTML 片段）")}</pre></div></details>`;
+      const resolution = resolutionText(node.resolution, issue.resultType, copy);
+      return `<details class="node-evidence"><summary><span>${copy.node}${node.ordinal}</span><span>${escapeHtml(shortUrl(node.pageUrl))}</span><span class="resolution ${resolution.className}">${escapeHtml(resolution.label)}</span></summary><div class="node-evidence-body"><div class="evidence-meta"><a href="${safeReportUrl(node.pageUrl)}">${copy.openPage}</a><code>${escapeHtml(stringifyEvidence(node.target))}</code></div>${node.failureSummary ? `<p class="failure-summary">${escapeHtml(node.failureSummary)}</p>` : ""}<p class="resolution-copy"><strong>${copy.conclusion}</strong>${escapeHtml(resolution.label)}</p><pre>${escapeHtml(node.html || copy.notSavedHtml)}</pre></div></details>`;
     })
     .join("");
   const evidenceSummary = issue.nodes.length
-    ? `查看 ${issue.nodes.length} 条可复现证据`
-    : `该规则记录 ${issue.nodeCount} 个节点`;
-  return `<article class="issue-card impact-${impact.className}"><div class="issue-rail" aria-hidden="true"></div><div class="issue-content"><div class="issue-header"><div><div class="issue-tags"><span class="impact-badge">${escapeHtml(impact.label)}</span><span class="type-badge">${escapeHtml(issueType)}</span></div><h3><code>${escapeHtml(issue.ruleId)}</code>${escapeHtml(issue.help)}</h3></div><div class="node-count"><strong>${issue.nodeCount}</strong><span>个节点</span></div></div><div class="issue-actions"><a href="${safeReportUrl(issue.helpUrl)}">查看规则说明</a><span>${escapeHtml(evidenceSummary)}</span></div>${evidence ? `<div class="evidence-list">${evidence}</div>` : '<p class="evidence-unavailable">本条规则没有保存节点级证据。</p>'}</div></article>`;
+    ? `${copy.evidence.replace("{n}", String(issue.nodes.length))}`
+    : `${copy.ruleNodes.replace("{n}", String(issue.nodeCount))}`;
+  return `<article class="issue-card impact-${impact.className}"><div class="issue-rail" aria-hidden="true"></div><div class="issue-content"><div class="issue-header"><div><div class="issue-tags"><span class="impact-badge">${escapeHtml(impact.label)}</span><span class="type-badge">${escapeHtml(issueType)}</span></div><h3><code>${escapeHtml(issue.ruleId)}</code>${escapeHtml(issue.help)}</h3></div><div class="node-count"><strong>${issue.nodeCount}</strong><span>${copy.nodesUnit}</span></div></div><div class="issue-actions"><a href="${safeReportUrl(issue.helpUrl)}">${copy.rule}</a><span>${escapeHtml(evidenceSummary)}</span></div>${evidence ? `<div class="evidence-list">${evidence}</div>` : `<p class="evidence-unavailable">${copy.noEvidence}</p>`}</div></article>`;
 }
 
-function normalizeImpact(impact: string | null) {
+function normalizeImpact(impact: string | null, copy: (typeof reportCopy)[ReportLocale]) {
   switch (impact) {
     case "critical":
-      return { className: "critical", label: "严重" };
+      return { className: "critical", label: copy.critical };
     case "serious":
-      return { className: "serious", label: "高优先级" };
+      return { className: "serious", label: copy.serious };
     case "moderate":
-      return { className: "moderate", label: "中等优先级" };
+      return { className: "moderate", label: copy.moderate };
     case "minor":
-      return { className: "minor", label: "低优先级" };
+      return { className: "minor", label: copy.minor };
     default:
-      return { className: "unknown", label: "未标注影响" };
+      return { className: "unknown", label: copy.unknown };
   }
 }
 
-function resolutionText(resolution: NodeResolution | null, resultType: string) {
+function resolutionText(
+  resolution: NodeResolution | null,
+  resultType: string,
+  copy: (typeof reportCopy)[ReportLocale],
+) {
   if (resolution?.source === "manual") {
-    return { className: "manual", label: `人工确认：${verdictLabel(resolution.verdict)}` };
+    return { className: "manual", label: `${copy.manualPrefix}${verdictLabel(resolution.verdict, copy)}` };
   }
   if (resolution?.source === "ai") {
-    return { className: "ai", label: `AI 判断：${verdictLabel(resolution.verdict)}` };
+    return { className: "ai", label: `${copy.aiPrefix}${verdictLabel(resolution.verdict, copy)}` };
   }
   if (resolution?.source === "raw" || resultType === "incomplete") {
-    return { className: "raw", label: "原始 incomplete（尚未解决）" };
+    return { className: "raw", label: copy.rawIncomplete };
   }
-  return { className: "automatic", label: "自动发现的问题" };
+  return { className: "automatic", label: copy.automaticIssue };
 }
 
-function verdictLabel(verdict: ResolutionVerdict | null) {
-  if (verdict === "problem") return "存在问题";
-  if (verdict === "not_problem") return "不构成问题";
-  if (verdict === "uncertain") return "暂不确定";
-  return "未给出结论";
+function verdictLabel(verdict: ResolutionVerdict | null, copy: (typeof reportCopy)[ReportLocale]) {
+  if (verdict === "problem") return copy.problem;
+  if (verdict === "not_problem") return copy.notProblem;
+  if (verdict === "uncertain") return copy.uncertain;
+  return copy.noConclusion;
 }
 
 function displayScore(score: number | null) {
@@ -406,6 +424,8 @@ function escapeHtml(value: unknown) {
   );
 }
 
-function pageStatusLabel(status: string) {
-  return status === "success" ? "成功" : status === "failed" ? "失败" : status;
+function pageStatusLabel(status: string, copy: (typeof reportCopy)[ReportLocale]) {
+  if (status === "success") return copy.lang === "en-US" ? "Success" : "成功";
+  if (status === "failed") return copy.lang === "en-US" ? "Failed" : "失败";
+  return status;
 }

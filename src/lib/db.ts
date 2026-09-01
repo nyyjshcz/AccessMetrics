@@ -69,6 +69,7 @@ export function migrate() {
     migration028,
     migration029,
     migration030,
+    migration031,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -1045,6 +1046,13 @@ function migration030(db: Database.Database) {
       AND lower(base_url) LIKE 'https://openrouter.ai%'
       AND (lower(trim(model)) LIKE '%:free' OR lower(trim(model))='openrouter/free')
   `);
+}
+
+function migration031(db: Database.Database) {
+  const present = (db.prepare("PRAGMA table_info(scan_runs)").all() as any[]).some(
+    (row) => row.name === "crawl_summary_json",
+  );
+  if (!present) db.exec("ALTER TABLE scan_runs ADD COLUMN crawl_summary_json TEXT");
 }
 
 export type Db = Database.Database;

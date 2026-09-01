@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
+import { requireRequestRole } from "@/lib/access-control";
 import { getDb, migrate, transaction } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { renderRunReport } from "@/lib/report";
 import { assertSameOrigin } from "@/lib/request-security";
-import { requireRequestRole } from "@/lib/access-control";
 
 export async function POST(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
@@ -16,7 +16,7 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
       | undefined;
     if (!run) throw new AppError("NOT_FOUND", "扫描不存在", 404);
     if (run.published) throw new AppError("RUN_PUBLISHED_READ_ONLY", "该扫描已经发布并归档", 409);
-    if (!['completed', 'completed_with_errors'].includes(run.status))
+    if (!["completed", "completed_with_errors"].includes(run.status))
       throw new AppError("RUN_NOT_COMPLETE", "扫描未完成，不能发布", 409);
     const active = getDb()
       .prepare(
@@ -38,7 +38,34 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
     });
     return NextResponse.json({ runId, published: true, publishedAt, report: report.file });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
+      status: error instanceof AppError ? error.status : 500,
+    });
+  }
+}
+
+export async function DELETE(request: Request, context: { params: Promise<{ runId: string }> }) {
+  try {
+    assertSameOrigin(request);
+    requireRequestRole(request, "admin");
+    migrate();
+    const { runId } = await context.params;
+    const run = getDb().prepare("SELECT published FROM scan_runs WHERE id=?").get(runId) as
+      | { published: number }
+      | undefined;
+    if (!run) throw new AppError("NOT_FOUND", "扫描不存在", 404);
+    if (run.published !== 1) throw new AppError("RUN_NOT_PUBLISHED", "该扫描尚未发布", 409);
+
+    transaction((db) => {
+      const result = db
+        .prepare("UPDATE scan_runs SET published=0,published_at=NULL WHERE id=? AND published=1")
+        .run(runId);
+      if (result.changes !== 1)
+        throw new AppError("RUN_WITHDRAW_CONFLICT", "扫描发布状态已改变，请刷新后重试", 409);
+    });
+    return NextResponse.json({ runId, published: false, publishedAt: null });
+  } catch (error) {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

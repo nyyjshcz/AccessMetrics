@@ -23,9 +23,18 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
     const rawScore = buildRunScore(runId);
     const score = buildRunScore(runId, { aiOverlay: effectiveOverlay });
     const ai = summarizeAiRun(runId);
+    let crawlSummary: Record<string, unknown> | null = null;
+    if (run.crawl_summary_json) {
+      try {
+        const parsed = JSON.parse(run.crawl_summary_json);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) crawlSummary = parsed;
+      } catch {
+        // Keep the run readable if an older or interrupted run has malformed metadata.
+      }
+    }
     const pages = getDb()
       .prepare(
-        "SELECT id,canonical_url,title,scan_status,http_status,error_code,frame_coverage_status,frame_error_count FROM pages WHERE run_id=? ORDER BY canonical_url,id",
+        "SELECT id,canonical_url,title,scan_status,http_status,error_code,error_message,frame_coverage_status,frame_error_count FROM pages WHERE run_id=? ORDER BY canonical_url,id",
       )
       .all(runId) as any[];
     const pageStatus = pages.reduce<Record<string, number>>((counts, page) => {
@@ -34,11 +43,16 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
     }, {});
     const severityCounts = { critical: 0, serious: 0, moderate: 0, minor: 0 };
     for (const row of getDb()
-      .prepare("SELECT impact,node_count FROM rule_results WHERE run_id=? AND result_type='violation'")
+      .prepare(
+        "SELECT impact,node_count FROM rule_results WHERE run_id=? AND result_type='violation'",
+      )
       .all(runId) as Array<{ impact: string | null; node_count: number }>) {
       const impact = row.impact ?? "minor";
       if (impact in severityCounts)
-        severityCounts[impact as keyof typeof severityCounts] += Math.max(0, Number(row.node_count) || 0);
+        severityCounts[impact as keyof typeof severityCounts] += Math.max(
+          0,
+          Number(row.node_count) || 0,
+        );
     }
 
     return NextResponse.json({
@@ -46,16 +60,18 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
       score: serializeRunScore(score),
       rawScore: serializeRunScore(rawScore),
       ai: { ...ai, aiOverlay: undefined, overlay: undefined },
+      crawlSummary,
       pages,
       pageStatus,
       severityCounts,
       coverage: {
-        limitedPages: pages.filter((page) => page.frame_coverage_status === "coverage_limited").length,
+        limitedPages: pages.filter((page) => page.frame_coverage_status === "coverage_limited")
+          .length,
         frameErrors: pages.reduce((total, page) => total + Number(page.frame_error_count ?? 0), 0),
       },
     });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

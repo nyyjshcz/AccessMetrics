@@ -32,6 +32,6 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
       checks: { any: json(row.any_json, []), all: json(row.all_json, []), none: json(row.none_json, []) },
     })), total: rows.length });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), { status: error instanceof AppError ? error.status : 500 });
+    return NextResponse.json(errorEnvelope(error, request), { status: error instanceof AppError ? error.status : 500 });
   }
 }

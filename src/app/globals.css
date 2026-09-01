@@ -214,17 +214,44 @@ code {
 }
 
 .brand-mark {
-  display: inline-grid;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 32px;
   height: 32px;
-  place-items: center;
-  border: 1px solid rgba(162, 226, 232, 0.72);
-  border-radius: 8px 8px 8px 2px;
-  background: linear-gradient(145deg, rgba(0, 125, 145, 0.92), rgba(13, 59, 85, 0.92));
-  color: #e9fcfd;
-  font-size: 0.66rem;
-  font-weight: 850;
-  letter-spacing: 0.09em;
+  flex: 0 0 32px;
+  color: #ffffff;
+  transition:
+    transform 140ms ease,
+    filter 140ms ease;
+}
+
+.brand-mark svg {
+  display: block;
+  width: 32px;
+  height: 32px;
+  overflow: visible;
+}
+
+.brand-mark path:first-child {
+  fill: none;
+  stroke: #82d7df;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  stroke-width: 1.7;
+}
+
+.brand-mark path:last-child {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.brand:hover .brand-mark {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
 }
 
 .brand-copy {
@@ -247,6 +274,40 @@ code {
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
+}
+
+.locale-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-right: 6px;
+  color: #b8d9e5;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.locale-button,
+.locale-active {
+  width: auto;
+  padding: 4px 5px;
+  border-radius: 5px;
+  background: transparent;
+  color: #b8d9e5;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.locale-button:hover:not(:disabled),
+.locale-active:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+  transform: none;
+}
+
+.locale-active {
+  color: #ffffff;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .topnav a {
@@ -1435,6 +1496,77 @@ textarea {
   border-top: 1px solid var(--line);
 }
 
+.coverage-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 20px 0 26px;
+}
+
+.coverage-summary > div {
+  padding: 13px 15px;
+  border: 1px solid #d9e7eb;
+  border-radius: 10px;
+  background: #f7fbfc;
+}
+
+.coverage-summary span,
+.coverage-summary strong {
+  display: block;
+}
+
+.coverage-summary span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.coverage-summary strong {
+  margin-top: 4px;
+  font-size: 0.96rem;
+}
+
+.coverage-summary-compact {
+  margin: 0 0 18px;
+}
+
+.coverage-failures {
+  margin-top: 22px;
+  padding: 15px 17px;
+  border-left: 3px solid #d28b63;
+  background: #fff8f3;
+}
+
+.coverage-failures h4 {
+  margin: 0 0 9px;
+  font-size: 0.92rem;
+}
+
+.coverage-failures ul {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.coverage-failures li {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  font-size: 0.84rem;
+}
+
+.coverage-failures a {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.coverage-failures span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  text-align: right;
+}
+
 .page-coverage-list {
   display: grid;
   gap: 7px;
@@ -1551,6 +1683,38 @@ textarea {
   color: var(--teal-strong);
   font-size: 1.9rem;
   line-height: 1.1;
+}
+
+.review-count small {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.review-resolution-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 16px;
+}
+
+.review-resolution-summary span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--paper-muted);
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+}
+
+.review-resolution-summary strong {
+  color: var(--ink);
+  font-size: 1rem;
 }
 
 .review-workbench-grid {
@@ -2098,6 +2262,16 @@ th {
     text-align: left;
   }
 
+  .coverage-summary,
+  .coverage-failures li {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .coverage-failures span {
+    text-align: left;
+  }
+
   .section-heading {
     gap: 8px;
   }
@@ -2203,5 +2377,10 @@ th {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  .brand:hover .brand-mark {
+    filter: none;
+    transform: none;
   }
 }

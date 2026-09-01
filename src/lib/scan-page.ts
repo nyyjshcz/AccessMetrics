@@ -458,16 +458,50 @@ export async function scanPage(
         contentType,
         status: response?.status() ?? 0,
       });
+    // DOMContentLoaded is often before deferred bundles finish rendering. Give
+    // the page a chance to reach load and then settle network activity, while
+    // keeping the settle window bounded so analytics/streaming pages cannot
+    // hold a scan forever.
+    await page.waitForLoadState("load", { timeout: timeoutMs }).catch(() => undefined);
+    await page.waitForLoadState("networkidle", { timeout: Math.min(5000, timeoutMs) }).catch(() => undefined);
     await validateTargetUrl(page.url(), networkPolicy);
     const coverageIssues: string[] = [];
-    let raw: any = { passes: [], violations: [], incomplete: [], inapplicable: [] };
+    let raw: any;
     try {
       raw = await withTimeout(
         new AxeBuilder({ page }).options(AXE_SCAN_OPTIONS).analyze(),
         "top-level axe execution timed out",
       );
     } catch (error) {
-      coverageIssues.push(`top_level:${String(error)}`);
+      // AxeBuilder can reject while traversing an inaccessible child frame
+      // (notably sandboxed frames), even when the top document is healthy.
+      // Re-run explicitly against the top document in that case; a failure
+      // there remains a genuine top-level scanner failure.
+      const childFrames = page.frames().slice(1);
+      if (childFrames.length === 0) {
+        throw new AppError("AXE_TOP_LEVEL_FAILED", "顶层 axe 执行失败", 422, {
+          cause: String(error).slice(0, 1000),
+          url: page.url(),
+        });
+      }
+      try {
+        raw = await withTimeout(
+          page.evaluate(
+            async ({ source, options }) => {
+              if (!(window as any).axe) (0, eval)(source);
+              return await (window as any).axe.run(document, options);
+            },
+            { source: axe.source, options: AXE_SCAN_OPTIONS },
+          ),
+          "top-level axe execution timed out",
+        );
+      } catch (fallbackError) {
+        throw new AppError("AXE_TOP_LEVEL_FAILED", "顶层 axe 执行失败", 422, {
+          cause: String(fallbackError).slice(0, 1000),
+          builderCause: String(error).slice(0, 500),
+          url: page.url(),
+        });
+      }
     }
     const frames = page.frames().slice(1);
     const origin = new URL(page.url()).origin;

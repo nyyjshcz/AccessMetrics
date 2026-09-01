@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getMessages, type Locale } from "@/lib/i18n";
+import { getRuleLocalization } from "@/lib/localization";
 
 type ResolutionSummary = {
   verdict?: string | null;
@@ -9,29 +11,41 @@ type ResolutionSummary = {
   ai?: { verdict?: string | null; reason?: string | null } | null;
 };
 
-function verdictLabel(verdict: string | null | undefined) {
+function verdictLabel(verdict: string | null | undefined, en = false) {
+  if (en) {
+    if (verdict === "problem") return "Problem";
+    if (verdict === "not_problem") return "Not a problem";
+    if (verdict === "uncertain") return "Uncertain";
+    return "No verdict yet";
+  }
   if (verdict === "problem") return "存在问题";
   if (verdict === "not_problem") return "不构成问题";
   if (verdict === "uncertain") return "暂不确定";
   return "尚未给出结论";
 }
 
-function sourceLabel(resolution?: ResolutionSummary | null) {
-  if (!resolution || resolution.source === "raw") return "原始 incomplete（尚未解决）";
-  if (resolution.source === "manual") return `人工判定：${verdictLabel(resolution.verdict)}`;
-  if (resolution.source === "ai") return `AI 判定：${verdictLabel(resolution.verdict)}`;
-  return verdictLabel(resolution.verdict);
+function sourceLabel(resolution?: ResolutionSummary | null, en = false) {
+  if (!resolution || resolution.source === "raw")
+    return en ? "Original incomplete (no conclusion recorded)" : "原始 incomplete（未记录结论）";
+  if (resolution.source === "manual")
+    return `${en ? "Manual" : "人工"}: ${verdictLabel(resolution.verdict, en)}`;
+  if (resolution.source === "ai") return `AI: ${verdictLabel(resolution.verdict, en)}`;
+  return verdictLabel(resolution.verdict, en);
 }
 
 export default function IncompleteReview({
   runId,
+  locale = "zh-CN",
   refreshKey = 0,
   onReviewChange,
 }: {
   runId: string;
+  locale?: Locale;
   refreshKey?: number;
   onReviewChange?: () => void;
 }) {
+  const en = locale === "en";
+  const copy = getMessages(en ? "en" : "zh-CN").ai;
   const [items, setItems] = useState<any[]>([]);
   const [page, setPage] = useState(1);
   const [meta, setMeta] = useState<any>();
@@ -52,7 +66,11 @@ export default function IncompleteReview({
         },
       );
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error?.message ?? "读取 incomplete 扫描结果失败");
+      if (!response.ok)
+        throw new Error(
+          payload.error?.message ??
+            (en ? "Failed to load incomplete results" : "读取 incomplete 扫描结果失败"),
+        );
       if (!mounted.current || requestId !== request.current) return;
       setItems(payload.items ?? []);
       setMeta(payload.pagination);
@@ -65,20 +83,26 @@ export default function IncompleteReview({
           payload.items?.find((item: any) => item.id === previous?.id) ?? payload.items?.[0],
       );
     },
-    [page, runId],
+    [en, page, runId],
   );
 
   useEffect(() => {
     mounted.current = true;
     void load().catch((reason) => {
       if (mounted.current)
-        setError(reason instanceof Error ? reason.message : "读取 incomplete 扫描结果失败");
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : en
+              ? "Failed to load incomplete results"
+              : "读取 incomplete 扫描结果失败",
+        );
     });
     return () => {
       mounted.current = false;
       request.current += 1;
     };
-  }, [load, refreshKey]);
+  }, [en, load, refreshKey]);
 
   useEffect(() => {
     if (!state.manualLocked) return;
@@ -105,10 +129,18 @@ export default function IncompleteReview({
     );
     const payload = await response.json();
     if (!response.ok) {
-      setError(payload.error?.message ?? "保存失败");
+      setError(payload.error?.message ?? (en ? "Failed to save manual verdict" : "保存人工结论失败"));
       return;
     }
-    setMessage(verdict === null ? "已撤销人工判断。" : "已保存人工判断。评分会随复核结果更新。");
+    setMessage(
+      verdict === null
+        ? en
+          ? "Manual verdict removed."
+          : "已撤销人工判断。"
+        : en
+          ? "Manual verdict saved. The score will update."
+          : "已保存人工判断。评分会随复核结果更新。",
+    );
     onReviewChange?.();
     await load();
   }
@@ -125,31 +157,79 @@ export default function IncompleteReview({
       <header className="review-workbench-header">
         <div>
           <p className="section-kicker">REVIEW QUEUE</p>
-          <h2>需要进一步判断的扫描结果</h2>
+          <h2>{en ? "Raw incomplete inventory" : "原始 incomplete 清单"}</h2>
           <p>
-            axe 将这些项目标记为 <code>incomplete</code>
-            ，意味着自动工具不能可靠地下结论。请结合页面与证据作出人工判断；不判断也会如实保留为原始
-            incomplete。
+            {en ? (
+              <>
+                axe marked these items <code>incomplete</code>, meaning automation could not reach a
+                reliable conclusion. This is the original scan inventory, not a count of items still
+                waiting. Items with an AI or manual conclusion remain visible for review.
+              </>
+            ) : (
+              <>
+                axe 将这些项目标记为 <code>incomplete</code>
+                ，意味着自动工具不能可靠地下结论。这是扫描产生的原始清单，不是仍待处理数量；已有 AI
+                或人工结论的项目仍会保留，便于查看和复核。
+              </>
+            )}
           </p>
         </div>
         <div className="review-count">
-          <span>本次待复核</span>
-          <strong>{meta?.total ?? 0}</strong>
+          <span>{copy.rawIncompleteInventory}</span>
+          <strong>{meta?.resolution?.total ?? meta?.total ?? 0}</strong>
+          <small>
+            {en
+              ? `${meta?.resolution?.unresolved ?? meta?.total ?? 0} still without a conclusion`
+              : `尚无结论 ${meta?.resolution?.unresolved ?? meta?.total ?? 0} 项`}
+          </small>
         </div>
       </header>
 
-      {locked ? (
-        <p className="notice">AI 正在处理，人工编辑暂时锁定；结果返回后会自动刷新。</p>
+      {meta?.resolution ? (
+        <div
+          className="review-resolution-summary"
+          aria-label={en ? "Incomplete resolution summary" : "incomplete 处理摘要"}
+        >
+          <span>
+            {copy.aiConclusions}
+            <strong>{meta.resolution.aiResolved}</strong>
+          </span>
+          <span>
+            {copy.manualConclusions}
+            <strong>{meta.resolution.manualResolved}</strong>
+          </span>
+          <span>
+            {copy.noConclusionYet}
+            <strong>{meta.resolution.unresolved}</strong>
+          </span>
+        </div>
       ) : null}
-      {readOnly ? <p className="notice">该扫描已发布，复核区现在只读。</p> : null}
+
+      {locked ? (
+        <p className="notice">
+          {en
+            ? "AI is processing; manual editing is temporarily locked and will refresh automatically."
+            : "AI 正在处理，人工编辑暂时锁定；结果返回后会自动刷新。"}
+        </p>
+      ) : null}
+      {readOnly ? (
+        <p className="notice">
+          {en ? "This scan is published; review is read-only." : "该扫描已发布，复核区现在只读。"}
+        </p>
+      ) : null}
 
       <div className="review-workbench-grid">
-        <div className="review-queue" aria-label="待复核项目列表">
+        <div
+          className="review-queue"
+          aria-label={en ? "Original incomplete items" : "原始 incomplete 项目列表"}
+        >
           <div className="review-queue-heading">
             <span>
-              第 {meta?.page ?? page} / {meta?.totalPages ?? 1} 页
+              {en
+                ? `Page ${meta?.page ?? page} / ${meta?.totalPages ?? 1}`
+                : `第 ${meta?.page ?? page} / ${meta?.totalPages ?? 1} 页`}
             </span>
-            <span>每页 20 项</span>
+            <span>{en ? "20 per page" : "每页 20 项"}</span>
           </div>
           <div className="incomplete-list">
             {items.map((item, index) => (
@@ -166,7 +246,7 @@ export default function IncompleteReview({
                   <strong>{item.rule.id}</strong>
                   <small>{item.page.title || item.page.url}</small>
                 </span>
-                <small className="review-item-resolution">{sourceLabel(item.resolution)}</small>
+                <small className="review-item-resolution">{sourceLabel(item.resolution, en)}</small>
               </button>
             ))}
           </div>
@@ -177,7 +257,7 @@ export default function IncompleteReview({
               disabled={page <= 1}
               onClick={() => setPage(page - 1)}
             >
-              上一页
+              {en ? "Previous" : "上一页"}
             </button>
             <button
               type="button"
@@ -185,7 +265,7 @@ export default function IncompleteReview({
               disabled={page >= (meta?.totalPages ?? 1)}
               onClick={() => setPage(page + 1)}
             >
-              下一页
+              {en ? "Next" : "下一页"}
             </button>
           </div>
         </div>
@@ -194,53 +274,69 @@ export default function IncompleteReview({
           <article className="review-detail">
             <div className="review-detail-heading">
               <p className="rule-id">{selected.rule.id}</p>
-              <h3>{selected.rule.description}</h3>
-              <p className="review-resolution">{sourceLabel(selected.resolution)}</p>
+              <h3>
+                {en ? selected.rule.description : getRuleLocalization(selected.rule.id).zhName}
+              </h3>
+              <p className="review-resolution">{sourceLabel(selected.resolution, en)}</p>
             </div>
             <dl className="finding-details">
               <div>
-                <dt>问题页面</dt>
+                <dt>{en ? "Affected page" : "问题页面"}</dt>
                 <dd>
                   <a href={selected.page.url} target="_blank" rel="noreferrer">
-                    打开原网页：{selected.page.title || selected.page.url}
+                    {en ? "Open source page: " : "打开原网页："}
+                    {selected.page.title || selected.page.url}
                   </a>
                 </dd>
               </div>
               <div>
-                <dt>axe 提示</dt>
-                <dd>{selected.failureSummary || "未提供 failureSummary"}</dd>
+                <dt>{en ? "axe summary" : "axe 提示"}</dt>
+                <dd>
+                  {selected.failureSummary ||
+                    (en ? "No failureSummary provided" : "未提供 failureSummary")}
+                </dd>
               </div>
               <div>
-                <dt>规则依据</dt>
+                <dt>{en ? "Rule guidance" : "规则依据"}</dt>
                 <dd>
                   <a href={selected.rule.helpUrl} target="_blank" rel="noreferrer">
-                    {selected.rule.help}
+                    {en ? selected.rule.help : getRuleLocalization(selected.rule.id).zhFix}
                   </a>
                   {selected.rule.wcag?.length
                     ? ` · WCAG ${selected.rule.wcag.join(", ")}`
-                    : " · WCAG 未标注"}
+                    : en
+                      ? " · WCAG not tagged"
+                      : " · WCAG 未标注"}
                 </dd>
               </div>
             </dl>
 
             {selected.resolution?.ai ? (
               <aside className="ai-reason">
-                <strong>AI 的辅助判断</strong>
+                <strong>{en ? "AI-assisted judgment" : "AI 的辅助判断"}</strong>
                 <p>
-                  {verdictLabel(selected.resolution.ai.verdict)} ·{" "}
-                  {selected.resolution.ai.reason || "未提供理由"}
+                  {verdictLabel(selected.resolution.ai.verdict, en)} ·{" "}
+                  {selected.resolution.ai.reason || (en ? "No reason provided" : "未提供理由")}
                 </p>
               </aside>
             ) : null}
 
             <details className="evidence-disclosure">
-              <summary>查看目标元素与技术证据</summary>
+              <summary>
+                {en ? "View target element and technical evidence" : "查看目标元素与技术证据"}
+              </summary>
               <p>
                 <code>{JSON.stringify(selected.target)}</code>
               </p>
-              <pre className="review-evidence">{selected.html || "（无 HTML 片段）"}</pre>
               <pre className="review-evidence">
-                {selected.evidence ? JSON.stringify(selected.evidence, null, 2) : "（无 evidence）"}
+                {selected.html || (en ? "(No HTML snippet)" : "（无 HTML 片段）")}
+              </pre>
+              <pre className="review-evidence">
+                {selected.evidence
+                  ? JSON.stringify(selected.evidence, null, 2)
+                  : en
+                    ? "(No evidence)"
+                    : "（无 evidence）"}
               </pre>
             </details>
 
@@ -251,6 +347,7 @@ export default function IncompleteReview({
               locked={locked}
               readOnly={readOnly}
               onSubmit={submit}
+              locale={locale}
             />
             {message ? (
               <p className="notice" role="status">
@@ -260,8 +357,12 @@ export default function IncompleteReview({
           </article>
         ) : (
           <div className="empty-state app-empty-state">
-            <strong>这一页没有可复核项目</strong>
-            <p>可以切换页面，或返回概览查看自动问题和报告。</p>
+            <strong>{en ? "No review items on this page" : "这一页没有可复核项目"}</strong>
+            <p>
+              {en
+                ? "Switch pages, or return to the overview for automatic findings and the report."
+                : "可以切换页面，或返回概览查看自动问题和报告。"}
+            </p>
           </div>
         )}
       </div>
@@ -271,32 +372,39 @@ export default function IncompleteReview({
 
 function ManualNoteEditor({
   initialNote,
+  locale = "zh-CN",
   manualVerdict,
   locked,
   readOnly,
   onSubmit,
 }: {
   initialNote: string;
+  locale?: Locale;
   manualVerdict: string | null;
   locked: boolean;
   readOnly: boolean;
   onSubmit: (verdict: string | null, note: string) => void;
 }) {
   const [note, setNote] = useState(initialNote);
+  const en = locale === "en";
   const verdictButtons = [
-    ["problem", "存在问题"],
-    ["not_problem", "不构成问题"],
-    ["uncertain", "暂不确定"],
+    ["problem", en ? "Problem" : "存在问题"],
+    ["not_problem", en ? "Not a problem" : "不构成问题"],
+    ["uncertain", en ? "Uncertain" : "暂不确定"],
   ];
 
   return (
     <section className="manual-review" aria-labelledby="manual-review-heading">
       <div>
         <p className="section-kicker">MANUAL REVIEW</p>
-        <h3 id="manual-review-heading">给出人工判断</h3>
-        <p>点击已选按钮可撤销判断，恢复为“原始 incomplete（尚未解决）”。人工判断优先于 AI 判断。</p>
+        <h3 id="manual-review-heading">{en ? "Give a manual verdict" : "给出人工判断"}</h3>
+        <p>
+          {en
+            ? "Click the selected button to remove the verdict and restore this item to its original incomplete state. Manual verdicts take priority over AI verdicts."
+            : "点击已选按钮可撤销判断，将项目恢复为原始 incomplete 状态。人工判断优先于 AI 判断。"}
+        </p>
       </div>
-      <label htmlFor="incomplete-note">备注（可选）</label>
+      <label htmlFor="incomplete-note">{en ? "Note (optional)" : "备注（可选）"}</label>
       <textarea
         id="incomplete-note"
         value={note}

@@ -24,6 +24,7 @@ const dbModule = await import("@/lib/db");
 const repositories = await import("@/lib/repositories");
 const crawler = await import("@/lib/crawler");
 const scanner = await import("@/lib/scan-page");
+const workerConfig = await import("@/lib/config");
 const worker = await import("@/worker/index");
 
 describe("scan worker failure handling", () => {
@@ -134,5 +135,35 @@ describe("scan worker failure handling", () => {
       { status: "completed", scan_status: "success" },
       { status: "completed", scan_status: "skipped" },
     ]);
+  });
+
+  it("persists top-level axe failures after the bounded retry policy", async () => {
+    const site = repositories.upsertSite("http://127.0.0.1");
+    const job = repositories.createScanJob(
+      site.origin,
+      { maxPages: 1, sameOriginOnly: true, respectRobots: true },
+      "test",
+      "worker-axe-failure-job",
+    );
+    const workerId = `worker-${process.pid}`;
+    expect(repositories.leaseNextJob(workerId)?.id).toBe(job.id);
+    vi.mocked(scanner.scanPage).mockReset();
+    vi.mocked(crawler.discoverSite).mockResolvedValueOnce(["http://127.0.0.1/axe-fails"]);
+    vi.mocked(scanner.scanPage).mockRejectedValue({
+      code: "AXE_TOP_LEVEL_FAILED",
+      message: "top-level axe execution failed",
+    });
+
+    const runId = await worker.processJob(repositories.getJob(job.id));
+    expect(scanner.scanPage).toHaveBeenCalledTimes(workerConfig.config.SCAN_RETRY_COUNT + 1);
+    const db = dbModule.getDb();
+    expect(db.prepare("SELECT scan_status,error_code FROM pages WHERE run_id=?").get(runId)).toMatchObject({
+      scan_status: "failed",
+      error_code: "AXE_TOP_LEVEL_FAILED",
+    });
+    expect(db.prepare("SELECT status,failed_count FROM scan_runs WHERE id=?").get(runId)).toMatchObject({
+      status: "failed",
+      failed_count: 1,
+    });
   });
 });

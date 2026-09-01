@@ -11,7 +11,7 @@ export async function GET(request: Request, context: { params: Promise<{ provide
     const { providerId } = await context.params;
     return NextResponse.json({ models: await listProviderModels(providerId) });
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

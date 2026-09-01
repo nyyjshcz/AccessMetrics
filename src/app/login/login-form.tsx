@@ -2,8 +2,10 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
+import { getMessages, type Locale } from "@/lib/i18n";
 
-export default function LoginForm({ nextPath }: { nextPath?: string }) {
+export default function LoginForm({ nextPath, locale = "zh-CN" }: { nextPath?: string; locale?: Locale }) {
+  const copy = getMessages(locale).login;
   const router = useRouter();
   const [accessKey, setAccessKey] = useState("");
   const [error, setError] = useState("");
@@ -21,11 +23,11 @@ export default function LoginForm({ nextPath }: { nextPath?: string }) {
         body: JSON.stringify({ accessKey, next: nextPath }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error?.message ?? "登录失败");
+      if (!response.ok) throw new Error(data.error?.message ?? copy.error);
       router.replace(data.redirectTo ?? "/");
       router.refresh();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "登录失败");
+      setError(reason instanceof Error ? reason.message : copy.error);
     } finally {
       setBusy(false);
     }
@@ -33,7 +35,7 @@ export default function LoginForm({ nextPath }: { nextPath?: string }) {
 
   return (
     <form className="access-login-form" onSubmit={submit}>
-      <label htmlFor="access-key">访问密钥</label>
+      <label htmlFor="access-key">{copy.key}</label>
       <input
         id="access-key"
         type="password"
@@ -41,14 +43,12 @@ export default function LoginForm({ nextPath }: { nextPath?: string }) {
         required
         value={accessKey}
         onChange={(event) => setAccessKey(event.target.value)}
-        placeholder="输入管理员或访客密钥"
+        placeholder={copy.placeholder}
       />
-      <p className="muted">
-        管理员可以扫描、处理和发布；访客只能查看已发布报告。密钥不会保存在浏览器中。
-      </p>
+      <p className="muted">{copy.note}</p>
       {error && <p className="error" role="alert">{error}</p>}
       <button type="submit" disabled={busy}>
-        {busy ? "正在验证…" : "进入系统"}
+        {busy ? copy.busy : copy.submit}
       </button>
     </form>
   );

@@ -6,6 +6,17 @@ import { getDb } from "@/lib/db";
 import { buildRunReportDto, renderRunReportHtml } from "@/lib/report";
 import { AppError, errorEnvelope } from "@/lib/errors";
 import { requireRequestRole } from "@/lib/access-control";
+import type { ReportLocale } from "@/lib/report";
+import { LOCALE_COOKIE, resolveLocale } from "@/lib/i18n-server";
+
+function reportLocale(request: Request): ReportLocale {
+  const query = new URL(request.url).searchParams.get("lang");
+  const cookie = request.headers
+    .get("cookie")
+    ?.match(new RegExp(`(?:^|;\\s*)${LOCALE_COOKIE}=(zh-CN|en)(?:;|$)`))?.[1];
+  return resolveLocale(query, cookie);
+}
+
 export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
     requireRequestRole(request, "visitor");
@@ -15,7 +26,8 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
       | { published: number }
       | undefined;
     if (!run || run.published !== 1) throw new AppError("NOT_FOUND", "报告不存在", 404);
-    const html = renderRunReportHtml(buildRunReportDto(runId));
+    const locale = reportLocale(request);
+    const html = renderRunReportHtml(buildRunReportDto(runId), locale);
     // This route prints self-contained HTML via setContent and never navigates
     // to an external URL, so Web does not need the scan worker's proxy.
     const browser = await chromium.launch(chromiumLaunchOptions({ requireProxy: false }));
@@ -29,10 +41,8 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
         format: "A4",
         printBackground: true,
         displayHeaderFooter: true,
-        headerTemplate:
-          '<div style="font-size:8px;width:100%;text-align:center;color:#526173">AccessCheck Lishui · 自动检查报告</div>',
-        footerTemplate:
-          '<div style="font-size:8px;width:100%;text-align:center;color:#526173">第 <span class="pageNumber"></span> / <span class="totalPages"></span> 页</div>',
+        headerTemplate: `<div style="font-size:8px;width:100%;text-align:center;color:#526173">AccessCheck Lishui · ${locale === "en" ? "Automated accessibility report" : "自动检查报告"}</div>`,
+        footerTemplate: `<div style="font-size:8px;width:100%;text-align:center;color:#526173">${locale === "en" ? "Page" : "第"} <span class="pageNumber"></span> / <span class="totalPages"></span> ${locale === "en" ? "" : "页"}</div>`,
         margin: { top: "36px", bottom: "36px", left: "20px", right: "20px" },
       });
       return new NextResponse(bytes as unknown as BodyInit, {
@@ -45,7 +55,7 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
       await browser.close();
     }
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

@@ -685,7 +685,7 @@ export function resumeAiBatch(batchId: string) {
   assertRunMutable(batch.run_id);
   if (batch.status === "completed") return getAiBatch(batchId);
   if (batch.status === "failed")
-    throw new AppError("AI_BATCH_RETRY_REQUIRED", "失败 batch 必须先重试失败项", 409);
+    throw new AppError("AI_BATCH_RETRY_REQUIRED", "失败的批次必须先重试失败项", 409);
   const timestamp = now();
   transaction((db) => {
     assertNoOtherActiveBatch(db, batch.run_id, batchId);

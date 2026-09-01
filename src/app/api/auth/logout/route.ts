@@ -10,7 +10,7 @@ export async function POST(request: Request) {
     response.cookies.set(ACCESS_SESSION_COOKIE, "", { ...sessionCookieOptions(), maxAge: 0 });
     return response;
   } catch (error) {
-    return NextResponse.json(errorEnvelope(error), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }

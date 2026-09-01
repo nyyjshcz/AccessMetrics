@@ -22,6 +22,8 @@ const loginRoute = await import("@/app/api/auth/login/route");
 const scansRoute = await import("@/app/api/scans/route");
 const runRoute = await import("@/app/api/runs/[runId]/route");
 const reportJsonRoute = await import("@/app/api/reports/[runId]/json/route");
+const reportHtmlRoute = await import("@/app/api/reports/[runId]/html/route");
+const publishRoute = await import("@/app/api/runs/[runId]/publish/route");
 
 async function login(accessKey: string, next?: string) {
   const response = await loginRoute.POST(
@@ -61,6 +63,34 @@ describe("administrator and visitor access keys", () => {
       .getDb()
       .prepare("UPDATE scan_runs SET status='completed',published=1,published_at=? WHERE id=?")
       .run(new Date().toISOString(), run.id);
+    dbModule
+      .getDb()
+      .prepare("UPDATE scan_runs SET crawl_summary_json=? WHERE id=?")
+      .run(
+        JSON.stringify({
+          requestedPageLimit: 3,
+          scanTargetCount: 2,
+          skippedNotFoundCount: 1,
+          stopReason: "queue_exhausted",
+        }),
+        run.id,
+      );
+    dbModule
+      .getDb()
+      .prepare(
+        "INSERT INTO pages(id,site_id,canonical_url,first_seen_at,run_id,scan_status,http_status,error_code,error_message) VALUES (?,?,?,?,?,?,?,?,?)",
+      )
+      .run(
+        "page-access-control-failed",
+        run.site_id,
+        "https://published-access.example/missing",
+        new Date().toISOString(),
+        run.id,
+        "failed",
+        500,
+        "HTTP_500",
+        "页面返回服务器错误",
+      );
   });
 
   afterAll(() => dbModule.closeDb());
@@ -130,5 +160,84 @@ describe("administrator and visitor access keys", () => {
     );
     expect(crossOrigin.status).toBe(403);
     expect((await crossOrigin.json()).error).toMatchObject({ code: "ORIGIN_MISMATCH" });
+  });
+
+  it("exposes crawl summary and page failure details for run results", async () => {
+    const admin = await login(adminAccessKey, "/scans");
+    const response = await runRoute.GET(
+      requestWithCookie(`http://localhost:3000/api/runs/${publishedRunId}`, admin.cookie),
+      { params: Promise.resolve({ runId: publishedRunId }) },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      crawlSummary: {
+        requestedPageLimit: 3,
+        scanTargetCount: 2,
+        skippedNotFoundCount: 1,
+        stopReason: "queue_exhausted",
+      },
+      pages: [
+        expect.objectContaining({
+          error_code: "HTTP_500",
+          error_message: "页面返回服务器错误",
+        }),
+      ],
+    });
+  });
+
+  it("restricts report withdrawal and permits an admin to republish", async () => {
+    const admin = await login(adminAccessKey, "/scans");
+    const visitor = await login(visitorAccessKey, "/reports");
+    const params = { params: Promise.resolve({ runId: publishedRunId }) };
+
+    const crossOrigin = await publishRoute.DELETE(
+      new Request(`http://localhost:3000/api/runs/${publishedRunId}/publish`, {
+        method: "DELETE",
+        headers: { Origin: "https://attacker.example", cookie: admin.cookie },
+      }),
+      params,
+    );
+    expect(crossOrigin.status).toBe(403);
+
+    const visitorWithdraw = await publishRoute.DELETE(
+      requestWithCookie(`http://localhost:3000/api/runs/${publishedRunId}/publish`, visitor.cookie),
+      params,
+    );
+    expect(visitorWithdraw.status).toBe(403);
+
+    const withdrawn = await publishRoute.DELETE(
+      requestWithCookie(`http://localhost:3000/api/runs/${publishedRunId}/publish`, admin.cookie),
+      params,
+    );
+    expect(withdrawn.status).toBe(200);
+
+    for (const [route, suffix] of [
+      [reportJsonRoute, "json"],
+      [reportHtmlRoute, "html"],
+    ] as const) {
+      const response = await route.GET(
+        requestWithCookie(
+          `http://localhost:3000/api/reports/${publishedRunId}/${suffix}`,
+          visitor.cookie,
+        ),
+        params,
+      );
+      expect(response.status).toBe(404);
+    }
+
+    const republished = await publishRoute.POST(
+      new Request(`http://localhost:3000/api/runs/${publishedRunId}/publish`, {
+        method: "POST",
+        headers: { Origin: "http://localhost:3000", cookie: admin.cookie },
+      }),
+      params,
+    );
+    expect(republished.status).toBe(200);
+
+    const visitorReport = await reportHtmlRoute.GET(
+      requestWithCookie(`http://localhost:3000/api/reports/${publishedRunId}/html`, visitor.cookie),
+      params,
+    );
+    expect(visitorReport.status).toBe(200);
   });
 });

@@ -85,3 +85,5 @@
 - Linux 数据目录、导出目录与正确权限。
 
 详见 [部署说明](./ops/deployment.md)。生产扫描 Worker 不可绕过 egress proxy 直接访问公网。生产 Compose 没有统一迁移服务：两个 Worker 启动时会迁移，Web 的 health 或其他相关请求也会迁移；如需在启动前人工核实，可在主机有 Node/pnpm 时运行 `pnpm db:migrate`。Docker-only 运行不要求主机 Node/pnpm，可直接运行部署说明中的 `docker compose ... config --quiet`、`up -d --build`、`ps` 和日志检查。
+
+飞牛 NAS 的 Docker、SQLite 数据迁移和 Tailscale Funnel 流程见[飞牛 NAS 与 Tailscale 部署说明](./ops/nas-tailscale.md)。

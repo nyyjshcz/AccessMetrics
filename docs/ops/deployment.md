@@ -4,6 +4,8 @@
 
 这份说明适用于一台 Linux VPS 上的单实例部署。该项目使用 SQLite 和共享卷，Web、扫描 Worker 与 AI Worker 必须运行在同一台机器、访问同一份数据目录；不要把它部署到无持久磁盘的 Serverless 平台。
 
+如果目标是飞牛 NAS，并通过 Tailscale 提供 HTTPS 访问，请改读[飞牛 NAS 与 Tailscale 部署说明](./nas-tailscale.md)。
+
 ## 先准备什么
 
 - 一台受你控制的 Linux VPS，建议 Ubuntu 24.04 LTS，至少 2 vCPU、4 GB 内存和 30 GB 可用磁盘；使用本地大模型时，模型服务仍应在你可访问的受控网络中。

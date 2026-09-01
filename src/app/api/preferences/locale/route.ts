@@ -1,20 +1,31 @@
 import { NextResponse } from "next/server";
+import { config } from "@/lib/config";
 import { isLocale, localeCookieOptions, LOCALE_COOKIE } from "@/lib/i18n-server";
 
 export async function POST(request: Request) {
   const origin = request.headers.get("origin");
   const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
   const requestUrl = new URL(request.url);
-  const protocol = forwardedProtocol || requestUrl.protocol.replace(/:$/, "");
+  const configuredUrl = new URL(config.APP_BASE_URL);
+  const canonicalOrigin = configuredUrl.origin;
+  const protocol =
+    config.APP_ENV === "production"
+      ? configuredUrl.protocol.replace(/:$/, "")
+      : forwardedProtocol || requestUrl.protocol.replace(/:$/, "");
   const requestHost = request.headers.get("host");
   const forwardedHost = request.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
-  const sameOrigin = new Set(
-    [
+  const sameOrigin = new Set<string>([canonicalOrigin]);
+  // Development and tests can legitimately reach the application through a
+  // local proxy with a different host. Production only accepts APP_BASE_URL.
+  if (config.APP_ENV !== "production") {
+    for (const value of [
       requestUrl.origin,
       requestHost && `${protocol}://${requestHost}`,
       forwardedHost && `${protocol}://${forwardedHost}`,
-    ].filter((value): value is string => Boolean(value)),
-  );
+    ]) {
+      if (value) sameOrigin.add(value);
+    }
+  }
   if (origin && !sameOrigin.has(origin)) {
     return NextResponse.json({ error: "same-origin request required" }, { status: 403 });
   }
@@ -62,7 +73,7 @@ export async function POST(request: Request) {
   if (returnTo !== null) {
     let target: URL;
     try {
-      target = new URL(returnTo, requestUrl.origin);
+      target = new URL(returnTo, config.APP_ENV === "production" ? canonicalOrigin : requestUrl.origin);
     } catch {
       return NextResponse.json({ error: "returnTo must be a valid same-origin path" }, { status: 400 });
     }

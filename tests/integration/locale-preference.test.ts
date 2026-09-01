@@ -54,6 +54,24 @@ describe("locale preference endpoint", () => {
     expect(response.status).toBe(200);
   });
 
+  it("accepts an HTTPS browser origin forwarded through an internal HTTP proxy", async () => {
+    const response = await POST(
+      new Request("http://web:3000/api/preferences/locale", {
+        method: "POST",
+        headers: {
+          origin: "https://public.example.test",
+          host: "web:3000",
+          "x-forwarded-host": "public.example.test",
+          "x-forwarded-proto": "https",
+        },
+        body: JSON.stringify({ locale: "en" }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie")?.toLowerCase()).toContain("secure");
+  });
+
   it("accepts the standalone report form and redirects back safely", async () => {
     const response = await POST(
       new Request("http://localhost/api/preferences/locale", {

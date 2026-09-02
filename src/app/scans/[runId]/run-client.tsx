@@ -6,6 +6,7 @@ import IncompleteReview from "@/components/incomplete-review";
 import StatusBadge from "@/components/status-badge";
 import type { Locale } from "@/lib/i18n";
 import { getRuleLocalization } from "@/lib/localization";
+import { getAxeRuleExplanation } from "@/lib/rule-summary-catalog";
 
 type TabKey = "overview" | "violations" | "incomplete" | "report";
 
@@ -25,7 +26,12 @@ export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; 
   const en = locale === "en";
   const [data, setData] = useState<any>();
   const [tab, setTab] = useState<TabKey>("overview");
-  const [violations, setViolations] = useState<any[]>([]);
+  const [violationRules, setViolationRules] = useState<any[]>([]);
+  const [violationRulesLoading, setViolationRulesLoading] = useState(false);
+  const [violationRulesAttempted, setViolationRulesAttempted] = useState(false);
+  const [violationRuleDetails, setViolationRuleDetails] = useState<Record<string, any>>({});
+  const [violationRuleLoading, setViolationRuleLoading] = useState<Record<string, boolean>>({});
+  const [violationRuleErrors, setViolationRuleErrors] = useState<Record<string, string>>({});
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -58,20 +64,42 @@ export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; 
   }, [aiBatchActive, en, fetchRun]);
 
   useEffect(() => {
-    if (tab !== "violations" || violations.length) return;
-    fetch(`/api/runs/${runId}/violations`, { cache: "no-store" })
+    if (tab !== "violations" || violationRulesAttempted || violationRulesLoading) return;
+    setViolationRulesAttempted(true);
+    setViolationRulesLoading(true);
+    fetch(`/api/runs/${runId}/violation-rules`, { cache: "no-store" })
       .then(async (response) => {
         const payload = await response.json();
         if (!response.ok)
           throw new Error(
             payload.error?.message ??
-              (en ? "Failed to load automatic findings" : "读取自动问题失败"),
+              (en ? "Failed to load site-wide rules" : "读取全站规则失败"),
           );
         return payload;
       })
-      .then((payload) => setViolations(payload.items ?? []))
-      .catch((reason) => setError(reason.message));
-  }, [en, runId, tab, violations.length]);
+      .then((payload) => setViolationRules(payload.items ?? payload.rules ?? []))
+      .catch((reason) => setError(reason.message))
+      .finally(() => setViolationRulesLoading(false));
+  }, [en, runId, tab, violationRulesAttempted, violationRulesLoading]);
+
+  const loadViolationRuleDetails = useCallback(async (ruleId: string, page = 1) => {
+    const cacheKey = `${ruleId}:${page}`;
+    if (violationRuleDetails[cacheKey] || violationRuleLoading[cacheKey]) return;
+    setViolationRuleLoading((current) => ({ ...current, [cacheKey]: true }));
+    try {
+      const response = await fetch(
+        `/api/runs/${runId}/violation-rules/${encodeURIComponent(ruleId)}?page=${page}&pageSize=50`,
+        { cache: "no-store" },
+      );
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message ?? (en ? "Failed to load evidence" : "读取证据失败"));
+      setViolationRuleDetails((current) => ({ ...current, [cacheKey]: payload }));
+    } catch (reason: any) {
+      setViolationRuleErrors((current) => ({ ...current, [cacheKey]: reason.message }));
+    } finally {
+      setViolationRuleLoading((current) => ({ ...current, [cacheKey]: false }));
+    }
+  }, [en, runId, violationRuleDetails, violationRuleLoading]);
 
   async function publish() {
     const response = await fetch(`/api/runs/${runId}/publish`, { method: "POST" });
@@ -123,7 +151,7 @@ export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; 
   const violationCount = score.resultNodeCounts?.violation ?? 0;
   const tabs: Array<[TabKey, string]> = [
     ["overview", en ? "Overview" : "概览"],
-    ["violations", en ? `Automatic findings (${violationCount})` : `自动问题 (${violationCount})`],
+    ["violations", en ? `Site-wide rules (${violationCount})` : `全站规则 (${violationCount})`],
     [
       "incomplete",
       en ? `Raw incomplete inventory (${incomplete})` : `原始 incomplete 清单 (${incomplete})`,
@@ -184,7 +212,17 @@ export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; 
 
       <div className="run-content">
         {tab === "overview" ? <Overview score={score} data={data} en={en} /> : null}
-        {tab === "violations" ? <ViolationList items={violations} en={en} /> : null}
+        {tab === "violations" ? (
+          <ViolationRuleList
+            items={violationRules}
+            loading={violationRulesLoading}
+            details={violationRuleDetails}
+            detailLoading={violationRuleLoading}
+            detailErrors={violationRuleErrors}
+            loadDetails={loadViolationRuleDetails}
+            en={en}
+          />
+        ) : null}
         {tab === "incomplete" ? (
           <>
             <IncompleteReview
@@ -337,7 +375,24 @@ function Overview({ score, data, en = false }: any) {
   );
 }
 
-function ViolationList({ items, en = false }: { items: any[]; en?: boolean }) {
+function ViolationRuleList({
+  items,
+  loading,
+  details,
+  detailLoading,
+  detailErrors,
+  loadDetails,
+  en = false,
+}: {
+  items: any[];
+  loading: boolean;
+  details: Record<string, any>;
+  detailLoading: Record<string, boolean>;
+  detailErrors: Record<string, string>;
+  loadDetails: (ruleId: string, page?: number) => void;
+  en?: boolean;
+}) {
+  if (loading) return <p role="status">{en ? "Loading site-wide rules…" : "正在读取全站规则…"}</p>;
   if (!items.length)
     return (
       <div className="empty-state app-empty-state">
@@ -354,53 +409,133 @@ function ViolationList({ items, en = false }: { items: any[]; en?: boolean }) {
     <section className="violation-list">
       <div className="section-heading section-heading-spacious">
         <div>
-          <p className="section-kicker">AUTOMATIC FINDINGS</p>
-          <h2>{en ? `${items.length} automatic findings` : `${items.length} 个自动问题`}</h2>
+          <p className="section-kicker">{en ? "SITE-WIDE RULES" : "全站规则"}</p>
+            <h2>{en ? `${items.length} site-wide rules` : `${items.length} 条全站规则`}</h2>
         </div>
         <p className="muted">
           {en
-            ? "axe judged these items automatically; open one to verify the page, target element, and rule guidance."
-            : "这些项目由 axe 自动判定；打开单条即可核对页面、目标元素和规则说明。"}
+            ? "Each rule is grouped across the scan. Expand one to load page and node evidence."
+            : "每条规则已按本次扫描跨页面汇总；展开后按需读取页面和节点证据。"}
         </p>
       </div>
-      {items.map((item) => (
-        <article className="violation-card" key={item.id}>
+      {items.map((item) => {
+        const ruleId = item.ruleId ?? item.rule?.id ?? item.id;
+        const rule = item.rule ?? item;
+        const explanationResult = getAxeRuleExplanation(ruleId, {
+          description: rule.description ?? "",
+          help: rule.help ?? rule.helpText ?? "",
+          helpUrl: rule.helpUrl ?? rule.help_url ?? "",
+        });
+        const localized = explanationResult.matched
+          ? explanationResult.explanation[en ? "en" : "zh"]
+          : explanationResult.fallback;
+        const loadedDetails = Object.entries(details)
+          .filter(([key]) => key.startsWith(`${ruleId}:`))
+          .sort(([a], [b]) => Number(a.split(":").pop()) - Number(b.split(":").pop()))
+          .map(([, value]) => value);
+        const detail = loadedDetails[0];
+        const latestDetail = loadedDetails[loadedDetails.length - 1];
+        const pagination = latestDetail?.pagination ?? latestDetail?.meta ?? {};
+        const currentPage = Number(pagination.page ?? 1);
+        const hasMore = pagination.hasMore ?? currentPage < Number(pagination.totalPages ?? 0);
+        return (
+        <details className="violation-card violation-rule-card" key={ruleId} onToggle={(event) => {
+          if ((event.currentTarget as HTMLDetailsElement).open) loadDetails(ruleId, 1);
+        }}>
+          <summary className="violation-card-heading violation-rule-summary">
           <div className="violation-card-heading">
             <div>
-              <p className="rule-id">{item.rule.id}</p>
-              <h3>{en ? item.rule.description : getRuleLocalization(item.rule.id).zhName}</h3>
+              <p className="rule-id">{ruleId}</p>
+              <h3>{localized.name ?? (en ? rule.description : getRuleLocalization(ruleId).zhName)}</h3>
             </div>
-            {item.impact ? (
-              <span className={`impact-tag impact-${item.impact}`}>{item.impact}</span>
+            {(item.highestImpact ?? item.impact) ? (
+              <span className={`impact-tag impact-${item.highestImpact ?? item.impact}`}>{en ? `Highest impact: ${item.highestImpact ?? item.impact}` : `最高 impact：${item.highestImpact ?? item.impact}`}</span>
             ) : null}
           </div>
-          <dl className="finding-details">
+          </summary>
+          <div className="violation-rule-body">
+          {(localized.what || localized.who || localized.why) ? <dl className="rule-explanation">
+            {localized.what ? <div><dt>{en ? "What" : "是什么"}</dt><dd>{localized.what}</dd></div> : null}
+            {localized.who ? <div><dt>{en ? "Who may be affected" : "可能影响谁"}</dt><dd>{localized.who}</dd></div> : null}
+            {localized.why ? <div><dt>{en ? "Why it matters" : "为什么重要"}</dt><dd>{localized.why}</dd></div> : null}
+          </dl> : null}
+          <dl className="finding-details rule-stats">
             <div>
-              <dt>{en ? "Affected page" : "问题页面"}</dt>
-              <dd>
-                <a href={item.page.url} target="_blank" rel="noreferrer">
-                  {item.page.title || item.page.url}
-                </a>
-              </dd>
+              <dt>{en ? "Affected pages" : "影响页面"}</dt><dd>{item.pageCount ?? item.affectedPageCount ?? 0}</dd>
             </div>
             <div>
-              <dt>{en ? "axe summary" : "axe 提示"}</dt>
-              <dd>{item.failureSummary || (en ? "No failureSummary provided" : "未提供 failureSummary")}</dd>
-            </div>
-            <div>
-              <dt>{en ? "Target element" : "目标元素"}</dt>
-              <dd>
-                <code>{JSON.stringify(item.target)}</code>
-              </dd>
+              <dt>{en ? "Nodes" : "节点数"}</dt><dd>{item.nodeCount ?? item.totalNodes ?? 0}</dd>
             </div>
           </dl>
-          <a className="text-link" href={item.rule.helpUrl} target="_blank" rel="noreferrer">
-            {en ? "View rule guidance" : "查看规则说明"} <span aria-hidden="true">↗</span>
-          </a>
-        </article>
-      ))}
+          {detailLoading[`${ruleId}:1`] ? <p role="status">{en ? "Loading evidence…" : "正在读取证据…"}</p> : null}
+          {detailErrors[`${ruleId}:1`] ? <p className="error" role="alert">{detailErrors[`${ruleId}:1`]}</p> : null}
+          {detail ? <RuleEvidence details={loadedDetails} en={en} /> : null}
+          {detail && hasMore ? <button type="button" className="secondary-link" onClick={() => loadDetails(ruleId, currentPage + 1)} disabled={detailLoading[`${ruleId}:${currentPage + 1}`]}>{en ? "Load more nodes" : "加载更多节点"}</button> : null}
+          </div>
+        </details>
+        );
+      })}
     </section>
   );
+}
+
+function RuleEvidence({ details, en = false }: { details: any[]; en?: boolean }) {
+  const detail = details[0] ?? {};
+  const rule = detail.rule ?? detail;
+  const pageMap = new Map<string, { page: any; nodes: any[] }>();
+  for (const entry of details) {
+    for (const page of entry.pages ?? []) {
+      const pageKey = String(page.id ?? page.url ?? page.canonicalUrl ?? page.title ?? "unknown");
+      const current = pageMap.get(pageKey) ?? { page, nodes: [] };
+      const seen = new Set(current.nodes.map((node: any) => node.id ?? stableNodeEvidenceKey(node)));
+      for (const node of page.nodes ?? []) {
+        const nodeKey = node.id ?? stableNodeEvidenceKey(node);
+        if (!seen.has(nodeKey)) {
+          current.nodes.push(node);
+          seen.add(nodeKey);
+        }
+      }
+      pageMap.set(pageKey, current);
+    }
+  }
+  const fallbackNodes = details.flatMap((entry) => entry.items ?? entry.nodes ?? []);
+  const grouped = pageMap.size
+    ? Array.from(pageMap.values())
+    : [{ page: null, nodes: dedupeNodes(fallbackNodes) }];
+  return <div className="rule-evidence">
+    <div className="axe-rule-source">
+      <p><strong>{en ? "axe rule guidance" : "axe 规则说明"}</strong></p>
+      <p>{rule.description ?? rule.help ?? (en ? "No axe description provided" : "未提供 axe 原文")}</p>
+      {rule.helpUrl ? <a className="text-link" href={rule.helpUrl} target="_blank" rel="noreferrer">{en ? "Open axe guidance" : "打开 axe 规则链接"} ↗</a> : null}
+      {(rule.wcag?.length || rule.tags?.length) ? <p className="muted">WCAG: {(rule.wcag ?? rule.tags).join(", ")}</p> : null}
+    </div>
+    {grouped.map(({ page, nodes }: any, index: number) => <section className="rule-page-evidence" key={page?.id ?? page?.url ?? index}>
+      <h4 className="rule-page-heading">
+        {page ? <a href={page.url ?? page.canonicalUrl} target="_blank" rel="noreferrer">{page.title || page.url || page.canonicalUrl}</a> : (en ? "Evidence" : "证据")}
+        {page?.highestImpact ?? page?.impact ? <span className={`impact-tag impact-${page.highestImpact ?? page.impact}`}>{en ? `Highest impact: ${page.highestImpact ?? page.impact}` : `最高 impact：${page.highestImpact ?? page.impact}`}</span> : null}
+      </h4>
+      {nodes.map((node: any, nodeIndex: number) => <details className="node-evidence" key={node.id ?? nodeIndex}><summary>{en ? `Node ${node.ordinal ?? nodeIndex + 1}` : `节点 ${node.ordinal ?? nodeIndex + 1}`}</summary><div className="node-evidence-body">
+        <p><strong>{en ? "Selector" : "选择器"}</strong></p><code>{JSON.stringify(node.target ?? node.selector)}</code>
+        {node.failureSummary ? <p className="failure-summary">{node.failureSummary}</p> : null}
+        {node.html ?? node.htmlSanitized ? <pre>{node.html ?? node.htmlSanitized}</pre> : null}
+        {node.any || node.all || node.none || node.checks ? <pre>{JSON.stringify(node.checks ?? { any: node.any, all: node.all, none: node.none }, null, 2)}</pre> : null}
+      </div></details>)}
+    </section>)}
+  </div>;
+}
+
+function stableNodeEvidenceKey(node: any) {
+  return `${JSON.stringify(node.target ?? node.selector ?? "")}|${node.failureSummary ?? ""}|${node.ordinal ?? ""}`;
+}
+
+function dedupeNodes(nodes: any[]) {
+  const seen = new Set<string>();
+  return nodes.filter((node) => {
+    const key = String(node.id ?? stableNodeEvidenceKey(node));
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function Report({ data, runId, publish, withdrawPublish, en = false }: any) {

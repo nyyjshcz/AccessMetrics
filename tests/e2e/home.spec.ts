@@ -275,12 +275,23 @@ test("管理员扫描发布后，访客只能读取已发布报告", async ({ pa
     const tabs = page.getByRole("tab");
     await expect(page.getByRole("tablist")).toBeVisible();
     await expect(tabs).toHaveCount(4);
-    for (const tabName of ["概览", "自动问题", "原始 incomplete 清单", "报告"]) {
+    for (const tabName of ["概览", "全站规则", "原始 incomplete 清单", "报告"]) {
       const tab = tabs.filter({ hasText: new RegExp(`^${tabName}(?: \\(\\d+\\))?$`) });
       await expect(tab).toBeVisible();
       await tab.click();
       await expect(tab).toHaveAttribute("aria-selected", "true");
       await expect(page.locator("main")).toBeVisible();
+      if (tabName === "全站规则") {
+        await expect(page.getByText(/全站规则|没有自动问题/).first()).toBeVisible();
+        const ruleCard = page.locator(".violation-rule-card").first();
+        if (await ruleCard.count()) {
+          const detailRequest = page.waitForRequest((request) =>
+            request.url().includes(`/api/runs/${runId}/violation-rules/`),
+          );
+          await ruleCard.locator("summary").click();
+          await detailRequest;
+        }
+      }
       if (tabName === "原始 incomplete 清单") {
         await expect(page.getByRole("heading", { name: "原始 incomplete 清单" })).toBeVisible();
         await expect(

@@ -10,6 +10,37 @@ import { getAxeRuleExplanation } from "@/lib/rule-summary-catalog";
 
 type TabKey = "overview" | "violations" | "incomplete" | "report";
 
+type ViolationRuleSummary = {
+  id: string;
+  description: string;
+  help: string;
+  helpUrl: string;
+  wcag: string[];
+  highestImpact: string | null;
+  pageCount: number;
+  nodeCount: number;
+};
+
+type ViolationRuleDetail = {
+  rule: ViolationRuleSummary;
+  pages: Array<{
+    id: string;
+    url: string;
+    canonicalUrl: string;
+    title: string | null;
+    nodes: any[];
+    highestImpact: string | null;
+    nodeCount: number;
+  }>;
+  pagination: {
+    page: number;
+    pageSize: number;
+    evidenceTotal: number;
+    totalPages: number;
+    hasMore: boolean;
+  };
+};
+
 function displayScore(score: any, en = false) {
   return score?.overall === null || score?.overall === undefined
     ? en
@@ -26,10 +57,13 @@ export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; 
   const en = locale === "en";
   const [data, setData] = useState<any>();
   const [tab, setTab] = useState<TabKey>("overview");
-  const [violationRules, setViolationRules] = useState<any[]>([]);
+  const [violationRules, setViolationRules] = useState<ViolationRuleSummary[]>([]);
   const [violationRulesLoading, setViolationRulesLoading] = useState(false);
   const [violationRulesAttempted, setViolationRulesAttempted] = useState(false);
-  const [violationRuleDetails, setViolationRuleDetails] = useState<Record<string, any>>({});
+  const [violationRulesError, setViolationRulesError] = useState("");
+  const [violationRuleDetails, setViolationRuleDetails] = useState<
+    Record<string, ViolationRuleDetail>
+  >({});
   const [violationRuleLoading, setViolationRuleLoading] = useState<Record<string, boolean>>({});
   const [violationRuleErrors, setViolationRuleErrors] = useState<Record<string, string>>({});
   const [reviewRefreshKey, setReviewRefreshKey] = useState(0);
@@ -67,39 +101,53 @@ export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; 
     if (tab !== "violations" || violationRulesAttempted || violationRulesLoading) return;
     setViolationRulesAttempted(true);
     setViolationRulesLoading(true);
+    setViolationRulesError("");
     fetch(`/api/runs/${runId}/violation-rules`, { cache: "no-store" })
       .then(async (response) => {
         const payload = await response.json();
         if (!response.ok)
           throw new Error(
-            payload.error?.message ??
-              (en ? "Failed to load site-wide rules" : "读取全站规则失败"),
+            payload.error?.message ?? (en ? "Failed to load site-wide rules" : "读取全站规则失败"),
           );
         return payload;
       })
-      .then((payload) => setViolationRules(payload.items ?? payload.rules ?? []))
-      .catch((reason) => setError(reason.message))
+      .then((payload) => setViolationRules(payload.rules ?? []))
+      .catch((reason) => setViolationRulesError(reason.message))
       .finally(() => setViolationRulesLoading(false));
   }, [en, runId, tab, violationRulesAttempted, violationRulesLoading]);
 
-  const loadViolationRuleDetails = useCallback(async (ruleId: string, page = 1) => {
-    const cacheKey = `${ruleId}:${page}`;
-    if (violationRuleDetails[cacheKey] || violationRuleLoading[cacheKey]) return;
-    setViolationRuleLoading((current) => ({ ...current, [cacheKey]: true }));
-    try {
-      const response = await fetch(
-        `/api/runs/${runId}/violation-rules/${encodeURIComponent(ruleId)}?page=${page}&pageSize=50`,
-        { cache: "no-store" },
-      );
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error?.message ?? (en ? "Failed to load evidence" : "读取证据失败"));
-      setViolationRuleDetails((current) => ({ ...current, [cacheKey]: payload }));
-    } catch (reason: any) {
-      setViolationRuleErrors((current) => ({ ...current, [cacheKey]: reason.message }));
-    } finally {
-      setViolationRuleLoading((current) => ({ ...current, [cacheKey]: false }));
-    }
-  }, [en, runId, violationRuleDetails, violationRuleLoading]);
+  const loadViolationRuleDetails = useCallback(
+    async (ruleId: string, page = 1) => {
+      const cacheKey = `${ruleId}:${page}`;
+      if (violationRuleDetails[cacheKey] || violationRuleLoading[cacheKey]) return;
+      setViolationRuleLoading((current) => ({ ...current, [cacheKey]: true }));
+      setViolationRuleErrors((current) => {
+        const next = { ...current };
+        delete next[cacheKey];
+        return next;
+      });
+      try {
+        const response = await fetch(
+          `/api/runs/${runId}/violation-rules/${encodeURIComponent(ruleId)}?page=${page}&pageSize=50`,
+          { cache: "no-store" },
+        );
+        const payload = await response.json();
+        if (!response.ok)
+          throw new Error(
+            payload.error?.message ?? (en ? "Failed to load evidence" : "读取证据失败"),
+          );
+        setViolationRuleDetails((current) => ({
+          ...current,
+          [cacheKey]: payload as ViolationRuleDetail,
+        }));
+      } catch (reason: any) {
+        setViolationRuleErrors((current) => ({ ...current, [cacheKey]: reason.message }));
+      } finally {
+        setViolationRuleLoading((current) => ({ ...current, [cacheKey]: false }));
+      }
+    },
+    [en, runId, violationRuleDetails, violationRuleLoading],
+  );
 
   async function publish() {
     const response = await fetch(`/api/runs/${runId}/publish`, { method: "POST" });
@@ -124,7 +172,9 @@ export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; 
     const response = await fetch(`/api/runs/${runId}/publish`, { method: "DELETE" });
     const payload = await response.json();
     if (!response.ok) {
-      setMessage(payload.error?.message ?? (en ? "Failed to withdraw publication" : "撤回发布失败"));
+      setMessage(
+        payload.error?.message ?? (en ? "Failed to withdraw publication" : "撤回发布失败"),
+      );
       return;
     }
     setData((current: any) => ({
@@ -148,10 +198,18 @@ export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; 
 
   const score = data.score;
   const incomplete = score.resultNodeCounts?.incomplete ?? 0;
-  const violationCount = score.resultNodeCounts?.violation ?? 0;
   const tabs: Array<[TabKey, string]> = [
     ["overview", en ? "Overview" : "概览"],
-    ["violations", en ? `Site-wide rules (${violationCount})` : `全站规则 (${violationCount})`],
+    [
+      "violations",
+      violationRules.length > 0
+        ? en
+          ? `Site-wide rules (${violationRules.length})`
+          : `全站规则 (${violationRules.length})`
+        : en
+          ? "Site-wide rules"
+          : "全站规则",
+    ],
     [
       "incomplete",
       en ? `Raw incomplete inventory (${incomplete})` : `原始 incomplete 清单 (${incomplete})`,
@@ -220,6 +278,8 @@ export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; 
             detailLoading={violationRuleLoading}
             detailErrors={violationRuleErrors}
             loadDetails={loadViolationRuleDetails}
+            listError={violationRulesError}
+            retryList={() => setViolationRulesAttempted(false)}
             en={en}
           />
         ) : null}
@@ -368,7 +428,9 @@ function Overview({ score, data, en = false }: any) {
 
       {data.run.published === 1 ? (
         <p className="notice">
-          {en ? "This report is published; scan data and conclusions are read-only." : "该报告已发布，扫描数据和复核结论均为只读。"}
+          {en
+            ? "This report is published; scan data and conclusions are read-only."
+            : "该报告已发布，扫描数据和复核结论均为只读。"}
         </p>
       ) : null}
     </div>
@@ -382,17 +444,32 @@ function ViolationRuleList({
   detailLoading,
   detailErrors,
   loadDetails,
+  listError,
+  retryList,
   en = false,
 }: {
-  items: any[];
+  items: ViolationRuleSummary[];
   loading: boolean;
-  details: Record<string, any>;
+  details: Record<string, ViolationRuleDetail>;
   detailLoading: Record<string, boolean>;
   detailErrors: Record<string, string>;
   loadDetails: (ruleId: string, page?: number) => void;
+  listError: string;
+  retryList: () => void;
   en?: boolean;
 }) {
   if (loading) return <p role="status">{en ? "Loading site-wide rules…" : "正在读取全站规则…"}</p>;
+  if (listError)
+    return (
+      <div className="empty-state app-empty-state">
+        <p className="error" role="alert">
+          {listError}
+        </p>
+        <button type="button" className="secondary-link" onClick={retryList}>
+          {en ? "Retry" : "重试"}
+        </button>
+      </div>
+    );
   if (!items.length)
     return (
       <div className="empty-state app-empty-state">
@@ -410,7 +487,7 @@ function ViolationRuleList({
       <div className="section-heading section-heading-spacious">
         <div>
           <p className="section-kicker">{en ? "SITE-WIDE RULES" : "全站规则"}</p>
-            <h2>{en ? `${items.length} site-wide rules` : `${items.length} 条全站规则`}</h2>
+          <h2>{en ? `${items.length} site-wide rules` : `${items.length} 条全站规则`}</h2>
         </div>
         <p className="muted">
           {en
@@ -419,12 +496,12 @@ function ViolationRuleList({
         </p>
       </div>
       {items.map((item) => {
-        const ruleId = item.ruleId ?? item.rule?.id ?? item.id;
-        const rule = item.rule ?? item;
+        const ruleId = item.id;
+        const rule = item;
         const explanationResult = getAxeRuleExplanation(ruleId, {
           description: rule.description ?? "",
-          help: rule.help ?? rule.helpText ?? "",
-          helpUrl: rule.helpUrl ?? rule.help_url ?? "",
+          help: rule.help ?? "",
+          helpUrl: rule.helpUrl ?? "",
         });
         const localized = explanationResult.matched
           ? explanationResult.explanation[en ? "en" : "zh"]
@@ -433,46 +510,127 @@ function ViolationRuleList({
           .filter(([key]) => key.startsWith(`${ruleId}:`))
           .sort(([a], [b]) => Number(a.split(":").pop()) - Number(b.split(":").pop()))
           .map(([, value]) => value);
-        const detail = loadedDetails[0];
+        const detail = loadedDetails[0] as ViolationRuleDetail | undefined;
         const latestDetail = loadedDetails[loadedDetails.length - 1];
-        const pagination = latestDetail?.pagination ?? latestDetail?.meta ?? {};
+        const pagination = latestDetail?.pagination ?? {};
         const currentPage = Number(pagination.page ?? 1);
         const hasMore = pagination.hasMore ?? currentPage < Number(pagination.totalPages ?? 0);
+        const nextPage = currentPage + 1;
         return (
-        <details className="violation-card violation-rule-card" key={ruleId} onToggle={(event) => {
-          if ((event.currentTarget as HTMLDetailsElement).open) loadDetails(ruleId, 1);
-        }}>
-          <summary className="violation-card-heading violation-rule-summary">
-          <div className="violation-card-heading">
-            <div>
-              <p className="rule-id">{ruleId}</p>
-              <h3>{localized.name ?? (en ? rule.description : getRuleLocalization(ruleId).zhName)}</h3>
+          <details
+            className="violation-card violation-rule-card"
+            key={ruleId}
+            onToggle={(event) => {
+              if ((event.currentTarget as HTMLDetailsElement).open) loadDetails(ruleId, 1);
+            }}
+          >
+            <summary className="violation-card-heading violation-rule-summary">
+              <div className="violation-card-heading">
+                <div>
+                  <p className="rule-id">{ruleId}</p>
+                  <h3>
+                    {localized.name ?? (en ? rule.description : getRuleLocalization(ruleId).zhName)}
+                  </h3>
+                </div>
+                {item.highestImpact ? (
+                  <span className={`impact-tag impact-${item.highestImpact}`}>
+                    {en
+                      ? `Highest impact: ${item.highestImpact}`
+                      : `最高 impact：${item.highestImpact}`}
+                  </span>
+                ) : null}
+              </div>
+            </summary>
+            <div className="violation-rule-body">
+              {localized.what || localized.who || localized.why ? (
+                <dl className="rule-explanation">
+                  {localized.what ? (
+                    <div>
+                      <dt>{en ? "What" : "是什么"}</dt>
+                      <dd>{localized.what}</dd>
+                    </div>
+                  ) : null}
+                  {localized.who ? (
+                    <div>
+                      <dt>{en ? "Who may be affected" : "可能影响谁"}</dt>
+                      <dd>{localized.who}</dd>
+                    </div>
+                  ) : null}
+                  {localized.why ? (
+                    <div>
+                      <dt>{en ? "Why it matters" : "为什么重要"}</dt>
+                      <dd>{localized.why}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+              ) : null}
+              <dl className="finding-details rule-stats">
+                <div>
+                  <dt>{en ? "Affected pages" : "影响页面"}</dt>
+                  <dd>{item.pageCount}</dd>
+                </div>
+                <div>
+                  <dt>{en ? "Nodes" : "节点数"}</dt>
+                  <dd>{item.nodeCount}</dd>
+                </div>
+              </dl>
+              {detail ? (
+                <p className="muted rule-evidence-count">
+                  {en
+                    ? `Evidence nodes available: ${detail.pagination.evidenceTotal}`
+                    : `可复核证据节点：${detail.pagination.evidenceTotal}`}
+                </p>
+              ) : null}
+              {detailLoading[`${ruleId}:1`] ? (
+                <p role="status">{en ? "Loading evidence…" : "正在读取证据…"}</p>
+              ) : null}
+              {detailErrors[`${ruleId}:1`] ? (
+                <div>
+                  <p className="error" role="alert">
+                    {detailErrors[`${ruleId}:1`]}
+                  </p>
+                  <button
+                    type="button"
+                    className="secondary-link"
+                    onClick={() => loadDetails(ruleId, 1)}
+                  >
+                    {en ? "Retry" : "重试"}
+                  </button>
+                </div>
+              ) : null}
+              {detail ? <RuleEvidence details={loadedDetails} en={en} /> : null}
+              {detailErrors[`${ruleId}:${nextPage}`] ? (
+                <div>
+                  <p className="error" role="alert">
+                    {detailErrors[`${ruleId}:${nextPage}`]}
+                  </p>
+                  <button
+                    type="button"
+                    className="secondary-link"
+                    onClick={() => loadDetails(ruleId, nextPage)}
+                  >
+                    {en ? "Retry failed page" : "重试失败页面"}
+                  </button>
+                </div>
+              ) : null}
+              {detail && hasMore && !detailErrors[`${ruleId}:${nextPage}`] ? (
+                <button
+                  type="button"
+                  className="secondary-link"
+                  onClick={() => loadDetails(ruleId, nextPage)}
+                  disabled={detailLoading[`${ruleId}:${nextPage}`]}
+                >
+                  {detailLoading[`${ruleId}:${nextPage}`]
+                    ? en
+                      ? "Loading…"
+                      : "加载中…"
+                    : en
+                      ? "Load more nodes"
+                      : "加载更多节点"}
+                </button>
+              ) : null}
             </div>
-            {(item.highestImpact ?? item.impact) ? (
-              <span className={`impact-tag impact-${item.highestImpact ?? item.impact}`}>{en ? `Highest impact: ${item.highestImpact ?? item.impact}` : `最高 impact：${item.highestImpact ?? item.impact}`}</span>
-            ) : null}
-          </div>
-          </summary>
-          <div className="violation-rule-body">
-          {(localized.what || localized.who || localized.why) ? <dl className="rule-explanation">
-            {localized.what ? <div><dt>{en ? "What" : "是什么"}</dt><dd>{localized.what}</dd></div> : null}
-            {localized.who ? <div><dt>{en ? "Who may be affected" : "可能影响谁"}</dt><dd>{localized.who}</dd></div> : null}
-            {localized.why ? <div><dt>{en ? "Why it matters" : "为什么重要"}</dt><dd>{localized.why}</dd></div> : null}
-          </dl> : null}
-          <dl className="finding-details rule-stats">
-            <div>
-              <dt>{en ? "Affected pages" : "影响页面"}</dt><dd>{item.pageCount ?? item.affectedPageCount ?? 0}</dd>
-            </div>
-            <div>
-              <dt>{en ? "Nodes" : "节点数"}</dt><dd>{item.nodeCount ?? item.totalNodes ?? 0}</dd>
-            </div>
-          </dl>
-          {detailLoading[`${ruleId}:1`] ? <p role="status">{en ? "Loading evidence…" : "正在读取证据…"}</p> : null}
-          {detailErrors[`${ruleId}:1`] ? <p className="error" role="alert">{detailErrors[`${ruleId}:1`]}</p> : null}
-          {detail ? <RuleEvidence details={loadedDetails} en={en} /> : null}
-          {detail && hasMore ? <button type="button" className="secondary-link" onClick={() => loadDetails(ruleId, currentPage + 1)} disabled={detailLoading[`${ruleId}:${currentPage + 1}`]}>{en ? "Load more nodes" : "加载更多节点"}</button> : null}
-          </div>
-        </details>
+          </details>
         );
       })}
     </section>
@@ -485,9 +643,11 @@ function RuleEvidence({ details, en = false }: { details: any[]; en?: boolean })
   const pageMap = new Map<string, { page: any; nodes: any[] }>();
   for (const entry of details) {
     for (const page of entry.pages ?? []) {
-      const pageKey = String(page.id ?? page.url ?? page.canonicalUrl ?? page.title ?? "unknown");
+      const pageKey = String(page.id ?? page.canonicalUrl ?? page.url ?? page.title ?? "unknown");
       const current = pageMap.get(pageKey) ?? { page, nodes: [] };
-      const seen = new Set(current.nodes.map((node: any) => node.id ?? stableNodeEvidenceKey(node)));
+      const seen = new Set(
+        current.nodes.map((node: any) => node.id ?? stableNodeEvidenceKey(node)),
+      );
       for (const node of page.nodes ?? []) {
         const nodeKey = node.id ?? stableNodeEvidenceKey(node);
         if (!seen.has(nodeKey)) {
@@ -498,30 +658,79 @@ function RuleEvidence({ details, en = false }: { details: any[]; en?: boolean })
       pageMap.set(pageKey, current);
     }
   }
-  const fallbackNodes = details.flatMap((entry) => entry.items ?? entry.nodes ?? []);
-  const grouped = pageMap.size
-    ? Array.from(pageMap.values())
-    : [{ page: null, nodes: dedupeNodes(fallbackNodes) }];
-  return <div className="rule-evidence">
-    <div className="axe-rule-source">
-      <p><strong>{en ? "axe rule guidance" : "axe 规则说明"}</strong></p>
-      <p>{rule.description ?? rule.help ?? (en ? "No axe description provided" : "未提供 axe 原文")}</p>
-      {rule.helpUrl ? <a className="text-link" href={rule.helpUrl} target="_blank" rel="noreferrer">{en ? "Open axe guidance" : "打开 axe 规则链接"} ↗</a> : null}
-      {(rule.wcag?.length || rule.tags?.length) ? <p className="muted">WCAG: {(rule.wcag ?? rule.tags).join(", ")}</p> : null}
+  const grouped = Array.from(pageMap.values());
+  return (
+    <div className="rule-evidence">
+      <div className="axe-rule-source">
+        <p>
+          <strong>{en ? "axe rule guidance" : "axe 规则说明"}</strong>
+        </p>
+        <p>
+          {rule.description ??
+            rule.help ??
+            (en ? "No axe description provided" : "未提供 axe 原文")}
+        </p>
+        {rule.helpUrl ? (
+          <a className="text-link" href={rule.helpUrl} target="_blank" rel="noreferrer">
+            {en ? "Open axe guidance" : "打开 axe 规则链接"} ↗
+          </a>
+        ) : null}
+        {rule.wcag?.length ? <p className="muted">WCAG: {rule.wcag.join(", ")}</p> : null}
+      </div>
+      {grouped.map(({ page, nodes }: any, index: number) => (
+        <section className="rule-page-evidence" key={page?.id ?? page?.url ?? index}>
+          <h4 className="rule-page-heading">
+            {page ? (
+              <a href={page.url ?? page.canonicalUrl} target="_blank" rel="noreferrer">
+                {page.title || page.url || page.canonicalUrl}
+              </a>
+            ) : en ? (
+              "Evidence"
+            ) : (
+              "证据"
+            )}
+            {page?.highestImpact ? (
+              <span className={`impact-tag impact-${page.highestImpact}`}>
+                {en
+                  ? `Highest impact: ${page.highestImpact}`
+                  : `最高 impact：${page.highestImpact}`}
+              </span>
+            ) : null}
+          </h4>
+          {nodes.map((node: any, nodeIndex: number) => (
+            <details className="node-evidence" key={node.id ?? nodeIndex}>
+              <summary>
+                {en
+                  ? `Node ${node.ordinal ?? nodeIndex + 1}`
+                  : `节点 ${node.ordinal ?? nodeIndex + 1}`}
+              </summary>
+              <div className="node-evidence-body">
+                <p>
+                  <strong>{en ? "Selector" : "选择器"}</strong>
+                </p>
+                <code>{JSON.stringify(node.target ?? node.selector)}</code>
+                {node.failureSummary ? (
+                  <p className="failure-summary">{node.failureSummary}</p>
+                ) : null}
+                {(node.html ?? node.htmlSanitized) ? (
+                  <pre>{node.html ?? node.htmlSanitized}</pre>
+                ) : null}
+                {node.any || node.all || node.none || node.checks ? (
+                  <pre>
+                    {JSON.stringify(
+                      node.checks ?? { any: node.any, all: node.all, none: node.none },
+                      null,
+                      2,
+                    )}
+                  </pre>
+                ) : null}
+              </div>
+            </details>
+          ))}
+        </section>
+      ))}
     </div>
-    {grouped.map(({ page, nodes }: any, index: number) => <section className="rule-page-evidence" key={page?.id ?? page?.url ?? index}>
-      <h4 className="rule-page-heading">
-        {page ? <a href={page.url ?? page.canonicalUrl} target="_blank" rel="noreferrer">{page.title || page.url || page.canonicalUrl}</a> : (en ? "Evidence" : "证据")}
-        {page?.highestImpact ?? page?.impact ? <span className={`impact-tag impact-${page.highestImpact ?? page.impact}`}>{en ? `Highest impact: ${page.highestImpact ?? page.impact}` : `最高 impact：${page.highestImpact ?? page.impact}`}</span> : null}
-      </h4>
-      {nodes.map((node: any, nodeIndex: number) => <details className="node-evidence" key={node.id ?? nodeIndex}><summary>{en ? `Node ${node.ordinal ?? nodeIndex + 1}` : `节点 ${node.ordinal ?? nodeIndex + 1}`}</summary><div className="node-evidence-body">
-        <p><strong>{en ? "Selector" : "选择器"}</strong></p><code>{JSON.stringify(node.target ?? node.selector)}</code>
-        {node.failureSummary ? <p className="failure-summary">{node.failureSummary}</p> : null}
-        {node.html ?? node.htmlSanitized ? <pre>{node.html ?? node.htmlSanitized}</pre> : null}
-        {node.any || node.all || node.none || node.checks ? <pre>{JSON.stringify(node.checks ?? { any: node.any, all: node.all, none: node.none }, null, 2)}</pre> : null}
-      </div></details>)}
-    </section>)}
-  </div>;
+  );
 }
 
 function stableNodeEvidenceKey(node: any) {
@@ -546,13 +755,21 @@ function Report({ data, runId, publish, withdrawPublish, en = false }: any) {
   const coverage = coverageSummary(data);
   const reportMetrics = [
     [en ? "Automatic passes" : "自动通过", counts.pass ?? 0, en ? "pass nodes" : "通过节点"],
-    [en ? "Automatic findings" : "自动问题", counts.violation ?? 0, en ? "violation nodes" : "问题节点"],
+    [
+      en ? "Automatic findings" : "自动问题",
+      counts.violation ?? 0,
+      en ? "violation nodes" : "问题节点",
+    ],
     [
       en ? "Raw incomplete inventory" : "原始 incomplete 清单",
       counts.incomplete ?? 0,
       en ? "incomplete nodes" : "incomplete 节点",
     ],
-    [en ? "Not applicable" : "不适用", counts.inapplicable ?? 0, en ? "inapplicable nodes" : "不适用节点"],
+    [
+      en ? "Not applicable" : "不适用",
+      counts.inapplicable ?? 0,
+      en ? "inapplicable nodes" : "不适用节点",
+    ],
   ];
 
   return (
@@ -573,7 +790,10 @@ function Report({ data, runId, publish, withdrawPublish, en = false }: any) {
         </div>
       </div>
 
-      <section className="report-metric-grid" aria-label={en ? "Report node statistics" : "报告节点统计"}>
+      <section
+        className="report-metric-grid"
+        aria-label={en ? "Report node statistics" : "报告节点统计"}
+      >
         {reportMetrics.map(([label, value, hint]) => (
           <article key={String(label)}>
             <span>{label}</span>
@@ -617,7 +837,9 @@ function Report({ data, runId, publish, withdrawPublish, en = false }: any) {
         {coverage.failures.length ? (
           <section className="coverage-failures" aria-labelledby="coverage-failures-heading">
             <h4 id="coverage-failures-heading">
-              {en ? `Unsuccessful pages (${coverage.failures.length})` : `未成功页面（${coverage.failures.length}）`}
+              {en
+                ? `Unsuccessful pages (${coverage.failures.length})`
+                : `未成功页面（${coverage.failures.length}）`}
             </h4>
             <ul>
               {coverage.failures.map((page: any) => (
@@ -642,7 +864,11 @@ function Report({ data, runId, publish, withdrawPublish, en = false }: any) {
           <div>
             <p className="section-kicker">PUBLISHED</p>
             <h3>{en ? "Report published and locked" : "报告已发布并锁定"}</h3>
-            <p>{en ? "Admins and report visitors can download the same read-only output." : "管理员和报告访客可以下载同一份只读输出。"}</p>
+            <p>
+              {en
+                ? "Admins and report visitors can download the same read-only output."
+                : "管理员和报告访客可以下载同一份只读输出。"}
+            </p>
           </div>
           <div className="report-action-links">
             <a
@@ -669,7 +895,11 @@ function Report({ data, runId, publish, withdrawPublish, en = false }: any) {
           <div>
             <p className="section-kicker">READY TO SHARE</p>
             <h3>{en ? "Review before publishing" : "确认后再发布"}</h3>
-            <p>{en ? "Publishing locks the scan and report contents and makes a read-only version available to reviewers with the visitor key." : "发布会锁定扫描及其报告内容，并开放给持有访客密钥的评审者只读查看。"}</p>
+            <p>
+              {en
+                ? "Publishing locks the scan and report contents and makes a read-only version available to reviewers with the visitor key."
+                : "发布会锁定扫描及其报告内容，并开放给持有访客密钥的评审者只读查看。"}
+            </p>
           </div>
           {data.run.status.startsWith("completed") ? (
             <button type="button" onClick={publish}>

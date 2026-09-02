@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
+import axeCatalog from "../../configs/axe-rule-catalog.json";
 import { allCatalogEntries, catalogEntry, catalogEntryWithTags } from "@/lib/wcag";
 import { getRuleLocalization } from "@/lib/localization";
 
 describe("frozen axe/WCAG catalog", () => {
   it("loads the complete generated axe catalog and freezes scoring eligibility", () => {
-    expect(allCatalogEntries()).toHaveLength(105);
+    expect(allCatalogEntries().map((entry) => entry.ruleId)).toEqual(
+      axeCatalog.rules.map((rule) => rule.id).sort(),
+    );
     expect(catalogEntry("image-alt")).toMatchObject({
       wcag: ["1.1.1"],
       principles: ["perceivable"],

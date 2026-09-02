@@ -272,6 +272,12 @@ test("管理员扫描发布后，访客只能读取已发布报告", async ({ pa
     expect(runPath).toMatch(/^\/scans\/run_/);
     const runId = runPath!.split("/").pop()!;
     await page.goto(runPath!);
+    const siteRulesResponse = await page.request.get(`/api/runs/${runId}/violation-rules`);
+    expect(siteRulesResponse.ok()).toBeTruthy();
+    const siteRules = await siteRulesResponse.json();
+    const distinctRuleCount = new Set(
+      (siteRules.rules ?? []).map((rule: { id: string }) => rule.id),
+    ).size;
     const tabs = page.getByRole("tab");
     await expect(page.getByRole("tablist")).toBeVisible();
     await expect(tabs).toHaveCount(4);
@@ -283,13 +289,67 @@ test("管理员扫描发布后，访客只能读取已发布报告", async ({ pa
       await expect(page.locator("main")).toBeVisible();
       if (tabName === "全站规则") {
         await expect(page.getByText(/全站规则|没有自动问题/).first()).toBeVisible();
+        if (distinctRuleCount > 0) {
+          await expect(tab).toContainText(String(distinctRuleCount));
+        } else {
+          await expect(tab).not.toContainText(/\(\d+\)/);
+        }
         const ruleCard = page.locator(".violation-rule-card").first();
         if (await ruleCard.count()) {
+          let page2Attempts = 0;
+          await page.route(`**/api/runs/${runId}/violation-rules/*`, async (route) => {
+            const requestUrl = new URL(route.request().url());
+            const requestedPage = requestUrl.searchParams.get("page");
+            const upstream = await route.fetch();
+            const payload = await upstream.json();
+            if (requestedPage === "1") {
+              payload.pagination = {
+                ...payload.pagination,
+                page: 1,
+                evidenceTotal: 1,
+                totalPages: 2,
+                hasMore: true,
+              };
+              await route.fulfill({ response: upstream, json: payload });
+              return;
+            }
+            if (requestedPage === "2") {
+              page2Attempts += 1;
+              if (page2Attempts === 1) {
+                await route.fulfill({
+                  status: 503,
+                  contentType: "application/json",
+                  body: JSON.stringify({ error: { message: "temporary evidence failure" } }),
+                });
+                return;
+              }
+              payload.pagination = {
+                ...payload.pagination,
+                page: 2,
+                totalPages: 2,
+                hasMore: false,
+              };
+              await route.fulfill({ response: upstream, json: payload });
+              return;
+            }
+            await route.fulfill({ response: upstream });
+          });
           const detailRequest = page.waitForRequest((request) =>
             request.url().includes(`/api/runs/${runId}/violation-rules/`),
           );
           await ruleCard.locator("summary").click();
           await detailRequest;
+          await expect(ruleCard.locator(".rule-page-evidence").first()).toBeVisible();
+          await expect(ruleCard.locator(".rule-evidence-count")).toContainText("可复核证据节点：1");
+          const loadMore = ruleCard.getByRole("button", { name: "加载更多节点" });
+          if (await loadMore.count()) {
+            await loadMore.click();
+            await expect(ruleCard.getByRole("button", { name: "重试失败页面" })).toBeVisible();
+            await ruleCard.getByRole("button", { name: "重试失败页面" }).click();
+            await expect(ruleCard.getByRole("button", { name: "重试失败页面" })).toHaveCount(0);
+            await expect(ruleCard.locator(".rule-page-evidence").first()).toBeVisible();
+          }
+          await page.unroute(`**/api/runs/${runId}/violation-rules/*`);
         }
       }
       if (tabName === "原始 incomplete 清单") {

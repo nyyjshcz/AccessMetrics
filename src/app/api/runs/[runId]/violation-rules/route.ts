@@ -21,9 +21,7 @@ function json(value: string | null | undefined, fallback: unknown) {
 }
 
 function highestImpact(current: string | null, next: string | null) {
-  return (IMPACT_RANK[next ?? ""] ?? 0) > (IMPACT_RANK[current ?? ""] ?? 0)
-    ? next
-    : current;
+  return (IMPACT_RANK[next ?? ""] ?? 0) > (IMPACT_RANK[current ?? ""] ?? 0) ? next : current;
 }
 
 export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
@@ -39,14 +37,17 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
     // This query deliberately returns rule-result and node impact columns only.
     // Node evidence is loaded by the detail route after a rule is expanded.
     const rows = db
-      .prepare(`
+      .prepare(
+        `
         SELECT rr.rule_id, rr.description, rr.help, rr.help_url, rr.wcag_criteria_json,
-               rr.impact AS result_impact, rr.page_id, n.effective_impact, n.id AS node_id
+               rr.impact AS result_impact, rr.page_id, rr.id AS result_id,
+               rr.node_count AS result_node_count, n.effective_impact, n.id AS node_id
         FROM rule_results rr
         LEFT JOIN result_nodes n ON n.rule_result_id=rr.id
         WHERE rr.run_id=? AND rr.result_type='violation'
         ORDER BY rr.rule_id, rr.page_id, n.ordinal, n.id
-      `)
+      `,
+      )
       .all(runId) as Array<{
       rule_id: string;
       description: string;
@@ -55,6 +56,8 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
       wcag_criteria_json: string | null;
       result_impact: string | null;
       page_id: string;
+      result_id: string;
+      result_node_count: number;
       effective_impact: string | null;
       node_id: string | null;
     }>;
@@ -71,6 +74,7 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
         affectedPageCount: number;
         nodeCount: number;
         pages: Set<string>;
+        resultIds: Set<string>;
       }
     >();
     for (const row of rows) {
@@ -86,6 +90,7 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
           affectedPageCount: 0,
           nodeCount: 0,
           pages: new Set(),
+          resultIds: new Set(),
         };
         grouped.set(row.rule_id, item);
       }
@@ -94,17 +99,31 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
         item.highestImpact,
         row.effective_impact ?? row.result_impact,
       );
-      if (row.node_id) item.nodeCount += 1;
+      if (!item.resultIds.has(row.result_id)) {
+        item.resultIds.add(row.result_id);
+        item.nodeCount += Number(row.result_node_count ?? 0);
+      }
     }
 
     const rules = [...grouped.values()]
-      .map(({ pages, ...item }) => ({ ...item, affectedPageCount: pages.size }))
+      .map(({ pages, resultIds: _resultIds, ...item }) => {
+        const affectedPageCount = pages.size;
+        return {
+          id: item.ruleId,
+          description: item.description,
+          help: item.help,
+          helpUrl: item.helpUrl,
+          wcag: item.wcag,
+          highestImpact: item.highestImpact,
+          pageCount: affectedPageCount,
+          nodeCount: item.nodeCount,
+        };
+      })
       .sort(
         (a, b) =>
-          (IMPACT_RANK[b.highestImpact ?? ""] ?? 0) -
-            (IMPACT_RANK[a.highestImpact ?? ""] ?? 0) ||
+          (IMPACT_RANK[b.highestImpact ?? ""] ?? 0) - (IMPACT_RANK[a.highestImpact ?? ""] ?? 0) ||
           b.nodeCount - a.nodeCount ||
-          a.ruleId.localeCompare(b.ruleId),
+          a.id.localeCompare(b.id),
       );
     return NextResponse.json({ runId, rules, total: rules.length });
   } catch (error) {

@@ -109,6 +109,13 @@ describe("administrator and visitor access keys", () => {
     });
     expect(visitor.cookie).toContain("accesscheck_session=");
 
+    const visitorTeam = await login(visitorAccessKey, "/team");
+    expect(visitorTeam.response.status).toBe(200);
+    expect(await visitorTeam.response.json()).toMatchObject({
+      role: "visitor",
+      redirectTo: "/team",
+    });
+
     const unauthenticated = await scansRoute.GET(
       new Request("http://localhost:3000/api/scans?view=active"),
     );

@@ -1,4 +1,5 @@
 import "./globals.css";
+import type { Route } from "next";
 import Link from "next/link";
 import { getPageRole } from "@/lib/access-control";
 import { LocaleSelector } from "@/components/locale-selector";
@@ -36,10 +37,16 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
                   <Link href="/scans/new">{t(locale, "newScan")}</Link>
                   <Link href="/scans">{t(locale, "activeTasks")}</Link>
                   <Link href="/reports">{t(locale, "publishedReports")}</Link>
+                  <Link href={"/team" as Route}>{t(locale, "teamNav")}</Link>
                   <Link href="/settings/ai">{t(locale, "aiSettings")}</Link>
                 </>
               )}
-              {role === "visitor" && <Link href="/reports">{t(locale, "publishedReports")}</Link>}
+              {role === "visitor" && (
+                <>
+                  <Link href="/reports">{t(locale, "publishedReports")}</Link>
+                  <Link href={"/team" as Route}>{t(locale, "teamNav")}</Link>
+                </>
+              )}
               {role && (
                 <form action="/api/auth/logout" method="post" className="logout-form">
                   <span className="access-role">

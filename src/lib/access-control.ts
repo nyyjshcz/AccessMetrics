@@ -21,11 +21,7 @@ export function accessControlConfigured() {
 }
 
 function accessConfigurationError() {
-  return new AppError(
-    "ACCESS_CONTROL_NOT_CONFIGURED",
-    "服务器尚未配置管理员和访客访问密钥",
-    503,
-  );
+  return new AppError("ACCESS_CONTROL_NOT_CONFIGURED", "服务器尚未配置管理员和访客访问密钥", 503);
 }
 
 function requireAccessConfiguration() {
@@ -129,7 +125,7 @@ function safeNextPath(pathname: string) {
 export async function requirePageRole(required: RequiredRole, nextPath: string) {
   const role = await getPageRole();
   if (!role) {
-    redirect((`/login?next=${encodeURIComponent(safeNextPath(nextPath))}`) as Route);
+    redirect(`/login?next=${encodeURIComponent(safeNextPath(nextPath))}` as Route);
   }
   if (!roleCanAccess(role, required)) {
     redirect((role === "visitor" ? "/reports" : "/") as Route);
@@ -139,7 +135,14 @@ export async function requirePageRole(required: RequiredRole, nextPath: string) 
 
 export function loginRedirectPath(value: unknown, role: AccessRole) {
   if (typeof value === "string" && value.startsWith("/") && !value.startsWith("//")) {
-    if (role === "admin" || value === "/reports" || value.startsWith("/reports?")) return value;
+    if (
+      role === "admin" ||
+      value === "/reports" ||
+      value.startsWith("/reports?") ||
+      value === "/team" ||
+      value.startsWith("/team?")
+    )
+      return value;
   }
   return role === "admin" ? "/" : "/reports";
 }

@@ -17,7 +17,8 @@ async function signIn(page: Page, accessKey: string, nextPath = "/") {
 
 async function chooseLocale(page: Page, locale: "zh-CN" | "en") {
   const preference = page.waitForResponse(
-    (response) => response.url().endsWith("/api/preferences/locale") && response.request().method() === "POST",
+    (response) =>
+      response.url().endsWith("/api/preferences/locale") && response.request().method() === "POST",
   );
   await page.getByRole("button", { name: locale === "en" ? "EN" : "中文", exact: true }).click();
   expect((await preference).status()).toBe(200);
@@ -90,12 +91,16 @@ test("语言切换会持久化，并覆盖登录、管理员导航和扫描页",
 
   await chooseLocale(page, "en");
   await expect(page.getByRole("heading", { name: "Enter your access key" })).toBeVisible();
-  await expect((await context.cookies()).find((cookie) => cookie.name === "accesscheck_locale")?.value).toBe("en");
+  await expect(
+    (await context.cookies()).find((cookie) => cookie.name === "accesscheck_locale")?.value,
+  ).toBe("en");
 
   await page.getByLabel("Access key").fill(adminAccessKey);
   await page.getByRole("button", { name: "Enter system" }).click();
   await page.waitForURL((url) => url.pathname !== "/login");
-  await expect(page.getByRole("heading", { name: "Turn accessibility issues into checkable conclusions" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Turn accessibility issues into checkable conclusions" }),
+  ).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Main navigation" })).toBeVisible();
   await expect(page.getByRole("link", { name: "New scan" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Active tasks", exact: true })).toBeVisible();
@@ -103,7 +108,9 @@ test("语言切换会持久化，并覆盖登录、管理员导航和扫描页",
 
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
-  await expect(page.getByRole("heading", { name: "Turn accessibility issues into checkable conclusions" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Turn accessibility issues into checkable conclusions" }),
+  ).toBeVisible();
   await page.goto("/scans/new");
   await expect(page.getByRole("heading", { name: "Scan a public website" })).toBeVisible();
   await expect(page.getByLabel("Website URL")).toBeVisible();
@@ -136,6 +143,58 @@ test("管理员登录后可访问扫描管理页面", async ({ page }) => {
   }
   const adminScans = await page.request.get("/api/scans?view=active");
   expect(adminScans.ok()).toBeTruthy();
+});
+
+test("团队页面对访客开放并完整展示两位平级成员", async ({ page }) => {
+  await page.goto("/team");
+  await expect(page).toHaveURL(/\/login\?next=%2Fteam$/);
+  await page.getByLabel("访问密钥").fill(visitorAccessKey);
+  await page.getByRole("button", { name: "进入系统" }).click();
+  await expect(page).toHaveURL(/\/team$/);
+
+  await expect(page.getByRole("heading", { name: "团队成员" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "团队", exact: true })).toBeVisible();
+  const cards = page.locator(".member-card");
+  await expect(cards).toHaveCount(2);
+  await expect(cards.getByText("联合创始人", { exact: false })).toHaveCount(2);
+  await expect(page.getByRole("img", { name: "洪诚择的照片" })).toBeVisible();
+  await expect(page.getByRole("img", { name: "叶欣怡的照片" })).toBeVisible();
+
+  const hong = cards.filter({ hasText: "洪诚择" });
+  await expect(hong).toContainText("海亮高级中学");
+  await expect(hong).toContainText("NOIP 2024 浙江省一等奖");
+  await expect(hong.getByRole("link", { name: /Luogu/ })).toHaveAttribute("target", "_blank");
+  await expect(hong.getByRole("link", { name: /GitHub/ })).toHaveAttribute(
+    "rel",
+    "noopener noreferrer",
+  );
+  const ye = cards.filter({ hasText: "叶欣怡" });
+  await expect(ye.locator(".member-links")).toHaveCount(0);
+
+  await chooseLocale(page, "en");
+  await expect(page.getByRole("heading", { name: "Meet the Team" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Team", exact: true })).toBeVisible();
+  await expect(page.getByText("OUR TEAM", { exact: true })).toBeVisible();
+  await expect(page.getByRole("img", { name: "Portrait of Chengze Hong" })).toBeVisible();
+  await expect(page.getByRole("img", { name: "Portrait of Xinyi Ye" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Chengze Hong", level: 2 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Xinyi Ye", level: 2 })).toBeVisible();
+  await expect(cards.getByText("Co-Founder", { exact: false })).toHaveCount(2);
+  await expect(cards.getByText("School", { exact: true })).toHaveCount(2);
+  await expect(cards.getByText("Awards & experience", { exact: true })).toHaveCount(2);
+  await expect(cards.filter({ hasText: "Chengze Hong" })).toContainText(
+    "Hailiang Senior High School",
+  );
+  await expect(cards.filter({ hasText: "Chengze Hong" })).toContainText(
+    "NOIP 2024 Zhejiang Provincial First Prize",
+  );
+  await expect(cards.filter({ hasText: "Xinyi Ye" })).toContainText(
+    "Hailiang Education Astra College",
+  );
+  await expect(cards.filter({ hasText: "Xinyi Ye" })).toContainText("Australian AMC First Prize");
+  await expect(page.locator(".team-page")).not.toContainText("联合创始人");
+  await expect(page.locator(".team-page")).not.toContainText("海亮高级中学");
+  await expect(page.locator(".team-page")).not.toContainText("叶欣怡");
 });
 
 test("活动任务只为已结束任务显示删除按钮并可删除", async ({ page }) => {
@@ -224,7 +283,9 @@ test("管理员扫描发布后，访客只能读取已发布报告", async ({ pa
       await expect(page.locator("main")).toBeVisible();
       if (tabName === "原始 incomplete 清单") {
         await expect(page.getByRole("heading", { name: "原始 incomplete 清单" })).toBeVisible();
-        await expect(page.locator(".review-resolution-summary").getByText(/尚无结论/)).toBeVisible();
+        await expect(
+          page.locator(".review-resolution-summary").getByText(/尚无结论/),
+        ).toBeVisible();
       }
     }
     await page.getByRole("button", { name: "生成并发布报告" }).click();
@@ -245,7 +306,10 @@ test("管理员扫描发布后，访客只能读取已发布报告", async ({ pa
     await expect(page.getByRole("heading", { name: "已发布报告" })).toBeVisible();
     await chooseLocale(page, "en");
     await expect(page.getByRole("heading", { name: "Published reports" })).toBeVisible();
-    await expect((await page.context().cookies()).find((cookie) => cookie.name === "accesscheck_locale")?.value).toBe("en");
+    await expect(
+      (await page.context().cookies()).find((cookie) => cookie.name === "accesscheck_locale")
+        ?.value,
+    ).toBe("en");
     await page.reload();
     await expect(page.getByRole("heading", { name: "Published reports" })).toBeVisible();
     const publishedRow = page.locator(".run-row", { hasText: new URL(url).origin });

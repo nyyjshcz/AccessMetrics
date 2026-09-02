@@ -15,6 +15,38 @@ describe("localized UI copy", () => {
     expect(getMessages("en").ai.test).toBe("Save and test connection");
   });
 
+  it("defines team navigation and page copy in both locales", () => {
+    const zh = getMessages("zh-CN");
+    const en = getMessages("en");
+
+    expect(zh.teamNav).toBe("团队");
+    expect(en.teamNav).toBe("Team");
+    expect(zh.team.eyebrow).toBe("团队");
+    expect(en.team.eyebrow).toBe("OUR TEAM");
+    expect(zh.team.title).toBe("团队成员");
+    expect(en.team.title).toBe("Meet the Team");
+    expect(zh.team.members.hong).toMatchObject({
+      name: "洪诚择",
+      role: "联合创始人 · 技术负责人",
+      school: "海亮高级中学",
+    });
+    expect(en.team.members.hong).toMatchObject({
+      name: "Chengze Hong",
+      role: "Co-Founder · Technical Lead",
+      school: "Hailiang Senior High School",
+    });
+    expect(zh.team.members.ye).toMatchObject({
+      name: "叶欣怡",
+      role: "联合创始人 · 数学负责人",
+      school: "海亮教育致远书院",
+    });
+    expect(en.team.members.ye).toMatchObject({
+      name: "Xinyi Ye",
+      role: "Co-Founder · Mathematics Lead",
+      school: "Hailiang Education Astra College",
+    });
+  });
+
   it("describes partial completion as a completed scan with page errors", () => {
     expect(describeScanStatus("completed_with_errors", false, "en").label).toBe(
       "Scan complete (some pages failed)",

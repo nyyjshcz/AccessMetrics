@@ -207,8 +207,8 @@ export default function HomeClient({ view, canManagePublished = false, locale = 
               const deletable =
                 view === "active" && row.published !== 1 && deletableStatuses.has(row.job_status);
               const destination =
-                isPublishedView && !canManagePublished && row.run_id
-                  ? (`/api/reports/${row.run_id}/html` as `/api/reports/${string}/html`)
+                isPublishedView && row.run_id
+                  ? (`/reports/${row.run_id}` as `/reports/${string}`)
                   : status === "completed" || status === "completed_with_errors"
                     ? (`/scans/${row.run_id ?? row.job_id}` as `/scans/${string}`)
                     : (`/scans/jobs/${row.job_id}` as `/scans/jobs/${string}`);

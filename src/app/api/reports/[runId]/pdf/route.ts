@@ -2,11 +2,10 @@ import { NextResponse } from "next/server";
 import { chromium } from "playwright";
 import { chromiumLaunchOptions } from "@/lib/browser";
 import { migrate } from "@/lib/db";
-import { getDb } from "@/lib/db";
-import { buildRunReportDto, renderRunReportHtml } from "@/lib/report";
+import { buildRunReportDto } from "@/lib/report";
+import { renderRunReportHtml, type ReportLocale } from "@/lib/report-html";
 import { AppError, errorEnvelope } from "@/lib/errors";
-import { requireRequestRole } from "@/lib/access-control";
-import type { ReportLocale } from "@/lib/report";
+import { requireReportExportAccess } from "@/lib/report-access";
 import { LOCALE_COOKIE, resolveLocale } from "@/lib/i18n-server";
 
 function reportLocale(request: Request): ReportLocale {
@@ -19,15 +18,11 @@ function reportLocale(request: Request): ReportLocale {
 
 export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
-    requireRequestRole(request, "visitor");
     migrate();
     const { runId } = await context.params;
-    const run = getDb().prepare("SELECT published FROM scan_runs WHERE id=?").get(runId) as
-      | { published: number }
-      | undefined;
-    if (!run || run.published !== 1) throw new AppError("NOT_FOUND", "报告不存在", 404);
+    requireReportExportAccess(request, runId);
     const locale = reportLocale(request);
-    const html = renderRunReportHtml(buildRunReportDto(runId), locale);
+    const html = await renderRunReportHtml(buildRunReportDto(runId), locale);
     // This route prints self-contained HTML via setContent and never navigates
     // to an external URL, so Web does not need the scan worker's proxy.
     const browser = await chromium.launch(chromiumLaunchOptions({ requireProxy: false }));

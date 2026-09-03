@@ -18,6 +18,7 @@ const ai = await import("@/lib/ai-overlay");
 const runScore = await import("@/lib/run-score");
 const resolution = await import("@/lib/incomplete-resolution");
 const report = await import("@/lib/report");
+const reportHtml = await import("@/lib/report-html");
 const reportJsonRoute = await import("@/app/api/reports/[runId]/json/route");
 const incompleteReviewRoute =
   await import("@/app/api/runs/[runId]/incomplete/[nodeId]/review/route");
@@ -1322,7 +1323,7 @@ describe("thin AI overlay", () => {
     expect(report.buildRunReportDto(item.run.id).nodeStatistics.total).toBeGreaterThan(12);
   });
 
-  it("uses rule-level node counts for aggregates and issue metadata", () => {
+  it("uses rule-level node counts for aggregates and issue metadata", async () => {
     const item = fixture(3, true, true);
     dbModule
       .getDb()
@@ -1333,16 +1334,24 @@ describe("thin AI overlay", () => {
     expect(dto.score.resultNodeCounts).toMatchObject({ pass: 1, incomplete: 4 });
     expect(dto.nodeStatistics).toMatchObject({ pass: 1, incomplete: 4, total: 5 });
     expect(dto.issues.find((issue) => issue.resultType === "incomplete")?.nodeCount).toBe(4);
-    const html = report.renderRunReportHtml(dto);
-    expect(html).toContain("优先整改事项");
+    const html = await reportHtml.renderRunReportHtml(dto);
+    expect(html).toContain("主要无障碍问题");
     expect(html).toContain('class="issue-card');
     expect(html).not.toContain("全部节点证据");
-    expect(html).toContain("尚无结论（原始 incomplete）");
+    expect(html).toContain("复核项目");
+    expect(html).toContain("待复核");
+    expect(html).toContain('data-reviewed="0"');
+    expect(html).toContain('data-needs-review="4"');
+    expect(html).not.toContain("AI: 暂不确定");
     expect(html).not.toContain("null（已完成 AI）");
-    const english = report.renderRunReportHtml(dto, "en");
-    expect(english).toContain("No conclusion yet");
-    expect(english).toContain("Raw incomplete inventory");
-    expect(english).toContain("Report boundary");
+    const english = await reportHtml.renderRunReportHtml(dto, "en");
+    expect(english).toContain("Key accessibility issues");
+    expect(english).toContain("Review items");
+    expect(english).toContain("Needs review");
+    expect(english).toContain('data-reviewed="0"');
+    expect(english).toContain('data-needs-review="4"');
+    expect(english).not.toContain("AI: Uncertain");
+    expect(english).toContain("About this report");
     expect(english).not.toContain("扫描摘要");
     expect(english).not.toContain("报告边界");
     expect(english).not.toContain("原始 incomplete 清单");
@@ -1352,7 +1361,10 @@ describe("thin AI overlay", () => {
 
   it("downloads a published report as JSON", async () => {
     const item = fixture(1, true, true);
-    dbModule.getDb().prepare("UPDATE scan_runs SET published=1 WHERE id=?").run(item.run.id);
+    dbModule
+      .getDb()
+      .prepare("UPDATE scan_runs SET published=1,status='completed' WHERE id=?")
+      .run(item.run.id);
 
     const response = await reportJsonRoute.GET(new Request("http://localhost"), {
       params: Promise.resolve({ runId: item.run.id }),
@@ -1403,7 +1415,7 @@ describe("thin AI overlay", () => {
     ).toBe(0);
   });
 
-  it("counts AI and manual conclusions as a de-duplicated union", () => {
+  it("counts AI and manual conclusions as a de-duplicated union", async () => {
     const item = fixture(2, true);
     const model = provider();
     const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: model.id });
@@ -1446,7 +1458,7 @@ describe("thin AI overlay", () => {
       resolved: 2,
       unresolved: 0,
     });
-    const resolvedHtml = report.renderRunReportHtml(report.buildRunReportDto(item.run.id));
+    const resolvedHtml = await reportHtml.renderRunReportHtml(report.buildRunReportDto(item.run.id));
     expect(resolvedHtml).toContain("尚无结论");
     expect(resolvedHtml).not.toContain("需进一步确认</span><strong>2");
   });

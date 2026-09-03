@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireRequestRole } from "@/lib/access-control";
 import { getDb, migrate, transaction } from "@/lib/db";
 import { AppError, errorEnvelope } from "@/lib/errors";
-import { renderRunReport } from "@/lib/report";
+import { renderRunReport } from "@/lib/report-html";
 import { assertSameOrigin } from "@/lib/request-security";
 
 export async function POST(request: Request, context: { params: Promise<{ runId: string }> }) {
@@ -27,7 +27,7 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
       throw new AppError("AI_REVIEW_ACTIVE", "AI 批处理仍在运行，暂停或完成后才能发布", 409, {
         batchId: active.id,
       });
-    const report = renderRunReport(runId);
+    const report = await renderRunReport(runId);
     const publishedAt = new Date().toISOString();
     transaction((db) => {
       const result = db

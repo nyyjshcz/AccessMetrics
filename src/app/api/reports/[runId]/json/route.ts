@@ -1,22 +1,17 @@
 import { NextResponse } from "next/server";
-import { getDb, migrate } from "@/lib/db";
+import { migrate } from "@/lib/db";
 import { buildRunReportDto } from "@/lib/report";
 import { serializeRunScore } from "@/lib/run-score";
 import { AppError, errorEnvelope } from "@/lib/errors";
-import { requireRequestRole } from "@/lib/access-control";
+import { requireReportExportAccess } from "@/lib/report-access";
 
 export const dynamic = "force-dynamic";
 
-/** Published reports are immutable and visible to either authorized role. */
 export async function GET(request: Request, context: { params: Promise<{ runId: string }> }) {
   try {
-    requireRequestRole(request, "visitor");
     migrate();
     const { runId } = await context.params;
-    const run = getDb().prepare("SELECT published FROM scan_runs WHERE id=?").get(runId) as
-      | { published: number }
-      | undefined;
-    if (!run || run.published !== 1) throw new AppError("NOT_FOUND", "报告不存在", 404);
+    requireReportExportAccess(request, runId);
     const report = buildRunReportDto(runId);
     // exact score breakdowns use bigint values internally; serialize them
     // before NextResponse.json invokes JSON.stringify for the download.

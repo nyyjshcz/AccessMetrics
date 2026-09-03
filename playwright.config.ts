@@ -4,7 +4,7 @@ export default defineConfig({
   timeout: 30000,
   use: { baseURL: "http://127.0.0.1:3100", trace: "retain-on-failure" },
   webServer: {
-    command: "pnpm start --hostname 127.0.0.1 --port 3100",
+    command: "node scripts/run-e2e-standalone.mjs",
     url: "http://127.0.0.1:3100/api/health",
     reuseExistingServer: true,
     timeout: 120000,

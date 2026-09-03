@@ -4,6 +4,8 @@
 
 这是一份 NAS 专用说明。它不替代 VPS 的[部署说明](./deployment.md)。NAS 版使用 `compose.nas.yaml`：Web、扫描 Worker 和 AI Worker 共用同一份 SQLite 数据；Caddy 只在 NAS 本机的 `127.0.0.1:3000` 提供 HTTP，公网 HTTPS 由 Tailscale Funnel 提供。
 
+> NAS 现在只允许“本机构建并验证 → 导出镜像 → NAS `docker load` → Compose 启动”的流程。请先阅读[预构建镜像部署说明](./nas-prebuilt-deployment.md)；本页不再使用 NAS 上的源码构建流程。
+
 ## 部署前检查
 
 - 确认飞牛已启用 Docker、Docker Compose、SSH（默认 22 端口）和 Tailscale。
@@ -44,10 +46,10 @@ docker compose --env-file .env.nas -f compose.nas.yaml config --quiet
 
 这三个文件分别供 Web 读取访问控制和会话密钥，AI Worker 读取会话密钥。Compose 会把它们挂载到 `/run/secrets/`；应用容器仍以非 root 用户运行，依靠组 10000 读取。`deploy:nas:check` 会只检查文件类型、权限和组，不会输出密钥内容。
 
-启动并检查：
+启动并检查（不允许在 NAS 上构建）：
 
 ```sh
-docker compose --env-file .env.nas -f compose.nas.yaml up -d --build
+docker compose --env-file .env.nas -f compose.nas.yaml up -d --no-build --pull never
 docker compose --env-file .env.nas -f compose.nas.yaml ps
 docker compose --env-file .env.nas -f compose.nas.yaml logs --tail=100 web worker ai-worker caddy
 ```

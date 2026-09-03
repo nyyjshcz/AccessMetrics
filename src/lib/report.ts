@@ -9,6 +9,7 @@ import {
   loadLocalManualVerdicts,
   type ResolutionVerdict,
 } from "./incomplete-resolution";
+import { getAxeRuleExplanation } from "./axe-rule-explanations";
 
 export type NodeResolutionSource = "manual" | "ai" | "raw";
 
@@ -74,6 +75,7 @@ export type AuthorizedRunReportDto = {
     ruleId: string;
     impact: string | null;
     resultType: string;
+    description: string;
     help: string;
     helpUrl: string;
     nodeCount: number;
@@ -127,13 +129,14 @@ export function buildRunReportDto(runId: string): AuthorizedRunReportDto {
   }>;
   const issues = getDb()
     .prepare(
-      "SELECT id,rule_id,impact,result_type,help,help_url,node_count FROM rule_results WHERE run_id=? ORDER BY CASE impact WHEN 'critical' THEN 1 WHEN 'serious' THEN 2 WHEN 'moderate' THEN 3 WHEN 'minor' THEN 4 ELSE 5 END,rule_id,result_type",
+      "SELECT id,rule_id,impact,result_type,description,help,help_url,node_count FROM rule_results WHERE run_id=? ORDER BY CASE impact WHEN 'critical' THEN 1 WHEN 'serious' THEN 2 WHEN 'moderate' THEN 3 WHEN 'minor' THEN 4 ELSE 5 END,rule_id,result_type",
     )
     .all(runId) as Array<{
     id: string;
     rule_id: string;
     impact: string | null;
     result_type: string;
+    description: string;
     help: string;
     help_url: string;
     node_count: number;
@@ -248,6 +251,7 @@ export function buildRunReportDto(runId: string): AuthorizedRunReportDto {
       ruleId: issue.rule_id,
       impact: issue.impact,
       resultType: issue.result_type,
+      description: issue.description,
       help: issue.help,
       helpUrl: issue.help_url,
       nodeCount: Math.max(0, Number(issue.node_count) || 0),
@@ -269,10 +273,10 @@ export function buildRunReportDto(runId: string): AuthorizedRunReportDto {
 export type ReportLocale = "zh-CN" | "en";
 
 const reportCopy = {
-  "zh-CN": {
-    lang: "zh-CN", sentenceEnd: "。", notRecorded: "未记录", notSavedHtml: "（未保存 HTML 片段）", highPriorityTypes: "critical / serious", labelSeparator: "：", itemSeparator: "；", footerSeparator: " · ", title: "AccessCheck 无障碍报告", eyebrow: "ACCESSIBILITY AUDIT · 扫描报告", finished: "扫描完成", generated: "生成", pages: "个页面", score: "有效评分", rawScore: "原始评分", scoreLabel: "评分说明", scoreLead: "先看有效评分，再处理高优先级问题。", scoreBody: "有效评分会纳入已完成的人工与 AI 对 incomplete 的结论；判定优先级为：人工 > AI > 原始 incomplete。", model: "评分模型", nodes: "统计节点", node: "节点 #", high: "高优先级节点", automatic: "自动发现", further: "尚无结论", coverage: "页面覆盖", violationNodes: "violation 节点", incompleteNodes: "incomplete 节点", needsAttention: "个页面需关注", allSuccess: "全部页面成功", principles: ["可感知", "可操作", "易理解", "兼容性"], breakdown: "四项原则评分", breakdownBody: "原始结果与有效结论并列，便于核对 AI / 人工处理是否改变了评分。", action: "优先整改事项", actionBody: "按严重程度排列。展开单条可查看页面、元素定位、清理后的片段与当前有效结论。", emptyIssues: "没有可展示的问题项", emptyIssuesBody: "本次扫描没有 violation 或 incomplete 结果。", review: "incomplete 复核情况", reviewBody: "这些结论不会覆盖原始 axe 结果，只用于生成有效评分与整改判断。", originalIncomplete: "原始 incomplete 清单", manual: "人工已判定", ai: "AI 已判定", unresolved: "尚无结论", problem: "存在问题", notProblem: "不构成问题", uncertain: "暂不确定", remains: "仍未得出结论", exceptions: "失败或未完成页面", exceptionsBody: "没有成功完成扫描的页面会在此列出，不会被计入“成功覆盖”。", page: "页面", status: "状态", error: "结构化错误", http: "HTTP", noExceptions: "没有页面例外", noExceptionsBody: "所有已发现页面都已成功完成扫描。", boundary: "报告边界", boundaryBody: "axe-core 无法在当前页面状态下自动给出通过或问题结论的项目会标为 incomplete；这不代表项目一定存在问题。", runId: "运行 ID", runStatus: "运行状态", footer: "自动检查报告", issueAutomatic: "自动发现", issueFurther: "尚无结论", nodesUnit: "个节点", openPage: "打开问题页面", conclusion: "当前结论：", rule: "查看规则说明", evidence: "查看 {n} 条可复现证据", ruleNodes: "该规则记录 {n} 个节点", noEvidence: "本条规则没有保存节点级证据", rawIncomplete: "尚无结论（原始 incomplete）", automaticIssue: "自动发现的问题", manualPrefix: "人工确认：", aiPrefix: "AI 判断：", noConclusion: "尚无结论", critical: "严重", serious: "高优先级", moderate: "中等优先级", minor: "低优先级", unknown: "未标注影响", language: "English" },
+    "zh-CN": {
+    lang: "zh-CN", sentenceEnd: "。", notRecorded: "未记录", notSavedHtml: "（未保存 HTML 片段）", highPriorityTypes: "critical / serious", labelSeparator: "：", itemSeparator: "；", footerSeparator: " · ", title: "AccessCheck 无障碍报告", eyebrow: "ACCESSIBILITY AUDIT · 扫描报告", finished: "扫描完成", generated: "生成", pages: "个页面", score: "有效评分", rawScore: "原始评分", scoreLabel: "评分说明", scoreLead: "先看有效评分，再处理高优先级问题。", scoreBody: "有效评分会纳入已完成的人工与 AI 对 incomplete 的结论；判定优先级为：人工 > AI > 原始 incomplete。", model: "评分模型", nodes: "统计节点", node: "节点 #", high: "高优先级节点", automatic: "自动发现", further: "尚无结论", coverage: "页面覆盖", violationNodes: "violation 节点", incompleteNodes: "incomplete 节点", needsAttention: "个页面需关注", allSuccess: "全部页面成功", principles: ["可感知", "可操作", "易理解", "兼容性"], breakdown: "四项原则评分", breakdownBody: "原始结果与有效结论并列，便于核对 AI / 人工处理是否改变了评分。", action: "优先整改事项", actionBody: "按严重程度排列。展开单条可查看页面、元素定位、清理后的片段与当前有效结论。", emptyIssues: "没有可展示的问题项", emptyIssuesBody: "本次扫描没有 violation 或 incomplete 结果。", review: "incomplete 复核情况", reviewBody: "这些结论不会覆盖原始 axe 结果，只用于生成有效评分与整改判断。", originalIncomplete: "原始 incomplete 清单", manual: "人工已判定", ai: "AI 已判定", unresolved: "尚无结论", problem: "存在问题", notProblem: "不构成问题", uncertain: "暂不确定", remains: "仍未得出结论", exceptions: "失败或未完成页面", exceptionsBody: "没有成功完成扫描的页面会在此列出，不会被计入“成功覆盖”。", page: "页面", status: "状态", error: "结构化错误", http: "HTTP", noExceptions: "没有页面例外", noExceptionsBody: "所有已发现页面都已成功完成扫描。", boundary: "报告边界", boundaryBody: "axe-core 无法在当前页面状态下自动给出通过或问题结论的项目会标为 incomplete；这不代表项目一定存在问题。", runId: "运行 ID", runStatus: "运行状态", footer: "自动检查报告", issueAutomatic: "自动发现", issueFurther: "尚无结论", nodesUnit: "个节点", openPage: "打开问题页面", conclusion: "当前结论：", rule: "查看规则说明", evidence: "查看 {n} 条可复现证据", ruleNodes: "该规则记录 {n} 个节点", noEvidence: "本条规则没有保存节点级证据", rawIncomplete: "尚无结论（原始 incomplete）", automaticIssue: "自动发现的问题", manualPrefix: "人工确认：", aiPrefix: "AI 判断：", noConclusion: "尚无结论", critical: "严重", serious: "高优先级", moderate: "中等优先级", minor: "低优先级", unknown: "未标注影响", language: "English", ruleGuidance: "规则说明", rawRuleSource: "当前 axe 原文（静态目录未匹配）", ruleName: "名称", ruleWhat: "检查内容", ruleWho: "影响对象", ruleWhy: "为什么重要", unavailable: "axe 原文未提供" },
   en: {
-    lang: "en-US", sentenceEnd: ".", notRecorded: "Not recorded", notSavedHtml: "(HTML snippet not saved)", highPriorityTypes: "critical / serious", labelSeparator: ": ", itemSeparator: "; ", footerSeparator: " · ", title: "AccessCheck Accessibility Report", eyebrow: "ACCESSIBILITY AUDIT · SCAN REPORT", finished: "Completed", generated: "Generated", pages: "pages", score: "Effective score", rawScore: "Raw score", scoreLabel: "Score context", scoreLead: "Review the effective score first, then address high-priority issues.", scoreBody: "The effective score includes completed human and AI conclusions for incomplete results; precedence is human > AI > raw incomplete.", model: "Scoring model", nodes: "nodes counted", node: "Node #", high: "High-priority nodes", automatic: "Automatically found", further: "No conclusion yet", coverage: "Page coverage", violationNodes: "violation nodes", incompleteNodes: "incomplete nodes", needsAttention: "pages need attention", allSuccess: "All pages succeeded", principles: ["Perceivable", "Operable", "Understandable", "Robust"], breakdown: "Four-principle score", breakdownBody: "Raw results and effective conclusions are shown together so AI and human review changes can be checked.", action: "Priority remediation", actionBody: "Sorted by impact. Expand an item to inspect the page, target, sanitized snippet, and current conclusion.", emptyIssues: "No issues to display", emptyIssuesBody: "This scan has no violation or incomplete results.", review: "Incomplete review status", reviewBody: "These conclusions do not replace raw axe results; they only inform the effective score and remediation decisions.", originalIncomplete: "Raw incomplete inventory", manual: "Human decisions", ai: "AI decisions", unresolved: "No conclusion yet", problem: "Problem", notProblem: "Not a problem", uncertain: "Uncertain", remains: "No conclusion yet", exceptions: "Failed or incomplete pages", exceptionsBody: "Pages that did not complete successfully are listed here and are excluded from successful coverage.", page: "Page", status: "Status", error: "Structured error", http: "HTTP", noExceptions: "No page exceptions", noExceptionsBody: "All discovered pages completed successfully.", boundary: "Report boundary", boundaryBody: "This report reflects web accessibility results that axe-core can determine automatically. It is not a complete manual audit, official WCAG certification, or a percentage of WCAG conformance. Items that axe-core cannot classify as passing or problematic in the current page state are marked incomplete; this does not mean an issue is confirmed.", runId: "Run ID", runStatus: "Run status", footer: "Automated accessibility report", issueAutomatic: "Automatically found", issueFurther: "No conclusion yet", nodesUnit: "nodes", openPage: "Open affected page", conclusion: "Current conclusion:", rule: "View rule guidance", evidence: "View {n} reproducible evidence items", ruleNodes: "This rule records {n} nodes", noEvidence: "No node-level evidence was saved for this rule", rawIncomplete: "No conclusion yet (raw incomplete)", automaticIssue: "Automatically detected issue", manualPrefix: "Human decision: ", aiPrefix: "AI decision: ", noConclusion: "No conclusion yet", critical: "Critical", serious: "High priority", moderate: "Moderate priority", minor: "Low priority", unknown: "Impact not labeled", language: "中文" },
+    lang: "en-US", sentenceEnd: ".", notRecorded: "Not recorded", notSavedHtml: "(HTML snippet not saved)", highPriorityTypes: "critical / serious", labelSeparator: ": ", itemSeparator: "; ", footerSeparator: " · ", title: "AccessCheck Accessibility Report", eyebrow: "ACCESSIBILITY AUDIT · SCAN REPORT", finished: "Completed", generated: "Generated", pages: "pages", score: "Effective score", rawScore: "Raw score", scoreLabel: "Score context", scoreLead: "Review the effective score first, then address high-priority issues.", scoreBody: "The effective score includes completed human and AI conclusions for incomplete results; precedence is human > AI > raw incomplete.", model: "Scoring model", nodes: "nodes counted", node: "Node #", high: "High-priority nodes", automatic: "Automatically found", further: "No conclusion yet", coverage: "Page coverage", violationNodes: "violation nodes", incompleteNodes: "incomplete nodes", needsAttention: "pages need attention", allSuccess: "All pages succeeded", principles: ["Perceivable", "Operable", "Understandable", "Robust"], breakdown: "Four-principle score", breakdownBody: "Raw results and effective conclusions are shown together so AI and human review changes can be checked.", action: "Priority remediation", actionBody: "Sorted by impact. Expand an item to inspect the page, target, sanitized snippet, and current conclusion.", emptyIssues: "No issues to display", emptyIssuesBody: "This scan has no violation or incomplete results.", review: "Incomplete review status", reviewBody: "These conclusions do not replace raw axe results; they only inform the effective score and remediation decisions.", originalIncomplete: "Raw incomplete inventory", manual: "Human decisions", ai: "AI decisions", unresolved: "No conclusion yet", problem: "Problem", notProblem: "Not a problem", uncertain: "Uncertain", remains: "No conclusion yet", exceptions: "Failed or incomplete pages", exceptionsBody: "Pages that did not complete successfully are listed here and are excluded from successful coverage.", page: "Page", status: "Status", error: "Structured error", http: "HTTP", noExceptions: "No page exceptions", noExceptionsBody: "All discovered pages completed successfully.", boundary: "Report boundary", boundaryBody: "This report reflects web accessibility results that axe-core can determine automatically. It is not a complete manual audit, official WCAG certification, or a percentage of WCAG conformance. Items that axe-core cannot classify as passing or problematic in the current page state are marked incomplete; this does not mean an issue is confirmed.", runId: "Run ID", runStatus: "Run status", footer: "Automated accessibility report", issueAutomatic: "Automatically found", issueFurther: "No conclusion yet", nodesUnit: "nodes", openPage: "Open affected page", conclusion: "Current conclusion:", rule: "View rule guidance", evidence: "View {n} reproducible evidence items", ruleNodes: "This rule records {n} nodes", noEvidence: "No node-level evidence was saved for this rule", rawIncomplete: "No conclusion yet (raw incomplete)", automaticIssue: "Automatically detected issue", manualPrefix: "Human decision: ", aiPrefix: "AI decision: ", noConclusion: "No conclusion yet", critical: "Critical", serious: "High priority", moderate: "Moderate", minor: "Low priority", unknown: "Impact not labeled", language: "中文", ruleGuidance: "Rule explanation", rawRuleSource: "Current axe text (static copy not matched)", ruleName: "Name", ruleWhat: "What it checks", ruleWho: "Who is affected", ruleWhy: "Why it matters", unavailable: "Not provided by axe" },
 } as const;
 
 export function renderRunReportHtml(dto: AuthorizedRunReportDto, locale: ReportLocale = "zh-CN"): string {
@@ -319,6 +323,7 @@ export function renderRunReportHtml(dto: AuthorizedRunReportDto, locale: ReportL
 function renderIssueCard(issue: AuthorizedRunReportDto["issues"][number], copy: (typeof reportCopy)[ReportLocale]) {
   const impact = normalizeImpact(issue.impact, copy);
   const issueType = issue.resultType === "violation" ? copy.issueAutomatic : copy.originalIncomplete;
+  const ruleGuidance = renderRuleGuidance(issue, copy);
   const evidence = issue.nodes
     .map((node) => {
       const resolution = resolutionText(node.resolution, issue.resultType, copy);
@@ -328,7 +333,23 @@ function renderIssueCard(issue: AuthorizedRunReportDto["issues"][number], copy: 
   const evidenceSummary = issue.nodes.length
     ? `${copy.evidence.replace("{n}", String(issue.nodes.length))}`
     : `${copy.ruleNodes.replace("{n}", String(issue.nodeCount))}`;
-  return `<article class="issue-card impact-${impact.className}"><div class="issue-rail" aria-hidden="true"></div><div class="issue-content"><div class="issue-header"><div><div class="issue-tags"><span class="impact-badge">${escapeHtml(impact.label)}</span><span class="type-badge">${escapeHtml(issueType)}</span></div><h3><code>${escapeHtml(issue.ruleId)}</code>${escapeHtml(issue.help)}</h3></div><div class="node-count"><strong>${issue.nodeCount}</strong><span>${copy.nodesUnit}</span></div></div><div class="issue-actions"><a href="${safeReportUrl(issue.helpUrl)}">${copy.rule}</a><span>${escapeHtml(evidenceSummary)}</span></div>${evidence ? `<div class="evidence-list">${evidence}</div>` : `<p class="evidence-unavailable">${copy.noEvidence}</p>`}</div></article>`;
+  return `<article class="issue-card impact-${impact.className}"><div class="issue-rail" aria-hidden="true"></div><div class="issue-content"><div class="issue-header"><div><div class="issue-tags"><span class="impact-badge">${escapeHtml(impact.label)}</span><span class="type-badge">${escapeHtml(issueType)}</span></div><h3><code>${escapeHtml(issue.ruleId)}</code>${escapeHtml(issue.help)}</h3></div><div class="node-count"><strong>${issue.nodeCount}</strong><span>${copy.nodesUnit}</span></div></div><div class="issue-actions"><a href="${safeReportUrl(issue.helpUrl)}">${copy.rule}</a><span>${escapeHtml(evidenceSummary)}</span></div>${ruleGuidance}${evidence ? `<div class="evidence-list">${evidence}</div>` : `<p class="evidence-unavailable">${copy.noEvidence}</p>`}</div></article>`;
+}
+
+function renderRuleGuidance(
+  issue: AuthorizedRunReportDto["issues"][number],
+  copy: (typeof reportCopy)[ReportLocale],
+) {
+  const result = getAxeRuleExplanation(issue.ruleId, {
+    description: issue.description,
+    help: issue.help,
+    helpUrl: issue.helpUrl,
+  });
+  const fields = result.matched
+    ? result.explanation[copy.lang === "en-US" ? "en" : "zh"]
+    : result.fallback;
+  const value = (text: string) => escapeHtml(text.trim() || copy.unavailable);
+  return `<section class="rule-guidance${result.matched ? "" : " rule-guidance-fallback"}" aria-label="${escapeHtml(copy.ruleGuidance)}" data-rule-explanation-source="${result.matched ? "static" : "axe"}"><h4>${escapeHtml(result.matched ? copy.ruleGuidance : copy.rawRuleSource)}</h4><dl><div><dt>${escapeHtml(copy.ruleName)}</dt><dd>${value(fields.name)}</dd></div><div><dt>${escapeHtml(copy.ruleWhat)}</dt><dd>${value(fields.what)}</dd></div><div><dt>${escapeHtml(copy.ruleWho)}</dt><dd>${value(fields.who)}</dd></div><div><dt>${escapeHtml(copy.ruleWhy)}</dt><dd>${value(fields.why)}</dd></div></dl></section>`;
 }
 
 function normalizeImpact(impact: string | null, copy: (typeof reportCopy)[ReportLocale]) {

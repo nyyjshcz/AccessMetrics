@@ -2,9 +2,6 @@ services:
   web:
     image: accesscheck-nas:local
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: Dockerfile
     user: "10001:10000"
     read_only: true
     security_opt:
@@ -103,9 +100,6 @@ services:
   egress-proxy:
     image: accesscheck-nas-egress:local
     restart: unless-stopped
-    build:
-      context: ./tools/egress-proxy
-      dockerfile: Dockerfile
     read_only: true
     security_opt:
       - no-new-privileges:true

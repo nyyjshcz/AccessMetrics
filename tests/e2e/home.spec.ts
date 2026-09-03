@@ -8,6 +8,22 @@ const baseUrl = "http://127.0.0.1:3100";
 const adminAccessKey = "e2e-admin-access-key-01234567890123456789";
 const visitorAccessKey = "e2e-visitor-access-key-01234567890123456789";
 
+// The login endpoint rate-limits by the client address reported by the trusted
+// reverse proxy. Give every test its own deterministic bucket so a serial E2E
+// run does not make a later, valid login look like an application failure.
+test.beforeEach(async ({ context }, testInfo) => {
+  const name = testInfo.titlePath.join("::");
+  let hash = 0;
+  for (const character of name) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  const secondOctet = 1 + (hash % 249);
+  const thirdOctet = 1 + ((hash >>> 8) % 249);
+  const fourthOctet = 1 + ((hash >>> 16) % 249);
+  await context.setExtraHTTPHeaders({
+    "x-accesscheck-trusted-proxy": "caddy",
+    "x-forwarded-for": `10.${secondOctet}.${thirdOctet}.${fourthOctet}`,
+  });
+});
+
 async function signIn(page: Page, accessKey: string, nextPath = "/") {
   await page.goto(`/login?next=${encodeURIComponent(nextPath)}`);
   await page.getByLabel("访问密钥").fill(accessKey);
@@ -237,197 +253,270 @@ test("活动任务只为已结束任务显示删除按钮并可删除", async ({
   }
 });
 
-test("管理员扫描发布后，访客只能读取已发布报告", async ({ page }) => {
+async function createCompletedRun(page: Page, url: string) {
+  await signIn(page, adminAccessKey, "/scans/new");
+  await page.goto("/scans/new");
+  await page.getByLabel("网站 URL").fill(url);
+  await page.getByLabel("最多扫描页面数").fill("1");
+  const responsePromise = page.waitForResponse((response) => response.url().endsWith("/api/scans"));
+  await page.getByRole("button", { name: "开始扫描", exact: true }).click();
+  const response = await responsePromise;
+  expect([200, 202]).toContain(response.status());
+  const { jobId } = await response.json();
+  await expect(page).toHaveURL(new RegExp(`/scans/jobs/${jobId}$`));
+  let status = "queued";
+  for (let attempt = 0; attempt < 8 && ["queued", "running"].includes(status); attempt++) {
+    await runWorkerOnce();
+    const statusResponse = await page.request.get(`/api/scans/${jobId}`);
+    expect(statusResponse.ok()).toBeTruthy();
+    status = (await statusResponse.json()).job.status;
+    if (["queued", "running"].includes(status)) await page.waitForTimeout(250);
+  }
+  expect(["completed", "completed_with_errors"]).toContain(status);
+  await page.reload();
+  const resultLink = page.getByRole("link", { name: "查看扫描结果" });
+  await expect(resultLink).toBeVisible();
+  const runPath = await resultLink.getAttribute("href");
+  expect(runPath).toMatch(/^\/scans\/run_/);
+  return runPath!.split("/").pop()!;
+}
+
+function ensureIncompleteReviewItem(runId: string) {
+  const db = new Database(path.join(process.cwd(), "data/e2e-accesscheck-local.db"));
+  const now = new Date().toISOString();
+  try {
+    const existing = db
+      .prepare(
+        "SELECT n.id FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=? AND rr.result_type='incomplete' LIMIT 1",
+      )
+      .get(runId) as { id: string } | undefined;
+    if (existing) return true;
+    const page = db
+      .prepare(
+        "SELECT p.id FROM pages p JOIN scan_runs r ON r.site_id=p.site_id WHERE r.id=? ORDER BY p.id LIMIT 1",
+      )
+      .get(runId) as { id: string } | undefined;
+    if (!page) return false;
+    const ruleResultId = `e2e_incomplete_result_${runId}`;
+    const nodeId = `e2e_incomplete_node_${runId}`;
+    db.prepare(
+      "INSERT INTO rule_results(id,run_id,page_id,rule_id,result_type,impact,description,help,help_url,tags_json,node_count,raw_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).run(
+      ruleResultId,
+      runId,
+      page.id,
+      "e2e-review-item",
+      "incomplete",
+      "moderate",
+      "E2E review fixture",
+      "This item needs a human review",
+      "https://dequeuniversity.com/rules/axe/e2e-review-item",
+      "[]",
+      1,
+      "{}",
+    );
+    db.prepare(
+      "INSERT INTO result_nodes(id,rule_result_id,ordinal,target_json,html_sanitized,failure_summary,any_json,all_json,none_json) VALUES (?,?,?,?,?,?,?,?,?)",
+    ).run(
+      nodeId,
+      ruleResultId,
+      1,
+      '["#e2e-review-item"]',
+      '<div id="e2e-review-item"></div>',
+      "E2E review fixture",
+      "[]",
+      "[]",
+      "[]",
+    );
+    return true;
+  } finally {
+    db.close();
+  }
+}
+
+function seedAiBatch(runId: string, status: "queued" | "completed") {
+  const db = new Database(path.join(process.cwd(), "data/e2e-accesscheck-local.db"));
+  const now = new Date().toISOString();
+  const completed = status === "completed";
+  try {
+    const node = db
+      .prepare(
+        "SELECT n.id FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=? AND rr.result_type='incomplete' LIMIT 1",
+      )
+      .get(runId) as { id: string } | undefined;
+    if (!node) return false;
+    const providerId = `e2e_provider_${runId}`;
+    const batchId = `e2e_batch_${runId}`;
+    db.prepare(
+      "INSERT OR IGNORE INTO ai_provider_configs(id,label,base_url,model,key_fingerprint,max_concurrent_requests,enabled,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+    ).run(providerId, "E2E local provider", "http://127.0.0.1:9", "local-test", "", 1, 1, now, now);
+    db.prepare(
+      "INSERT OR IGNORE INTO ai_review_batches(id,batch_key,run_id,provider_config_id,provider_snapshot_json,provider_snapshot_hash,prompt_version,prompt_hash,evidence_version,status,created_at,updated_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    ).run(
+      batchId,
+      `e2e:${runId}`,
+      runId,
+      providerId,
+      "{}",
+      "e2e",
+      "e2e",
+      "e2e",
+      "e2e",
+      status,
+      now,
+      now,
+      completed ? now : null,
+    );
+    db.prepare(
+      "INSERT OR REPLACE INTO ai_review_items(id,batch_id,result_node_id,status,verdict,reason,attempt_count,created_at,updated_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ).run(
+      `e2e_item_${runId}`,
+      batchId,
+      node.id,
+      status,
+      completed ? "not_problem" : null,
+      completed ? "Local E2E conclusion" : null,
+      1,
+      now,
+      now,
+      completed ? now : null,
+    );
+    return true;
+  } finally {
+    db.close();
+  }
+}
+
+function completeAiBatch(runId: string) {
+  const db = new Database(path.join(process.cwd(), "data/e2e-accesscheck-local.db"));
+  const now = new Date().toISOString();
+  try {
+    db.prepare(
+      "UPDATE ai_review_batches SET status='completed',completed_at=?,updated_at=? WHERE run_id=? AND batch_key=?",
+    ).run(now, now, runId, `e2e:${runId}`);
+    db.prepare(
+      "UPDATE ai_review_items SET status='completed',verdict='not_problem',reason='Local E2E conclusion',completed_at=?,updated_at=? WHERE batch_id IN (SELECT id FROM ai_review_batches WHERE run_id=? AND batch_key=?)",
+    ).run(now, now, runId, `e2e:${runId}`);
+  } finally {
+    db.close();
+  }
+}
+
+test("完成扫描后可选复核、人工结论、完整报告和发布导出", async ({ page }) => {
   test.setTimeout(120000);
   const { fixture, url } = await startFixture();
   try {
-    await signIn(page, adminAccessKey, "/scans/new");
-    await page.goto("/scans/new");
-    await page.getByLabel("网站 URL").fill(url);
-    await page.getByLabel("最多扫描页面数").fill("1");
-    const responsePromise = page.waitForResponse((response) =>
-      response.url().endsWith("/api/scans"),
-    );
-    await page.getByRole("button", { name: "开始 axe 扫描" }).click();
-    const createResponse = await responsePromise;
-    expect([200, 202]).toContain(createResponse.status());
-    const { jobId } = await createResponse.json();
-    expect(jobId).toMatch(/^job_/);
-    await expect(page).toHaveURL(new RegExp(`/scans/jobs/${jobId}$`));
-
-    let status = "queued";
-    for (let attempt = 0; attempt < 8 && ["queued", "running"].includes(status); attempt++) {
-      await runWorkerOnce();
-      const jobResponse = await page.request.get(`/api/scans/${jobId}`);
-      expect(jobResponse.ok()).toBeTruthy();
-      const payload = await jobResponse.json();
-      status = payload.job.status;
-      if (["queued", "running"].includes(status)) await page.waitForTimeout(250);
-    }
-    expect(["completed", "completed_with_errors"]).toContain(status);
-    await page.reload();
-    const resultLink = page.getByRole("link", { name: "查看扫描结果" });
-    await expect(resultLink).toBeVisible();
-    const runPath = await resultLink.getAttribute("href");
-    expect(runPath).toMatch(/^\/scans\/run_/);
-    const runId = runPath!.split("/").pop()!;
-    await page.goto(runPath!);
-    const siteRulesResponse = await page.request.get(`/api/runs/${runId}/violation-rules`);
-    expect(siteRulesResponse.ok()).toBeTruthy();
-    const siteRules = await siteRulesResponse.json();
-    const distinctRuleCount = new Set(
-      (siteRules.rules ?? []).map((rule: { id: string }) => rule.id),
-    ).size;
-    const tabs = page.getByRole("tab");
-    await expect(page.getByRole("tablist")).toBeVisible();
-    await expect(tabs).toHaveCount(4);
-    for (const tabName of ["概览", "全站规则", "原始 incomplete 清单", "报告"]) {
-      const tab = tabs.filter({ hasText: new RegExp(`^${tabName}(?: \\(\\d+\\))?$`) });
-      await expect(tab).toBeVisible();
-      await tab.click();
-      await expect(tab).toHaveAttribute("aria-selected", "true");
-      await expect(page.locator("main")).toBeVisible();
-      if (tabName === "全站规则") {
-        await expect(page.getByText(/全站规则|没有自动问题/).first()).toBeVisible();
-        if (distinctRuleCount > 0) {
-          await expect(tab).toContainText(String(distinctRuleCount));
-        } else {
-          await expect(tab).not.toContainText(/\(\d+\)/);
-        }
-        const ruleCard = page.locator(".violation-rule-card").first();
-        if (await ruleCard.count()) {
-          let page2Attempts = 0;
-          await page.route(`**/api/runs/${runId}/violation-rules/*`, async (route) => {
-            const requestUrl = new URL(route.request().url());
-            const requestedPage = requestUrl.searchParams.get("page");
-            const upstream = await route.fetch();
-            const payload = await upstream.json();
-            if (requestedPage === "1") {
-              payload.pagination = {
-                ...payload.pagination,
-                page: 1,
-                evidenceTotal: 1,
-                totalPages: 2,
-                hasMore: true,
-              };
-              await route.fulfill({ response: upstream, json: payload });
-              return;
-            }
-            if (requestedPage === "2") {
-              page2Attempts += 1;
-              if (page2Attempts === 1) {
-                await route.fulfill({
-                  status: 503,
-                  contentType: "application/json",
-                  body: JSON.stringify({ error: { message: "temporary evidence failure" } }),
-                });
-                return;
-              }
-              payload.pagination = {
-                ...payload.pagination,
-                page: 2,
-                totalPages: 2,
-                hasMore: false,
-              };
-              await route.fulfill({ response: upstream, json: payload });
-              return;
-            }
-            await route.fulfill({ response: upstream });
-          });
-          const detailRequest = page.waitForRequest((request) =>
-            request.url().includes(`/api/runs/${runId}/violation-rules/`),
-          );
-          await ruleCard.locator("summary").click();
-          await detailRequest;
-          await expect(ruleCard.locator(".rule-page-evidence").first()).toBeVisible();
-          await expect(ruleCard.locator(".rule-evidence-count")).toContainText("可复核证据节点：1");
-          const loadMore = ruleCard.getByRole("button", { name: "加载更多节点" });
-          if (await loadMore.count()) {
-            await loadMore.click();
-            await expect(ruleCard.getByRole("button", { name: "重试失败页面" })).toBeVisible();
-            await ruleCard.getByRole("button", { name: "重试失败页面" }).click();
-            await expect(ruleCard.getByRole("button", { name: "重试失败页面" })).toHaveCount(0);
-            await expect(ruleCard.locator(".rule-page-evidence").first()).toBeVisible();
-          }
-          await page.unroute(`**/api/runs/${runId}/violation-rules/*`);
-        }
-      }
-      if (tabName === "原始 incomplete 清单") {
-        await expect(page.getByRole("heading", { name: "原始 incomplete 清单" })).toBeVisible();
-        await expect(
-          page.locator(".review-resolution-summary").getByText(/尚无结论/),
-        ).toBeVisible();
-      }
-    }
-    await page.getByRole("button", { name: "生成并发布报告" }).click();
-    await expect(page.getByText("已发布，报告现在为只读")).toBeVisible();
-
-    const publishedRun = await page.request.get(`/api/runs/${runId}`);
-    expect(publishedRun.ok()).toBeTruthy();
-    expect((await publishedRun.json()).run.published).toBe(1);
-    const htmlReport = await page.request.get(`/api/reports/${runId}/html`);
-    expect(htmlReport.ok()).toBeTruthy();
-    expect(await htmlReport.text()).toContain("AccessCheck");
-
-    await page.context().clearCookies();
-    await signIn(page, visitorAccessKey, "/reports");
-    await expect(page.getByRole("link", { name: "新建扫描" })).toHaveCount(0);
-    await expect(page.getByRole("link", { name: "活动任务" })).toHaveCount(0);
-    await page.goto("/reports");
-    await expect(page.getByRole("heading", { name: "已发布报告" })).toBeVisible();
-    await chooseLocale(page, "en");
-    await expect(page.getByRole("heading", { name: "Published reports" })).toBeVisible();
-    await expect(
-      (await page.context().cookies()).find((cookie) => cookie.name === "accesscheck_locale")
-        ?.value,
-    ).toBe("en");
-    await page.reload();
-    await expect(page.getByRole("heading", { name: "Published reports" })).toBeVisible();
-    const publishedRow = page.locator(".run-row", { hasText: new URL(url).origin });
-    await expect(publishedRow.getByRole("link")).toHaveAttribute(
-      "href",
-      `/api/reports/${runId}/html`,
-    );
-    await publishedRow.getByRole("link").click();
-    await expect(page).toHaveURL(new RegExp(`/api/reports/${runId}/html$`));
-    await expect(page).toHaveTitle(/AccessCheck Accessibility Report/);
-    await expect(page.locator("body")).toContainText("Effective score");
-    await expect(page.getByRole("button", { name: "中文", exact: true })).toBeVisible();
-
-    await page.goto("/reports");
-    await chooseLocale(page, "zh-CN");
-    await expect(page.getByRole("heading", { name: "已发布报告" })).toBeVisible();
-    await page.goto(`/api/reports/${runId}/html?lang=zh-CN`);
-    await expect(page).toHaveTitle(/AccessCheck 无障碍报告/);
-
-    await page.context().clearCookies();
-    await signIn(page, adminAccessKey, `/scans/${runId}`);
+    const runId = await createCompletedRun(page, url);
+    expect(ensureIncompleteReviewItem(runId)).toBeTruthy();
     await page.goto(`/scans/${runId}`);
-    await page.getByRole("tab", { name: "报告" }).click();
-    page.once("dialog", (dialog) => dialog.accept());
-    await page.getByRole("button", { name: "撤回发布" }).click();
-    await expect(page.getByText("已撤回发布")).toBeVisible();
-
+    await expect(page.getByRole("link", { name: /处理复核项目/ })).toBeVisible();
+    await expect(page.getByRole("link", { name: /查看完整报告/ })).toBeVisible();
+    await page.getByRole("link", { name: /处理复核项目/ }).click();
+    await expect(page).toHaveURL(new RegExp(`/scans/${runId}/review$`));
+    const item = page.locator(".incomplete-list button").first();
+    await expect(item).toHaveCount(1);
+    await item.click();
+    await page.getByRole("button", { name: "存在问题" }).click();
+    await expect(page.locator(".review-resolution-summary")).toContainText(/人工已复核\s*1/);
+    await page
+      .getByRole("link", { name: /继续查看完整报告|跳过，查看完整报告/ })
+      .first()
+      .click();
+    await expect(page).toHaveURL(new RegExp(`/reports/${runId}$`));
+    await expect(page.getByText("完整报告", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "复核情况" })).toBeVisible();
+    // The on-screen report must load the same report layout, rather than
+    // rendering the export document as unstyled text.
+    await expect(page.locator(".report-hero")).toHaveCSS("display", "grid");
+    await expect(page.locator(".summary-grid")).toHaveCSS("display", "grid");
+    await expect(page.locator(".report-hero h1")).toHaveCSS("color", "rgb(255, 255, 255)");
+    await expect(page.getByRole("link", { name: "下载 HTML" })).toHaveAttribute(
+      "href",
+      `/api/reports/${runId}/html?lang=zh-CN`,
+    );
+    await expect(page.getByRole("link", { name: "下载 PDF" })).toHaveAttribute(
+      "href",
+      `/api/reports/${runId}/pdf?lang=zh-CN`,
+    );
+    await expect(page.getByRole("link", { name: "下载 JSON" })).toHaveAttribute(
+      "href",
+      `/api/reports/${runId}/json`,
+    );
     await page.context().clearCookies();
-    await signIn(page, visitorAccessKey, "/reports");
-    const withdrawnReport = await page.request.get(`/api/reports/${runId}/html`);
-    expect(withdrawnReport.status()).toBe(404);
-    await page.goto("/scans/new");
+    await signIn(page, visitorAccessKey, `/reports/${runId}`);
+    expect((await page.request.get(`/reports/${runId}`)).status()).toBe(404);
+    await page.goto(`/scans/${runId}/review`);
     await expect(page).toHaveURL(/\/reports$/);
-    const deniedActive = await page.request.get("/api/scans?view=active");
-    expect(deniedActive.status()).toBe(403);
-    const visitorReport = await page.request.get(`/api/reports/${runId}/html`);
-    expect(visitorReport.status()).toBe(404);
-
     await page.context().clearCookies();
-    await signIn(page, adminAccessKey, `/scans/${runId}`);
-    const republish = await page.request.post(`/api/runs/${runId}/publish`);
-    expect(republish.ok()).toBeTruthy();
-
+    await signIn(page, adminAccessKey, `/reports/${runId}`);
+    await page.goto(`/reports/${runId}`);
+    await page.getByRole("button", { name: "发布报告" }).click();
+    await expect(page.getByText("报告已发布。")).toBeVisible();
+    for (const suffix of ["html", "pdf", "json"])
+      expect((await page.request.get(`/api/reports/${runId}/${suffix}`)).ok()).toBeTruthy();
+    await page.getByRole("button", { name: "EN", exact: true }).click();
+    await page.reload();
+    await expect(page.getByText("Full report", { exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Download HTML" })).toHaveAttribute(
+      "href",
+      `/api/reports/${runId}/html?lang=en`,
+    );
     await page.context().clearCookies();
     await signIn(page, visitorAccessKey, "/reports");
-    const republishedReport = await page.request.get(`/api/reports/${runId}/html`);
-    expect(republishedReport.ok()).toBeTruthy();
+    await page.goto("/reports");
+    await expect(
+      page
+        .locator(".run-row")
+        .filter({ hasText: new URL(url).origin })
+        .getByRole("link"),
+    ).toHaveAttribute("href", `/reports/${runId}`);
+    await page.context().clearCookies();
+    await signIn(page, adminAccessKey, `/reports/${runId}`);
+    await page.goto(`/reports/${runId}`);
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "撤下报告" }).click();
+    await expect(page.getByText("报告已撤下。")).toBeVisible();
+    await page.context().clearCookies();
+    await signIn(page, visitorAccessKey, "/reports");
+    expect((await page.request.get(`/reports/${runId}`)).status()).toBe(404);
+    for (const suffix of ["html", "pdf", "json"])
+      expect((await page.request.get(`/api/reports/${runId}/${suffix}`)).status()).toBe(404);
+  } finally {
+    await new Promise<void>((resolve) => fixture.close(() => resolve()));
+  }
+});
+
+test("AI 已完成结论可进入报告且发布门禁生效", async ({ page }) => {
+  test.setTimeout(120000);
+  const { fixture, url } = await startFixture();
+  try {
+    const runId = await createCompletedRun(page, url);
+    expect(ensureIncompleteReviewItem(runId)).toBeTruthy();
+    expect(seedAiBatch(runId, "queued")).toBeTruthy();
+    await page.goto(`/reports/${runId}`);
+    const publishButton = page.getByRole("button", { name: "发布报告" });
+    await expect(publishButton).toBeDisabled();
+    completeAiBatch(runId);
+    await page.reload();
+    await expect(publishButton).toBeEnabled();
+    await page.goto(`/scans/${runId}/review`);
+    await expect(page.locator(".review-resolution-summary")).toContainText(/AI 已复核\s*1/);
+    await expect(page.getByText("AI 的辅助判断")).toBeVisible();
+    await page.getByRole("link", { name: "跳过，查看完整报告" }).click();
+    await expect(page).toHaveURL(new RegExp(`/reports/${runId}$`));
+    await page.getByRole("button", { name: "发布报告" }).click();
+    await expect(page.getByText("报告已发布。")).toBeVisible();
+    await page.context().clearCookies();
+    await signIn(page, visitorAccessKey, "/reports");
+    await page.goto("/reports");
+    await expect(
+      page
+        .locator(".run-row")
+        .filter({ hasText: new URL(url).origin })
+        .getByRole("link"),
+    ).toHaveAttribute("href", `/reports/${runId}`);
+    await page.goto(`/scans/${runId}/review`);
+    await expect(page).toHaveURL(/\/reports$/);
   } finally {
     await new Promise<void>((resolve) => fixture.close(() => resolve()));
   }

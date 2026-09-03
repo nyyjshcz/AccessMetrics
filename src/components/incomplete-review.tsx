@@ -26,7 +26,7 @@ function verdictLabel(verdict: string | null | undefined, en = false) {
 
 function sourceLabel(resolution?: ResolutionSummary | null, en = false) {
   if (!resolution || resolution.source === "raw")
-    return en ? "Original incomplete (no conclusion recorded)" : "原始 incomplete（未记录结论）";
+    return en ? "Needs review" : "待复核";
   if (resolution.source === "manual")
     return `${en ? "Manual" : "人工"}: ${verdictLabel(resolution.verdict, en)}`;
   if (resolution.source === "ai") return `AI: ${verdictLabel(resolution.verdict, en)}`;
@@ -69,7 +69,7 @@ export default function IncompleteReview({
       if (!response.ok)
         throw new Error(
           payload.error?.message ??
-            (en ? "Failed to load incomplete results" : "读取 incomplete 扫描结果失败"),
+            (en ? "Failed to load review items" : "读取复核项目失败"),
         );
       if (!mounted.current || requestId !== request.current) return;
       setItems(payload.items ?? []);
@@ -94,8 +94,8 @@ export default function IncompleteReview({
           reason instanceof Error
             ? reason.message
             : en
-              ? "Failed to load incomplete results"
-              : "读取 incomplete 扫描结果失败",
+              ? "Failed to load review items"
+              : "读取复核项目失败",
         );
     });
     return () => {
@@ -157,30 +157,27 @@ export default function IncompleteReview({
       <header className="review-workbench-header">
         <div>
           <p className="section-kicker">REVIEW QUEUE</p>
-          <h2>{en ? "Raw incomplete inventory" : "原始 incomplete 清单"}</h2>
+          <h2>{en ? "Review items" : "复核项目"}</h2>
           <p>
             {en ? (
               <>
-                axe marked these items <code>incomplete</code>, meaning automation could not reach a
-                reliable conclusion. This is the original scan inventory, not a count of items still
-                waiting. Items with an AI or manual conclusion remain visible for review.
+                The automatic check could not settle these items on its own. Review is optional;
+                items with an AI or human conclusion remain visible so you can verify them.
               </>
             ) : (
               <>
-                axe 将这些项目标记为 <code>incomplete</code>
-                ，意味着自动工具不能可靠地下结论。这是扫描产生的原始清单，不是仍待处理数量；已有 AI
-                或人工结论的项目仍会保留，便于查看和复核。
+                自动检查无法单独确定这些项目。复核是可选的；已有 AI 或人工结论的项目仍会保留，便于核对。
               </>
             )}
           </p>
         </div>
         <div className="review-count">
-          <span>{copy.rawIncompleteInventory}</span>
+          <span>{en ? "Review items" : "复核项目"}</span>
           <strong>{meta?.resolution?.total ?? meta?.total ?? 0}</strong>
           <small>
             {en
-              ? `${meta?.resolution?.unresolved ?? meta?.total ?? 0} still without a conclusion`
-              : `尚无结论 ${meta?.resolution?.unresolved ?? meta?.total ?? 0} 项`}
+              ? `${meta?.resolution?.unresolved ?? meta?.total ?? 0} needs review`
+              : `待复核 ${meta?.resolution?.unresolved ?? meta?.total ?? 0} 项`}
           </small>
         </div>
       </header>
@@ -188,7 +185,7 @@ export default function IncompleteReview({
       {meta?.resolution ? (
         <div
           className="review-resolution-summary"
-          aria-label={en ? "Incomplete resolution summary" : "incomplete 处理摘要"}
+          aria-label={en ? "Review status summary" : "复核情况摘要"}
         >
           <span>
             {copy.aiConclusions}
@@ -221,7 +218,7 @@ export default function IncompleteReview({
       <div className="review-workbench-grid">
         <div
           className="review-queue"
-          aria-label={en ? "Original incomplete items" : "原始 incomplete 项目列表"}
+          aria-label={en ? "Review items" : "复核项目列表"}
         >
           <div className="review-queue-heading">
             <span>
@@ -360,8 +357,8 @@ export default function IncompleteReview({
             <strong>{en ? "No review items on this page" : "这一页没有可复核项目"}</strong>
             <p>
               {en
-                ? "Switch pages, or return to the overview for automatic findings and the report."
-                : "可以切换页面，或返回概览查看自动问题和报告。"}
+                ? "Switch pages, or return to the scan flow to open the full report."
+                : "可以切换页面，或返回扫描流程页打开完整报告。"}
             </p>
           </div>
         )}
@@ -400,8 +397,8 @@ function ManualNoteEditor({
         <h3 id="manual-review-heading">{en ? "Give a manual verdict" : "给出人工判断"}</h3>
         <p>
           {en
-            ? "Click the selected button to remove the verdict and restore this item to its original incomplete state. Manual verdicts take priority over AI verdicts."
-            : "点击已选按钮可撤销判断，将项目恢复为原始 incomplete 状态。人工判断优先于 AI 判断。"}
+            ? "Click the selected button to remove the verdict and mark this item as needing review again. Manual verdicts take priority over AI verdicts."
+            : "点击已选按钮可撤销判断，将项目重新标记为待复核。人工判断优先于 AI 判断。"}
         </p>
       </div>
       <label htmlFor="incomplete-note">{en ? "Note (optional)" : "备注（可选）"}</label>

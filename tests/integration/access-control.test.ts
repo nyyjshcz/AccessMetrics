@@ -1,7 +1,20 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+vi.mock("playwright", () => ({
+  chromium: {
+    launch: vi.fn(async () => ({
+      newPage: async () => ({
+        setContent: async () => undefined,
+        evaluate: async () => undefined,
+        pdf: async () => new Uint8Array([37, 80, 68, 70]),
+      }),
+      close: async () => undefined,
+    })),
+  },
+}));
 
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "accesscheck-access-control-"));
 const adminAccessKey = "access-control-admin-key-0123456789";
@@ -23,6 +36,7 @@ const scansRoute = await import("@/app/api/scans/route");
 const runRoute = await import("@/app/api/runs/[runId]/route");
 const reportJsonRoute = await import("@/app/api/reports/[runId]/json/route");
 const reportHtmlRoute = await import("@/app/api/reports/[runId]/html/route");
+const reportPdfRoute = await import("@/app/api/reports/[runId]/pdf/route");
 const publishRoute = await import("@/app/api/runs/[runId]/publish/route");
 
 async function login(accessKey: string, next?: string) {
@@ -45,6 +59,27 @@ function requestWithCookie(url: string, cookie: string) {
 
 describe("administrator and visitor access keys", () => {
   let publishedRunId = "";
+  let unpublishedRunId = "";
+  let incompleteRunId = "";
+
+  function createFixtureRun(status: "completed" | "running", published = 0) {
+    const job = repositories.createScanJob(`https://${status}-${published}.example`, {
+      maxPages: 1,
+      sameOriginOnly: true,
+      respectRobots: true,
+    });
+    const run = repositories.createRun(job);
+    const now = new Date().toISOString();
+    dbModule
+      .getDb()
+      .prepare("UPDATE scan_jobs SET status=?,finished_at=? WHERE id=?")
+      .run(status, status === "completed" ? now : null, job.id);
+    dbModule
+      .getDb()
+      .prepare("UPDATE scan_runs SET status=?,published=?,published_at=? WHERE id=?")
+      .run(status, published, published ? now : null, run.id);
+    return run.id;
+  }
 
   beforeAll(() => {
     dbModule.migrate();
@@ -91,6 +126,9 @@ describe("administrator and visitor access keys", () => {
         "HTTP_500",
         "页面返回服务器错误",
       );
+
+    unpublishedRunId = createFixtureRun("completed");
+    incompleteRunId = createFixtureRun("running");
   });
 
   afterAll(() => dbModule.closeDb());
@@ -151,6 +189,47 @@ describe("administrator and visitor access keys", () => {
     );
     expect(report.status).toBe(200);
     expect((await report.json()).runId).toBe(publishedRunId);
+  });
+
+  it("allows admins to export completed unpublished runs but hides them from visitors", async () => {
+    const admin = await login(adminAccessKey, "/reports");
+    const visitor = await login(visitorAccessKey, "/reports");
+    const params = { params: Promise.resolve({ runId: unpublishedRunId }) };
+
+    for (const [route, suffix] of [
+      [reportHtmlRoute, "html"],
+      [reportJsonRoute, "json"],
+      [reportPdfRoute, "pdf"],
+    ] as const) {
+      const adminResponse = await route.GET(
+        requestWithCookie(`http://localhost:3000/api/reports/${unpublishedRunId}/${suffix}`, admin.cookie),
+        params,
+      );
+      expect(adminResponse.status).toBe(200);
+
+      const visitorResponse = await route.GET(
+        requestWithCookie(`http://localhost:3000/api/reports/${unpublishedRunId}/${suffix}`, visitor.cookie),
+        params,
+      );
+      expect(visitorResponse.status).toBe(404);
+    }
+  });
+
+  it("does not export an incomplete run, even for an administrator", async () => {
+    const admin = await login(adminAccessKey, "/reports");
+    const params = { params: Promise.resolve({ runId: incompleteRunId }) };
+
+    for (const [route, suffix] of [
+      [reportHtmlRoute, "html"],
+      [reportJsonRoute, "json"],
+      [reportPdfRoute, "pdf"],
+    ] as const) {
+      const response = await route.GET(
+        requestWithCookie(`http://localhost:3000/api/reports/${incompleteRunId}/${suffix}`, admin.cookie),
+        params,
+      );
+      expect(response.status).toBe(404);
+    }
   });
 
   it("rejects invalid and cross-origin login attempts", async () => {
@@ -221,6 +300,22 @@ describe("administrator and visitor access keys", () => {
     for (const [route, suffix] of [
       [reportJsonRoute, "json"],
       [reportHtmlRoute, "html"],
+      [reportPdfRoute, "pdf"],
+    ] as const) {
+      const adminResponse = await route.GET(
+        requestWithCookie(
+          `http://localhost:3000/api/reports/${publishedRunId}/${suffix}`,
+          admin.cookie,
+        ),
+        params,
+      );
+      expect(adminResponse.status).toBe(200);
+    }
+
+    for (const [route, suffix] of [
+      [reportJsonRoute, "json"],
+      [reportHtmlRoute, "html"],
+      [reportPdfRoute, "pdf"],
     ] as const) {
       const response = await route.GET(
         requestWithCookie(

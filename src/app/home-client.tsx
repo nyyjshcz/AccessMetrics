@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { Route } from "next";
 import { useCallback, useEffect, useState } from "react";
 import StatusBadge from "@/components/status-badge";
 import { getMessages, type Locale } from "@/lib/i18n";
@@ -23,11 +24,17 @@ type ScanListRow = {
 
 const deletableStatuses = new Set(["completed", "failed", "cancelled"]);
 
-export default function HomeClient({ view, canManagePublished = false, locale = "zh-CN" }: HomeClientProps) {
+export default function HomeClient({
+  view,
+  canManagePublished = false,
+  locale = "zh-CN",
+}: HomeClientProps) {
   const localized = getMessages(locale);
   const copy = localized.home;
   const dimensions = localized.homeDimensions;
-  const principles = copy.principles.map((item, index) => [item[0], ["P", "O", "U", "R"][index], item[1]] as const);
+  const principles = copy.principles.map(
+    (item, index) => [item[0], ["P", "O", "U", "R"][index], item[1]] as const,
+  );
   const isPublishedView = view === "published";
   const [runs, setRuns] = useState<ScanListRow[]>([]);
   const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
@@ -77,9 +84,7 @@ export default function HomeClient({ view, canManagePublished = false, locale = 
 
   async function withdrawReport(row: ScanListRow) {
     if (!row.run_id) return;
-    const confirmed = window.confirm(
-      copy.withdrawConfirm.replace("{name}", row.name),
-    );
+    const confirmed = window.confirm(copy.withdrawConfirm.replace("{name}", row.name));
     if (!confirmed) return;
 
     setDeleteError("");
@@ -102,14 +107,9 @@ export default function HomeClient({ view, canManagePublished = false, locale = 
     <>
       <section className={`home-hero ${isPublishedView ? "home-hero-reports" : ""}`}>
         <div className="home-hero-copy">
-          <p className="eyebrow">
-            {isPublishedView ? copy.reportLibrary : copy.workbench}
-          </p>
+          <p className="eyebrow">{isPublishedView ? copy.reportLibrary : copy.workbench}</p>
           <h1>{heroTitle}</h1>
-          <p className="home-hero-lede">
-            {isPublishedView
-              ? copy.publishedLede : copy.activeLede}
-          </p>
+          <p className="home-hero-lede">{isPublishedView ? copy.publishedLede : copy.activeLede}</p>
           {!isPublishedView ? (
             <div className="hero-actions">
               <Link className="button-link" href="/scans/new">
@@ -121,10 +121,13 @@ export default function HomeClient({ view, canManagePublished = false, locale = 
             </div>
           ) : null}
         </div>
-        <aside className="home-method" aria-label={isPublishedView ? copy.readMethod : copy.assessMethod}>
+        <aside
+          className="home-method"
+          aria-label={isPublishedView ? copy.readMethod : copy.assessMethod}
+        >
           {isPublishedView ? (
             <>
-            <p className="method-label">{copy.readMethod}</p>
+              <p className="method-label">{copy.readMethod}</p>
               <ol className="method-list">
                 <li>
                   <span>01</span>
@@ -142,7 +145,7 @@ export default function HomeClient({ view, canManagePublished = false, locale = 
             </>
           ) : (
             <>
-            <p className="method-label">{copy.assessMethod}</p>
+              <p className="method-label">{copy.assessMethod}</p>
               <ol className="method-list">
                 <li>
                   <span>01</span>
@@ -169,10 +172,7 @@ export default function HomeClient({ view, canManagePublished = false, locale = 
               {isPublishedView ? copy.publishedOutput : copy.currentWork}
             </p>
             <h2>{isPublishedView ? copy.reportsTitle : copy.activeTasksTitle}</h2>
-            <p className="muted">
-              {isPublishedView
-                ? copy.readOnly : copy.activeDesc}
-            </p>
+            <p className="muted">{isPublishedView ? copy.readOnly : copy.activeDesc}</p>
           </div>
           {!isPublishedView ? (
             <Link className="text-link" href="/reports">
@@ -190,10 +190,7 @@ export default function HomeClient({ view, canManagePublished = false, locale = 
         {runs.length === 0 ? (
           <div className="empty-state app-empty-state">
             <strong>{isPublishedView ? copy.noReports : copy.noTasks}</strong>
-            <p>
-              {isPublishedView
-                ? copy.noReportsBody : copy.noTasksBody}
-            </p>
+            <p>{isPublishedView ? copy.noReportsBody : copy.noTasksBody}</p>
             {!isPublishedView ? (
               <Link className="button-link button-link-compact" href="/scans/new">
                 {copy.newScan}
@@ -215,7 +212,7 @@ export default function HomeClient({ view, canManagePublished = false, locale = 
 
               return (
                 <article className="run-row" key={row.run_id ?? row.job_id}>
-                  <Link className="run-row-link" href={destination}>
+                  <Link className="run-row-link" href={destination as Route}>
                     <div className="run-row-info">
                       <strong>{row.name}</strong>
                       <span className="muted">{row.origin}</span>
@@ -261,9 +258,7 @@ export default function HomeClient({ view, canManagePublished = false, locale = 
               <p className="section-kicker">WCAG PRINCIPLES</p>
               <h2 id="principle-heading">{dimensions.title}</h2>
             </div>
-            <p className="muted principle-summary">
-              {dimensions.summary}
-            </p>
+            <p className="muted principle-summary">{dimensions.summary}</p>
           </div>
           <div className="principle-overview">
             {principles.map(([name, initials, description]) => (

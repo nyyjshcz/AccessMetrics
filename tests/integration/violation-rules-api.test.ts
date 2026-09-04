@@ -11,6 +11,7 @@ process.env.PUBLIC_EXPORT_ROOT = path.join(testRoot, "public");
 
 const dbModule = await import("@/lib/db");
 const repositories = await import("@/lib/repositories");
+const reportModule = await import("@/lib/report");
 const listRoute = await import("@/app/api/runs/[runId]/violation-rules/route");
 const detailRoute = await import("@/app/api/runs/[runId]/violation-rules/[ruleId]/route");
 
@@ -129,6 +130,34 @@ describe("site-wide violation rule APIs", () => {
     expect(JSON.stringify(body)).not.toContain("selector");
     expect(JSON.stringify(body)).not.toContain("html");
     expect(JSON.stringify(body)).not.toContain("failureSummary");
+  });
+
+  it("builds the full report with each violation rule grouped across pages", () => {
+    const report = reportModule.buildRunReportDto(runId);
+    const rules = report.issues as Array<{
+      ruleId: string;
+      resultType: string;
+      nodeCount: number;
+      pageCount: number;
+      pages: Array<{ pageUrl: string; nodeCount: number }>;
+    }>;
+
+    expect(rules).toHaveLength(2);
+    expect(rules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: "image-alt",
+          resultType: "violation",
+          pageCount: 2,
+          nodeCount: 7,
+          pages: expect.arrayContaining([
+            expect.objectContaining({ pageUrl: "https://rules-api.example/one", nodeCount: 3 }),
+            expect.objectContaining({ pageUrl: "https://rules-api.example/two", nodeCount: 4 }),
+          ]),
+        }),
+        expect.objectContaining({ ruleId: "button-name", pageCount: 1, nodeCount: 2 }),
+      ]),
+    );
   });
 
   it("loads detail evidence only for the requested rule and paginates nodes", async () => {

@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { requirePageRole } from "@/lib/access-control";
 import { getLocale } from "@/lib/i18n-server";
 import { buildRunReportDto } from "@/lib/report";
-import { reportStyles } from "@/lib/report-html";
+import { reportGroupingStyles, reportStyles } from "@/lib/report-html";
 import { getReportPageAccess } from "@/lib/report-access";
 import { summarizeAiRun } from "@/lib/ai-overlay";
 import { ReportDocument } from "@/components/report-document";
@@ -23,7 +23,7 @@ export default async function FullReportPage({ params }: { params: Promise<{ run
     <div className="full-report-page">
       <style
         data-report-document-styles="true"
-        dangerouslySetInnerHTML={{ __html: reportStyles() }}
+        dangerouslySetInnerHTML={{ __html: `${reportStyles()}${reportGroupingStyles()}` }}
       />
       <ReportDocument model={model} locale={locale} />
       {role === "admin" ? (

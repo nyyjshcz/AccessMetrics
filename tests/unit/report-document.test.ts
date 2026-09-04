@@ -62,6 +62,25 @@ function reportModel(): ReportModel {
         help: "Images must have alternate text",
         helpUrl: "https://dequeuniversity.com/rules/axe/4.13/image-alt",
         nodeCount: 4,
+        pageCount: 1,
+        pages: [
+          {
+            pageUrl: "https://example.test/",
+            pageTitle: "Example home",
+            nodeCount: 4,
+            nodes: [
+              {
+                ordinal: 1,
+                pageUrl: "https://example.test/",
+                target: ["main img"],
+                html: '<img src="notice.png">',
+                failureSummary: "Element does not have an alt attribute",
+                framePath: [],
+                resolution: null,
+              },
+            ],
+          },
+        ],
         nodes: [
           {
             ordinal: 1,
@@ -92,7 +111,9 @@ function assertInOrder(html: string, labels: string[]) {
   let position = -1;
   for (const label of labels) {
     const next = html.indexOf(label);
-    expect(next, `Expected ${label} to appear after the previous section`).toBeGreaterThan(position);
+    expect(next, `Expected ${label} to appear after the previous section`).toBeGreaterThan(
+      position,
+    );
     position = next;
   }
 }
@@ -113,6 +134,17 @@ describe("ReportDocument", () => {
     expect(html).toContain("Needs review");
     expect(html).toContain("Images must have alternate text");
     expect(html).toContain("image-alt");
+    expect(html).toContain("Affected pages");
+    expect(html).toContain("View 1 affected pages");
+    expect(html).toContain('<details class="rule-page-list"');
+    expect(html).not.toContain('<details class="rule-page-list" open');
+    expect(html).toContain("Example home");
+    expect(html.indexOf('class="rule-guidance"')).toBeLessThan(
+      html.indexOf('class="rule-page-evidence"'),
+    );
+    expect(html.indexOf('class="rule-page-list"')).toBeLessThan(
+      html.indexOf('class="rule-page-evidence"'),
+    );
     expect(html).not.toMatch(/<h3[^>]*>[^<]*image-alt/);
     expect(html).toContain("Element does not have an alt attribute");
     expect(html).toContain("https://example.test/failed");
@@ -141,5 +173,8 @@ describe("ReportDocument", () => {
     expect(html).not.toContain("原始 incomplete 清单");
     expect(html).toContain("完整报告");
     expect(html).toContain("受影响元素");
+    expect(html).toContain("查看 1 个受影响页面");
+    expect(html).toContain('<details class="rule-page-list"');
+    expect(html).not.toContain('<details class="rule-page-list" open');
   });
 });

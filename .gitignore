@@ -22,3 +22,9 @@ data/public-sample/
 private-inputs/
 .secrets/
 tsconfig.tsbuildinfo
+--/
+--help/
+undefined/
+node_modules.broken-*/
+.nas-deploy-*.bundle
+.playwright-cli/

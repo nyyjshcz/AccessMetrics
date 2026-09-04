@@ -1336,7 +1336,9 @@ describe("thin AI overlay", () => {
     expect(dto.issues.find((issue) => issue.resultType === "incomplete")?.nodeCount).toBe(4);
     const html = await reportHtml.renderRunReportHtml(dto);
     expect(html).toContain("主要无障碍问题");
-    expect(html).toContain('class="issue-card');
+    expect(html).not.toContain('class="issue-card');
+    expect(html).toContain("没有可展示的问题项");
+    expect(html).toContain("需要人工或 AI 判断的项目请在“复核情况”查看。");
     expect(html).not.toContain("全部节点证据");
     expect(html).toContain("复核项目");
     expect(html).toContain("待复核");
@@ -1346,6 +1348,8 @@ describe("thin AI overlay", () => {
     expect(html).not.toContain("null（已完成 AI）");
     const english = await reportHtml.renderRunReportHtml(dto, "en");
     expect(english).toContain("Key accessibility issues");
+    expect(english).toContain("No issues to display");
+    expect(english).toContain("See Review status for items that need a human or AI conclusion.");
     expect(english).toContain("Review items");
     expect(english).toContain("Needs review");
     expect(english).toContain('data-reviewed="0"');

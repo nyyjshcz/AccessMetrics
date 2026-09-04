@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProxyServer, DestinationPolicy } from "../../tools/egress-proxy/proxy.mjs";
 
 describe("controlled egress DNS resolver", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it("resolves through the proxy endpoint and rejects private results", async () => {
     const policy = new DestinationPolicy({

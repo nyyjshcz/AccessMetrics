@@ -28,3 +28,5 @@ undefined/
 node_modules.broken-*/
 .nas-deploy-*.bundle
 .playwright-cli/
+.claude/
+.local-agent/

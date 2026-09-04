@@ -13,7 +13,7 @@ AccessCheck 是一个可自托管的网页无障碍扫描工具。它从一个�
 | `src/`、`public/`、`scripts/`、`migrations/` | 正在运行的网站、后台任务和数据库升级脚本。 |
 | `tests/`、`tools/` | 自动化测试与受控扫描工具。 |
 | `docs/` | 当前项目说明、架构、评分、数学、运维和部署资料。 |
-| `analysis/`、`scoring/`、`research/`、`study/`、`notebooks/` | 数学与研究辅助材料，不是网页运行目录。 |
+| `analysis/`、`scoring/`、`project-materials/` | 数学与研究辅助材料，不是网页运行目录；其中包含研究、study 和 notebook 材料。 |
 | `configs/`、`contracts/` | 规则目录、配置和数据格式约定。 |
 | `data/`、`private-inputs/` | 本机数据库、私有证据和报告；不提交到 Git，也不要随意清理。 |
 

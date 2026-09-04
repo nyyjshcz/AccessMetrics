@@ -187,7 +187,8 @@ function lookupWithTimeout(lookupAll, hostname) {
       DNS_LOOKUP_TIMEOUT_MS,
     );
   });
-  return Promise.race([lookupAll(hostname), timeout]).finally(() => clearTimeout(timer));
+  const lookup = Promise.resolve().then(() => lookupAll(hostname));
+  return Promise.race([lookup, timeout]).finally(() => clearTimeout(timer));
 }
 
 export function createProxyServer({ policy = new DestinationPolicy() } = {}) {

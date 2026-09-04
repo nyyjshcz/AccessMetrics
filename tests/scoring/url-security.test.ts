@@ -8,7 +8,11 @@ import {
 } from "@/lib/url-security";
 
 describe("target URL security", () => {
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
 
   it("rejects any private address returned by DNS policy", async () => {
     await expect(
@@ -154,6 +158,25 @@ describe("target URL security", () => {
     expect(calls).toBe(2);
   });
 
+  it("retries a TimeoutError from the actual proxy fetch seam", async () => {
+    vi.resetModules();
+    vi.stubEnv("DNS_RESOLVER_MODE", "proxy");
+    vi.stubEnv("EGRESS_PROXY_URL", "http://egress-proxy.test");
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new DOMException("timed out", "TimeoutError"))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ addresses: ["93.184.216.34"] }), { status: 200 }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { validateTargetUrl: validateProxyTargetUrl } = await import("@/lib/url-security");
+
+    await expect(validateProxyTargetUrl("https://example.test")).resolves.toMatchObject({
+      hostname: "example.test",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("backs off before retrying transient resolver failures", async () => {
     vi.useFakeTimers();
     let calls = 0;
@@ -208,5 +231,21 @@ describe("target URL security", () => {
       }),
     ).rejects.toMatchObject({ code: "DNS_LOOKUP_FAILED" });
     expect(calls).toBe(3);
+  });
+
+  it("exhausts exactly three attempts through the actual proxy fetch seam", async () => {
+    vi.resetModules();
+    vi.stubEnv("DNS_RESOLVER_MODE", "proxy");
+    vi.stubEnv("EGRESS_PROXY_URL", "http://egress-proxy.test");
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new DOMException("timed out", "TimeoutError"));
+    vi.stubGlobal("fetch", fetchMock);
+    const { validateTargetUrl: validateProxyTargetUrl } = await import("@/lib/url-security");
+
+    await expect(validateProxyTargetUrl("https://example.test")).rejects.toMatchObject({
+      code: "DNS_LOOKUP_FAILED",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

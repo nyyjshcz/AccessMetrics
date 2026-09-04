@@ -78,6 +78,18 @@ describe("controlled egress DNS resolver", () => {
     await expect(pending).rejects.toMatchObject({ code: "ETIMEOUT" });
   });
 
+  it("clears the DNS timeout when lookup fails synchronously", async () => {
+    vi.useFakeTimers();
+    const policy = new DestinationPolicy({
+      lookupAll: () => {
+        throw new Error("resolver failed synchronously");
+      },
+    });
+
+    await expect(policy.lookup("public.example")).rejects.toThrow("resolver failed synchronously");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("sanitizes ETIMEOUT from the proxy resolver", async () => {
     const policy = new DestinationPolicy({
       lookupAll: async () => {

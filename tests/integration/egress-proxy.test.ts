@@ -66,6 +66,76 @@ describe("controlled egress DNS resolver", () => {
     }
   });
 
+  it("combines addresses from concurrent IPv4 and IPv6 resolver calls", async () => {
+    const calls: string[] = [];
+    let release!: () => void;
+    const bothFamiliesStarted = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const policy = new DestinationPolicy({
+      resolverFactory: () => ({
+        resolve4: async (host: string) => {
+          calls.push(`4:${host}`);
+          if (calls.length === 2) release();
+          await bothFamiliesStarted;
+          return ["93.184.216.34"];
+        },
+        resolve6: async (host: string) => {
+          calls.push(`6:${host}`);
+          if (calls.length === 2) release();
+          await bothFamiliesStarted;
+          return ["2001:4860:4860::8888"];
+        },
+      }),
+    });
+    const server = createProxyServer({ policy });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/resolve?name=public.example`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        addresses: ["93.184.216.34", "2001:4860:4860::8888"],
+      });
+      expect(calls).toEqual(["4:public.example", "6:public.example"]);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error?: Error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("sanitizes temporary family failures when no address resolves", async () => {
+    const policy = new DestinationPolicy({
+      resolverFactory: () => ({
+        resolve4: async () => {
+          throw Object.assign(new Error("internal resolver address=10.0.0.2"), {
+            code: "ETIMEOUT",
+          });
+        },
+        resolve6: async () => {
+          throw Object.assign(new Error("internal resolver address=10.0.0.3"), {
+            code: "EAI_AGAIN",
+          });
+        },
+      }),
+    });
+    const server = createProxyServer({ policy });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/resolve?name=public.example`);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "resolver_unavailable" });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error?: Error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("bounds upstream DNS lookup at four seconds", async () => {
     vi.useFakeTimers();
     const policy = new DestinationPolicy({ lookupAll: async () => new Promise(() => {}) });

@@ -1,7 +1,13 @@
 declare module "*.mjs" {
   export type AddressEntry = { address: string } | string;
   export class DestinationPolicy {
-    constructor(options?: { lookupAll?: (hostname: string) => Promise<AddressEntry[]> });
+    constructor(options?: {
+      lookupAll?: (hostname: string) => Promise<AddressEntry[]>;
+      resolverFactory?: () => {
+        resolve4: (hostname: string) => Promise<string[]>;
+        resolve6: (hostname: string) => Promise<string[]>;
+      };
+    });
     lookup(hostname: string): Promise<{ host: string; addresses: string[] }>;
     resolve(
       hostname: string,

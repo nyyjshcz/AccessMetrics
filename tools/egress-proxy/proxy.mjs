@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 
 const ALLOWED_PORTS = new Set([80, 443]);
 const DNS_LOOKUP_TIMEOUT_MS = 4000;
+const DNS_RESOLVER_OPTIONS = { timeout: 1000, tries: 2 };
 const METADATA_HOSTS = new Set([
   "metadata.google.internal",
   "metadata.google.com",
@@ -112,10 +113,9 @@ export function isForbiddenAddress(address) {
 }
 
 export class DestinationPolicy {
-  constructor({
-    lookupAll = (hostname) => dns.lookup(hostname, { all: true, verbatim: true }),
-  } = {}) {
+  constructor({ lookupAll, resolverFactory = () => new dns.Resolver(DNS_RESOLVER_OPTIONS) } = {}) {
     this.lookupAll = lookupAll;
+    this.resolverFactory = resolverFactory;
   }
 
   async lookup(hostname) {
@@ -123,7 +123,10 @@ export class DestinationPolicy {
     if (METADATA_HOSTS.has(host)) throw new Error("metadata destination not allowed");
     const entries = net.isIP(host)
       ? [{ address: host }]
-      : await lookupWithTimeout(this.lookupAll, host);
+      : await lookupWithTimeout(
+          this.lookupAll ?? ((hostname) => lookupWithResolver(this.resolverFactory, hostname)),
+          host,
+        );
     const addresses = entries
       .map((entry) => (typeof entry === "string" ? entry : entry.address))
       .filter((address) => typeof address === "string" && net.isIP(address) !== 0);
@@ -139,6 +142,25 @@ export class DestinationPolicy {
     // the original hostname is never passed to a downstream socket resolver.
     return { host: resolved.host, port: Number(port), address: resolved.addresses[0] };
   }
+}
+
+async function lookupWithResolver(resolverFactory, hostname) {
+  const resolver = resolverFactory();
+  const results = await Promise.allSettled([
+    Promise.resolve().then(() => resolver.resolve4(hostname)),
+    Promise.resolve().then(() => resolver.resolve6(hostname)),
+  ]);
+  const addresses = results.flatMap((result) =>
+    result.status === "fulfilled" ? result.value.map((address) => ({ address })) : [],
+  );
+  if (addresses.length) return addresses;
+  const errors = results
+    .filter((result) => result.status === "rejected")
+    .map((result) => result.reason);
+  if (errors.length) {
+    throw errors.find((error) => isTemporaryResolverError(error)) ?? errors[0];
+  }
+  return addresses;
 }
 
 function authority(value) {
@@ -176,9 +198,7 @@ function audit(event, details) {
 }
 
 function isTemporaryResolverError(error) {
-  return (
-    ["EAI_AGAIN", "ETIMEOUT"].includes(error?.code) || error?.name === "TimeoutError"
-  );
+  return ["EAI_AGAIN", "ETIMEOUT"].includes(error?.code) || error?.name === "TimeoutError";
 }
 
 function lookupWithTimeout(lookupAll, hostname) {

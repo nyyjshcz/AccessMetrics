@@ -117,6 +117,7 @@ export function parseProxyResolution(payload: ProxyResolution) {
 const proxyLookupAll = async (hostname: string) => {
   if (!config.EGRESS_PROXY_URL) throw new Error("EGRESS_PROXY_URL is not configured");
   const endpoint = new URL("/resolve", config.EGRESS_PROXY_URL);
+  const startedAt = Date.now();
   endpoint.searchParams.set("name", hostname);
   try {
     const response = await fetch(endpoint, {
@@ -143,6 +144,7 @@ const proxyLookupAll = async (hostname: string) => {
       console.warn(JSON.stringify({
         event: "resolver_timeout",
         resolver: "egress_proxy",
+        elapsedMs: Math.max(0, Date.now() - startedAt),
         timeoutMs: WORKER_RESOLVER_TIMEOUT_MS,
       }));
       const timeoutError = new Error("proxy resolver timed out");

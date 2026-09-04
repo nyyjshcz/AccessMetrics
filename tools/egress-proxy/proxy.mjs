@@ -176,7 +176,9 @@ function audit(event, details) {
 }
 
 function isTemporaryResolverError(error) {
-  return ["EAI_AGAIN", "ETIMEOUT"].includes(error?.code);
+  return (
+    ["EAI_AGAIN", "ETIMEOUT"].includes(error?.code) || error?.name === "TimeoutError"
+  );
 }
 
 function lookupWithTimeout(lookupAll, hostname) {
@@ -199,10 +201,18 @@ export function createProxyServer({ policy = new DestinationPolicy() } = {}) {
         const hostname = requestUrl.searchParams.get("name");
         if (!hostname) throw new Error("resolver name is required");
         let resolved;
+        const startedAt = Date.now();
         try {
           resolved = await policy.lookup(hostname);
         } catch (error) {
           if (isTemporaryResolverError(error)) {
+            if (error?.code === "ETIMEOUT" || error?.name === "TimeoutError") {
+              audit("resolver_timeout", {
+                resolver: "egress_proxy",
+                elapsedMs: Math.max(0, Date.now() - startedAt),
+                timeoutMs: DNS_LOOKUP_TIMEOUT_MS,
+              });
+            }
             response.writeHead(503, {
               "content-type": "application/json",
               "cache-control": "no-store",

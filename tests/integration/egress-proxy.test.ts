@@ -112,4 +112,36 @@ describe("controlled egress DNS resolver", () => {
       );
     }
   });
+
+  it("sanitizes a standard TimeoutError and logs only fixed timeout fields", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const policy = new DestinationPolicy({
+      lookupAll: async () => {
+        throw new DOMException("resolver target=secret.example", "TimeoutError");
+      },
+    });
+    const server = createProxyServer({ policy });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/resolve?name=secret.example`);
+      expect(response.status).toBe(503);
+      expect(await response.text()).toBe('{"error":"resolver_unavailable"}');
+      expect(log).toHaveBeenCalledTimes(1);
+      const entry = JSON.parse(String(log.mock.calls[0]?.[0]));
+      expect(entry).toEqual({
+        event: "resolver_timeout",
+        resolver: "egress_proxy",
+        elapsedMs: expect.any(Number),
+        timeoutMs: 4000,
+      });
+      expect(entry).not.toHaveProperty("hostname");
+      expect(entry).not.toHaveProperty("error");
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error?: Error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
 });

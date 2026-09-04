@@ -177,6 +177,48 @@ describe("target URL security", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("logs only fixed timeout fields at the actual proxy fetch seam", async () => {
+    vi.resetModules();
+    vi.stubEnv("DNS_RESOLVER_MODE", "proxy");
+    vi.stubEnv("EGRESS_PROXY_URL", "http://egress-proxy.test");
+    const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(
+      new DOMException("target=secret.example", "TimeoutError"),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { validateTargetUrl: validateProxyTargetUrl } = await import("@/lib/url-security");
+
+    await expect(validateProxyTargetUrl("https://secret.example/path")).rejects.toMatchObject({
+      code: "DNS_LOOKUP_FAILED",
+    });
+    expect(warn).toHaveBeenCalledTimes(3);
+    for (const [message] of warn.mock.calls) {
+      expect(JSON.parse(String(message))).toEqual({
+        event: "resolver_timeout",
+        resolver: "egress_proxy",
+        elapsedMs: expect.any(Number),
+        timeoutMs: 5000,
+      });
+    }
+    expect(String(warn.mock.calls[0]?.[0])).not.toContain("secret.example");
+  });
+
+  it("does not retry a permanent error from the actual proxy fetch seam", async () => {
+    vi.resetModules();
+    vi.stubEnv("DNS_RESOLVER_MODE", "proxy");
+    vi.stubEnv("EGRESS_PROXY_URL", "http://egress-proxy.test");
+    const fetchMock = vi.fn<typeof fetch>().mockRejectedValue(
+      new Error("proxy target=secret.example failed"),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { validateTargetUrl: validateProxyTargetUrl } = await import("@/lib/url-security");
+
+    await expect(validateProxyTargetUrl("https://secret.example/path")).rejects.toMatchObject({
+      code: "DNS_LOOKUP_FAILED",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("backs off before retrying transient resolver failures", async () => {
     vi.useFakeTimers();
     let calls = 0;

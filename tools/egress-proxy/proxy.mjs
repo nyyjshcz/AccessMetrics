@@ -121,12 +121,22 @@ export class DestinationPolicy {
   async lookup(hostname) {
     const host = normalizeHost(hostname);
     if (METADATA_HOSTS.has(host)) throw new Error("metadata destination not allowed");
-    const entries = net.isIP(host)
-      ? [{ address: host }]
-      : await lookupWithTimeout(
-          this.lookupAll ?? ((hostname) => lookupWithResolver(this.resolverFactory, hostname)),
-          host,
-        );
+    let entries;
+    if (net.isIP(host)) {
+      entries = [{ address: host }];
+    } else if (this.lookupAll) {
+      entries = await lookupWithTimeout(this.lookupAll, host);
+    } else {
+      let resolver;
+      entries = await lookupWithTimeout(
+        (hostname) =>
+          lookupWithResolver(this.resolverFactory, hostname, (createdResolver) => {
+            resolver = createdResolver;
+          }),
+        host,
+        () => resolver?.cancel(),
+      );
+    }
     const addresses = entries
       .map((entry) => (typeof entry === "string" ? entry : entry.address))
       .filter((address) => typeof address === "string" && net.isIP(address) !== 0);
@@ -144,8 +154,9 @@ export class DestinationPolicy {
   }
 }
 
-async function lookupWithResolver(resolverFactory, hostname) {
+async function lookupWithResolver(resolverFactory, hostname, onResolver) {
   const resolver = resolverFactory();
+  onResolver(resolver);
   const results = await Promise.allSettled([
     Promise.resolve().then(() => resolver.resolve4(hostname)),
     Promise.resolve().then(() => resolver.resolve6(hostname)),
@@ -201,13 +212,13 @@ function isTemporaryResolverError(error) {
   return ["EAI_AGAIN", "ETIMEOUT"].includes(error?.code) || error?.name === "TimeoutError";
 }
 
-function lookupWithTimeout(lookupAll, hostname) {
+function lookupWithTimeout(lookupAll, hostname, onTimeout) {
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(
-      () => reject(Object.assign(new Error("resolver lookup timed out"), { code: "ETIMEOUT" })),
-      DNS_LOOKUP_TIMEOUT_MS,
-    );
+    timer = setTimeout(() => {
+      onTimeout?.();
+      reject(Object.assign(new Error("resolver lookup timed out"), { code: "ETIMEOUT" }));
+    }, DNS_LOOKUP_TIMEOUT_MS);
   });
   const lookup = Promise.resolve().then(() => lookupAll(hostname));
   return Promise.race([lookup, timeout]).finally(() => clearTimeout(timer));

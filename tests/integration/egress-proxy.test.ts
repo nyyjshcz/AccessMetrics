@@ -136,6 +136,56 @@ describe("controlled egress DNS resolver", () => {
     }
   });
 
+  it("keeps a public IPv4 result when the IPv6 resolver rejects", async () => {
+    const policy = new DestinationPolicy({
+      resolverFactory: () => ({
+        resolve4: async () => ["93.184.216.34"],
+        resolve6: async () => {
+          throw Object.assign(new Error("IPv6 unavailable"), { code: "EAI_AGAIN" });
+        },
+      }),
+    });
+
+    await expect(policy.lookup("public.example")).resolves.toEqual({
+      host: "public.example",
+      addresses: ["93.184.216.34"],
+    });
+  });
+
+  it("keeps a public IPv4 result when the IPv6 resolver is empty", async () => {
+    const policy = new DestinationPolicy({
+      resolverFactory: () => ({
+        resolve4: async () => ["93.184.216.34"],
+        resolve6: async () => [],
+      }),
+    });
+
+    await expect(policy.lookup("public.example")).resolves.toEqual({
+      host: "public.example",
+      addresses: ["93.184.216.34"],
+    });
+  });
+
+  it("cancels the resolver when the policy DNS timeout wins", async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    const policy = new DestinationPolicy({
+      resolverFactory: () => ({
+        resolve4: async () => new Promise<string[]>(() => {}),
+        resolve6: async () => new Promise<string[]>(() => {}),
+        cancel,
+      }),
+    });
+    const pending = policy.lookup("public.example");
+    const rejection = expect(pending).rejects.toMatchObject({ code: "ETIMEOUT" });
+
+    await vi.advanceTimersByTimeAsync(3_999);
+    expect(cancel).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await rejection;
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   it("bounds upstream DNS lookup at four seconds", async () => {
     vi.useFakeTimers();
     const policy = new DestinationPolicy({ lookupAll: async () => new Promise(() => {}) });

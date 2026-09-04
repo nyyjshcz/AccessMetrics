@@ -6,6 +6,7 @@ declare module "*.mjs" {
       resolverFactory?: () => {
         resolve4: (hostname: string) => Promise<string[]>;
         resolve6: (hostname: string) => Promise<string[]>;
+        cancel?: () => void;
       };
     });
     lookup(hostname: string): Promise<{ host: string; addresses: string[] }>;

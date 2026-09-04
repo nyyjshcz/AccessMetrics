@@ -141,6 +141,19 @@ describe("target URL security", () => {
     expect(calls).toBe(2);
   });
 
+  it("recovers after one proxy resolver timeout", async () => {
+    let calls = 0;
+    const url = await validateTargetUrl("https://example.test", {
+      lookupAll: async () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new DOMException("timed out", "TimeoutError"));
+        return ["93.184.216.34"];
+      },
+    });
+    expect(url.hostname).toBe("example.test");
+    expect(calls).toBe(2);
+  });
+
   it("backs off before retrying transient resolver failures", async () => {
     vi.useFakeTimers();
     let calls = 0;
@@ -182,5 +195,18 @@ describe("target URL security", () => {
       }),
     ).rejects.toMatchObject({ code: "DNS_LOOKUP_FAILED" });
     expect(transientCalls).toBe(3);
+  });
+
+  it("exhausts exactly three attempts for repeated proxy resolver timeouts", async () => {
+    let calls = 0;
+    await expect(
+      validateTargetUrl("https://example.test", {
+        lookupAll: async () => {
+          calls += 1;
+          throw Object.assign(new DOMException("timed out", "TimeoutError"));
+        },
+      }),
+    ).rejects.toMatchObject({ code: "DNS_LOOKUP_FAILED" });
+    expect(calls).toBe(3);
   });
 });

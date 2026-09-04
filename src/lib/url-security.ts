@@ -20,14 +20,16 @@ const TRANSIENT_RESOLVER_CODES = new Set([
   "ETIMEOUT",
   "TEMPORARY_RESOLVER_UNAVAILABLE",
 ]);
+const WORKER_RESOLVER_TIMEOUT_MS = 5000;
 
 function isTransientResolverError(error: unknown): boolean {
   return (
     typeof error === "object" &&
     error !== null &&
-    "code" in error &&
-    typeof error.code === "string" &&
-    TRANSIENT_RESOLVER_CODES.has(error.code)
+    (("code" in error &&
+      typeof error.code === "string" &&
+      TRANSIENT_RESOLVER_CODES.has(error.code)) ||
+      ("name" in error && error.name === "TimeoutError"))
   );
 }
 
@@ -84,7 +86,7 @@ async function queryDoh(hostname: string, recordType: 1 | 28) {
   url.searchParams.set("type", recordType === 1 ? "A" : "AAAA");
   const response = await fetch(url, {
     headers: { accept: "application/dns-json" },
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(WORKER_RESOLVER_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`DoH request failed: ${response.status}`);
   const payload = (await response.json()) as DohResponse;
@@ -116,20 +118,40 @@ const proxyLookupAll = async (hostname: string) => {
   if (!config.EGRESS_PROXY_URL) throw new Error("EGRESS_PROXY_URL is not configured");
   const endpoint = new URL("/resolve", config.EGRESS_PROXY_URL);
   endpoint.searchParams.set("name", hostname);
-  const response = await fetch(endpoint, {
-    redirect: "error",
-    signal: AbortSignal.timeout(5000),
-  });
-  if (response.status === 503) {
-    const error = new Error("proxy resolver temporarily unavailable");
-    error.name = "TemporaryResolverError";
-    Object.assign(error, { code: "TEMPORARY_RESOLVER_UNAVAILABLE" });
+  try {
+    const response = await fetch(endpoint, {
+      redirect: "error",
+      signal: AbortSignal.timeout(WORKER_RESOLVER_TIMEOUT_MS),
+    });
+    if (response.status === 503) {
+      const error = new Error("proxy resolver temporarily unavailable");
+      error.name = "TemporaryResolverError";
+      Object.assign(error, { code: "TEMPORARY_RESOLVER_UNAVAILABLE" });
+      throw error;
+    }
+    if (!response.ok) throw new Error(`proxy resolver failed: ${response.status}`);
+    const addresses = parseProxyResolution((await response.json()) as ProxyResolution);
+    if (addresses.length === 0) throw new Error("proxy resolver returned no address");
+    return addresses;
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "name" in error &&
+      error.name === "TimeoutError"
+    ) {
+      console.warn(JSON.stringify({
+        event: "resolver_timeout",
+        resolver: "egress_proxy",
+        timeoutMs: WORKER_RESOLVER_TIMEOUT_MS,
+      }));
+      const timeoutError = new Error("proxy resolver timed out");
+      timeoutError.name = "TemporaryResolverError";
+      Object.assign(timeoutError, { code: "TEMPORARY_RESOLVER_UNAVAILABLE" });
+      throw timeoutError;
+    }
     throw error;
   }
-  if (!response.ok) throw new Error(`proxy resolver failed: ${response.status}`);
-  const addresses = parseProxyResolution((await response.json()) as ProxyResolution);
-  if (addresses.length === 0) throw new Error("proxy resolver returned no address");
-  return addresses;
 };
 
 const systemLookupAll = async (host: string) =>

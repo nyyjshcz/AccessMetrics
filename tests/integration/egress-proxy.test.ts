@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createProxyServer, DestinationPolicy } from "../../tools/egress-proxy/proxy.mjs";
 
 describe("controlled egress DNS resolver", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("resolves through the proxy endpoint and rejects private results", async () => {
     const policy = new DestinationPolicy({
       lookupAll: async (host: string) =>
@@ -54,6 +56,44 @@ describe("controlled egress DNS resolver", () => {
       const response = await fetch(`http://127.0.0.1:${port}/resolve?name=public.example`);
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ error: "resolver_unavailable" });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error?: Error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("bounds upstream DNS lookup at four seconds", async () => {
+    vi.useFakeTimers();
+    const policy = new DestinationPolicy({ lookupAll: async () => new Promise(() => {}) });
+    const pending = policy.lookup("public.example");
+    await vi.advanceTimersByTimeAsync(3_999);
+    let settled = false;
+    void pending.catch(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).rejects.toMatchObject({ code: "ETIMEOUT" });
+  });
+
+  it("sanitizes ETIMEOUT from the proxy resolver", async () => {
+    const policy = new DestinationPolicy({
+      lookupAll: async () => {
+        throw Object.assign(new Error("internal resolver address=10.0.0.2"), {
+          code: "ETIMEOUT",
+        });
+      },
+    });
+    const server = createProxyServer({ policy });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/resolve?name=public.example`);
+      expect(response.status).toBe(503);
+      expect(await response.text()).toBe('{"error":"resolver_unavailable"}');
     } finally {
       await new Promise<void>((resolve, reject) =>
         server.close((error?: Error) => (error ? reject(error) : resolve())),

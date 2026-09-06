@@ -7,6 +7,8 @@ import { pathToFileURL } from "node:url";
 const ALLOWED_PORTS = new Set([80, 443]);
 const DNS_LOOKUP_TIMEOUT_MS = 4000;
 const DNS_RESOLVER_OPTIONS = { timeout: 1000, tries: 2 };
+const DNS_CACHE_MAX_ENTRIES = 512;
+const DNS_MAX_CACHE_TTL_MS = 60_000;
 const METADATA_HOSTS = new Set([
   "metadata.google.internal",
   "metadata.google.com",
@@ -24,6 +26,10 @@ function normalizeHost(value) {
     .toLowerCase();
   if (!host || host.includes("/") || host.includes("%")) throw new Error("invalid host");
   return host;
+}
+
+function cloneResolved(resolved) {
+  return { host: resolved.host, addresses: [...resolved.addresses] };
 }
 
 function ipv4Forbidden(address) {
@@ -116,12 +122,37 @@ export class DestinationPolicy {
   constructor({ lookupAll, resolverFactory = () => new dns.Resolver(DNS_RESOLVER_OPTIONS) } = {}) {
     this.lookupAll = lookupAll;
     this.resolverFactory = resolverFactory;
+    this.cache = new Map();
+    this.inFlight = new Map();
   }
 
   async lookup(hostname) {
     const host = normalizeHost(hostname);
     if (METADATA_HOSTS.has(host)) throw new Error("metadata destination not allowed");
+    if (net.isIP(host)) return this.resolveUncached(host);
+
+    const cached = this.cache.get(host);
+    if (cached) {
+      if (cached.expiresAt > Date.now()) return cloneResolved(cached.value);
+      this.cache.delete(host);
+    }
+
+    const existing = this.inFlight.get(host);
+    if (existing) return existing.then(cloneResolved);
+
+    const pending = this.resolveUncached(host);
+    this.inFlight.set(host, pending);
+    try {
+      return cloneResolved(await pending);
+    } finally {
+      if (this.inFlight.get(host) === pending) this.inFlight.delete(host);
+    }
+  }
+
+  async resolveUncached(host) {
+    const lookupStartedAt = Date.now();
     let entries;
+    const cacheable = !this.lookupAll;
     if (net.isIP(host)) {
       entries = [{ address: host }];
     } else if (this.lookupAll) {
@@ -137,12 +168,24 @@ export class DestinationPolicy {
         () => resolver?.cancel(),
       );
     }
+
     const addresses = entries
       .map((entry) => (typeof entry === "string" ? entry : entry.address))
       .filter((address) => typeof address === "string" && net.isIP(address) !== 0);
     if (!addresses.length || addresses.some((address) => isForbiddenAddress(address)))
       throw new Error("private destination not allowed");
-    return { host, addresses: [...new Set(addresses)] };
+
+    const resolved = { host, addresses: [...new Set(addresses)] };
+    if (cacheable && entries.length && entries.every(hasValidAddressTtl)) {
+      const ttlSeconds = Math.min(...entries.map((entry) => entry.ttl));
+      const expiresAt = lookupStartedAt + Math.min(ttlSeconds * 1000, DNS_MAX_CACHE_TTL_MS);
+      if (expiresAt > Date.now()) {
+        this.cache.set(host, { value: cloneResolved(resolved), expiresAt });
+        while (this.cache.size > DNS_CACHE_MAX_ENTRIES)
+          this.cache.delete(this.cache.keys().next().value);
+      }
+    }
+    return resolved;
   }
 
   async resolve(hostname, port) {
@@ -154,15 +197,27 @@ export class DestinationPolicy {
   }
 }
 
+function hasValidAddressTtl(entry) {
+  return (
+    entry &&
+    typeof entry === "object" &&
+    typeof entry.address === "string" &&
+    net.isIP(entry.address) !== 0 &&
+    typeof entry.ttl === "number" &&
+    Number.isFinite(entry.ttl) &&
+    entry.ttl > 0
+  );
+}
+
 async function lookupWithResolver(resolverFactory, hostname, onResolver) {
   const resolver = resolverFactory();
   onResolver(resolver);
   const results = await Promise.allSettled([
-    Promise.resolve().then(() => resolver.resolve4(hostname)),
-    Promise.resolve().then(() => resolver.resolve6(hostname)),
+    Promise.resolve().then(() => resolver.resolve4(hostname, { ttl: true })),
+    Promise.resolve().then(() => resolver.resolve6(hostname, { ttl: true })),
   ]);
   const addresses = results.flatMap((result) =>
-    result.status === "fulfilled" ? result.value.map((address) => ({ address })) : [],
+    result.status === "fulfilled" && Array.isArray(result.value) ? result.value : [],
   );
   if (addresses.length) return addresses;
   const errors = results
@@ -222,6 +277,24 @@ function lookupWithTimeout(lookupAll, hostname, onTimeout) {
   });
   const lookup = Promise.resolve().then(() => lookupAll(hostname));
   return Promise.race([lookup, timeout]).finally(() => clearTimeout(timer));
+}
+
+// CONNECT/Upgrade sockets leave the HTTP server's normal response lifecycle.
+// Install handlers before awaiting DNS: the browser may disconnect at any time.
+function trackTunnel(clientSocket) {
+  let upstream;
+  const close = () => {
+    clientSocket.destroy();
+    upstream?.destroy();
+  };
+  clientSocket.on("error", close);
+  clientSocket.once("close", close);
+  return (socket) => {
+    upstream = socket;
+    upstream.on("error", close);
+    upstream.once("close", close);
+    if (clientSocket.destroyed) close();
+  };
 }
 
 export function createProxyServer({ policy = new DestinationPolicy() } = {}) {
@@ -296,9 +369,11 @@ export function createProxyServer({ policy = new DestinationPolicy() } = {}) {
   });
 
   server.on("connect", async (request, clientSocket, head) => {
+    const trackUpstream = trackTunnel(clientSocket);
     try {
       const { hostname, port } = authority(request.url);
       const resolved = await policy.resolve(hostname, port);
+      if (clientSocket.destroyed) return;
       audit("connect", {
         protocol: "connect",
         hostname: resolved.host,
@@ -310,24 +385,26 @@ export function createProxyServer({ policy = new DestinationPolicy() } = {}) {
         port,
         family: net.isIP(resolved.address),
       });
+      trackUpstream(upstream);
       upstream.once("connect", () => {
+        if (clientSocket.destroyed || upstream.destroyed) return;
         clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         if (head.length) upstream.write(head);
         upstream.pipe(clientSocket);
         clientSocket.pipe(upstream);
       });
-      upstream.on("error", () => clientSocket.destroy());
     } catch {
-      clientSocket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
-      clientSocket.destroy();
+      if (!clientSocket.destroyed) clientSocket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
     }
   });
 
   server.on("upgrade", async (request, clientSocket, head) => {
+    const trackUpstream = trackTunnel(clientSocket);
     try {
       const { target, port } = requestTarget(request.url);
       if (target.protocol !== "ws:") throw new Error("wss must use CONNECT");
       const resolved = await policy.resolve(target.hostname, port);
+      if (clientSocket.destroyed) return;
       audit("upgrade", {
         protocol: target.protocol,
         hostname: resolved.host,
@@ -339,7 +416,9 @@ export function createProxyServer({ policy = new DestinationPolicy() } = {}) {
         port,
         family: net.isIP(resolved.address),
       });
+      trackUpstream(upstream);
       upstream.once("connect", () => {
+        if (clientSocket.destroyed || upstream.destroyed) return;
         const headers = cleanHeaders(request.headers, target.host);
         const lines = [
           `${request.method} ${target.pathname}${target.search} HTTP/${request.httpVersion}`,
@@ -351,7 +430,6 @@ export function createProxyServer({ policy = new DestinationPolicy() } = {}) {
         upstream.pipe(clientSocket);
         clientSocket.pipe(upstream);
       });
-      upstream.on("error", () => clientSocket.destroy());
     } catch {
       clientSocket.destroy();
     }

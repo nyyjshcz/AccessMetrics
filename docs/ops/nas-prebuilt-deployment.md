@@ -60,6 +60,18 @@ sudo docker compose --env-file .env.nas -f compose.nas.yaml up -d --no-build --p
 
 确认新版本健康后再考虑删除不再需要的旧镜像；归档在本机保留到验收完成。清理时不要删除 `data`、`private-inputs`、`.secrets` 或 Caddy 命名卷。
 
+## 扫描故障修复的验收
+
+仅 `/resolve` 返回 200 不代表完整扫描可用。2026-09-06 的故障中，代理因未处理的客户端 `EPIPE` / `ECONNRESET` 崩溃并自动重启 7 次，Worker 将代理不可用表现为 `DNS_LOOKUP_FAILED`；重复 DNS 查询又增加了超时概率。
+
+- 排查时同时检查失败页面错误码、代理日志与 `docker inspect` 的 `RestartCount`，不要只延长 DNS 超时。
+- 隧道在 DNS 等待阶段和已连接阶段都必须处理两端 socket 的错误与关闭；单个断开的浏览器连接不能终止代理进程。
+- 代理合并同域名并发解析，只缓存校验通过的公网地址；缓存不超过 DNS TTL 和 60 秒，过期后重新解析，不使用过期或失败结果。
+- 只修改代理时，仅构建和重建 `egress-proxy`。本地运行代理 DNS 与 socket 生命周期回归测试；若本地 DNS 返回 Fake-IP，真实公网扫描必须在 NAS 实际出口验证。
+- 发布后运行一轮与故障任务相同选项的完整扫描，核对发现数、成功数、失败原因及代理重启次数。保留新的验证任务供查看，历史失败记录不改写。
+
+本次完整验证任务：`job_bd550ce3e975446e951a82515d320267`，目标 `https://www.cadtc.org.cn/`，与原任务相同的 15 页、同源、遵守 robots 选项；结果 15 页成功、0 页失败。回滚镜像为 `accesscheck-nas-egress:rollback-20260906-2200`。
+
 ## 禁止事项
 
 - 禁止 `docker compose up -d --build`、`docker compose build`。

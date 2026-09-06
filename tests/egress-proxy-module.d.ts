@@ -1,11 +1,18 @@
 declare module "*.mjs" {
-  export type AddressEntry = { address: string } | string;
+  export type AddressEntry = { address: string; ttl?: number } | string;
+  export type ResolverAddressEntry = { address: string; ttl?: number } | string;
   export class DestinationPolicy {
     constructor(options?: {
       lookupAll?: (hostname: string) => Promise<AddressEntry[]>;
       resolverFactory?: () => {
-        resolve4: (hostname: string) => Promise<string[]>;
-        resolve6: (hostname: string) => Promise<string[]>;
+        resolve4: (
+          hostname: string,
+          options?: { ttl?: boolean },
+        ) => Promise<ResolverAddressEntry[]>;
+        resolve6: (
+          hostname: string,
+          options?: { ttl?: boolean },
+        ) => Promise<ResolverAddressEntry[]>;
         cancel?: () => void;
       };
     });

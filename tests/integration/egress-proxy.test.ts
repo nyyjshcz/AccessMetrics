@@ -166,6 +166,201 @@ describe("controlled egress DNS resolver", () => {
     });
   });
 
+  it("shares concurrent normalized-host lookups", async () => {
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let resolverCalls = 0;
+    const policy = new DestinationPolicy({
+      resolverFactory: () => {
+        resolverCalls += 1;
+        return {
+          resolve4: async () => {
+            await started;
+            return ["93.184.216.34"];
+          },
+          resolve6: async () => {
+            await started;
+            return [];
+          },
+        };
+      },
+    });
+
+    const first = policy.lookup("Example.com.");
+    const second = policy.lookup("example.com");
+    await vi.waitFor(() => expect(resolverCalls).toBe(1));
+    release();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { host: "example.com", addresses: ["93.184.216.34"] },
+      { host: "example.com", addresses: ["93.184.216.34"] },
+    ]);
+  });
+
+  it("reuses a valid minimum TTL, clones results, and expires conservatively", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    let resolverCalls = 0;
+    const policy = new DestinationPolicy({
+      resolverFactory: () => {
+        resolverCalls += 1;
+        return {
+          resolve4: async () => [{ address: "93.184.216.34", ttl: 10 }],
+          resolve6: async () => [{ address: "2001:4860:4860::8888", ttl: 5 }],
+        } as any;
+      },
+    });
+
+    const first = await policy.lookup("public.example");
+    first.addresses.push("198.51.100.7");
+    await expect(policy.lookup("PUBLIC.EXAMPLE.")).resolves.toEqual({
+      host: "public.example",
+      addresses: ["93.184.216.34", "2001:4860:4860::8888"],
+    });
+    expect(resolverCalls).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(5_001);
+    await expect(policy.lookup("public.example")).resolves.toEqual({
+      host: "public.example",
+      addresses: ["93.184.216.34", "2001:4860:4860::8888"],
+    });
+    expect(resolverCalls).toBe(2);
+  });
+
+  it("passes TTL options to built-in family lookups and caps long TTLs", async () => {
+    vi.useFakeTimers();
+    const options: unknown[] = [];
+    let resolverCalls = 0;
+    const policy = new DestinationPolicy({
+      resolverFactory: () => {
+        resolverCalls += 1;
+        return {
+          resolve4: async (_host: string, lookupOptions?: unknown) => {
+            options.push(lookupOptions);
+            return [{ address: "93.184.216.34", ttl: 120 }];
+          },
+          resolve6: async (_host: string, lookupOptions?: unknown) => {
+            options.push(lookupOptions);
+            return [];
+          },
+        } as any;
+      },
+    });
+
+    await policy.lookup("long-lived.example");
+    await vi.advanceTimersByTimeAsync(60_001);
+    await policy.lookup("long-lived.example");
+
+    expect(options).toEqual([{ ttl: true }, { ttl: true }, { ttl: true }, { ttl: true }]);
+    expect(resolverCalls).toBe(2);
+  });
+
+  it("cleans up failed singleflight attempts so retries can resolve", async () => {
+    let resolverCalls = 0;
+    const policy = new DestinationPolicy({
+      resolverFactory: () => {
+        resolverCalls += 1;
+        const failed = resolverCalls === 1;
+        return {
+          resolve4: async () => {
+            if (failed) throw Object.assign(new Error("temporary"), { code: "EAI_AGAIN" });
+            return ["93.184.216.34"];
+          },
+          resolve6: async () => {
+            if (failed) throw Object.assign(new Error("temporary"), { code: "EAI_AGAIN" });
+            return [];
+          },
+        };
+      },
+    });
+
+    const first = policy.lookup("retry.example");
+    const shared = policy.lookup("RETRY.EXAMPLE.");
+    await expect(Promise.all([first, shared])).rejects.toMatchObject({ code: "EAI_AGAIN" });
+    expect(resolverCalls).toBe(1);
+    await expect(policy.lookup("retry.example")).resolves.toEqual({
+      host: "retry.example",
+      addresses: ["93.184.216.34"],
+    });
+    expect(resolverCalls).toBe(2);
+  });
+
+  it("does not cache injected, private, negative, or stale results", async () => {
+    vi.useFakeTimers();
+    let injectedCalls = 0;
+    const injectedPolicy = new DestinationPolicy({
+      lookupAll: async () => {
+        injectedCalls += 1;
+        return [{ address: "93.184.216.34" }];
+      },
+    });
+    await injectedPolicy.lookup("injected.example");
+    await injectedPolicy.lookup("injected.example");
+    expect(injectedCalls).toBe(2);
+
+    let resolverCalls = 0;
+    const attemptsByHost = new Map<string, number>();
+    const policy = new DestinationPolicy({
+      resolverFactory: () => {
+        resolverCalls += 1;
+        return {
+          resolve4: async (host: string) => {
+            const attempt = (attemptsByHost.get(host) ?? 0) + 1;
+            attemptsByHost.set(host, attempt);
+            if (host === "private.example" && attempt === 1)
+              return [{ address: "127.0.0.1", ttl: 60 }];
+            if (host === "negative.example" && attempt === 1) return [];
+            if (host === "stale.example" && attempt === 2)
+              return [{ address: "127.0.0.1", ttl: 60 }];
+            return [{ address: "93.184.216.34", ttl: host === "stale.example" ? 1 : 60 }];
+          },
+          resolve6: async () => [],
+        } as any;
+      },
+    });
+
+    await expect(policy.lookup("private.example")).rejects.toThrow("private destination not allowed");
+    await expect(policy.lookup("private.example")).resolves.toEqual({
+      host: "private.example",
+      addresses: ["93.184.216.34"],
+    });
+    await expect(policy.lookup("negative.example")).rejects.toThrow("private destination not allowed");
+    await expect(policy.lookup("negative.example")).resolves.toEqual({
+      host: "negative.example",
+      addresses: ["93.184.216.34"],
+    });
+    expect(resolverCalls).toBe(4);
+
+    await expect(policy.lookup("stale.example")).resolves.toEqual({
+      host: "stale.example",
+      addresses: ["93.184.216.34"],
+    });
+    await vi.advanceTimersByTimeAsync(1_001);
+    await expect(policy.lookup("stale.example")).rejects.toThrow("private destination not allowed");
+    expect(resolverCalls).toBe(6);
+  });
+
+  it("bounds the positive DNS cache at 512 entries", async () => {
+    let resolverCalls = 0;
+    const policy = new DestinationPolicy({
+      resolverFactory: () => {
+        resolverCalls += 1;
+        return {
+          resolve4: async () => [{ address: "93.184.216.34", ttl: 60 }],
+          resolve6: async () => [],
+        } as any;
+      },
+    });
+
+    for (let index = 0; index < 513; index += 1)
+      await policy.lookup(`entry-${index}.example`);
+    await policy.lookup("entry-0.example");
+
+    expect(resolverCalls).toBe(514);
+  });
+
   it("cancels the resolver when the policy DNS timeout wins", async () => {
     vi.useFakeTimers();
     const cancel = vi.fn();

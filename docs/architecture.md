@@ -21,12 +21,13 @@ AccessCheck 由一个 Next.js Web 应用、一个扫描 Worker、一个 AI Worke
 
 ## 访问与角色
 
-服务器配置三把不同的密钥：
+服务器配置三把不同的密钥，以及一个可选的共享招生访问码：
 
 | 配置 | 用途 |
 | --- | --- |
 | ADMIN_ACCESS_KEY | 管理员登录密钥。管理员可创建扫描、配置 AI、复核、发布和删除未发布终态任务。 |
 | VISITOR_ACCESS_KEY | 报告访客登录密钥。访客只能读取已发布报告。 |
+| ADMISSIONS_ACCESS_KEY / ADMISSIONS_ACCESS_KEY_FILE | 可选的四字符招生访问码（`0-9A-HJKMNP-TV-Z`）；为空时禁用，成功登录等同管理员，每次会话最长七天。Docker 只把文件形式挂载给 Web。 |
 | SESSION_SECRET | 服务器内部密钥，用于签名 HttpOnly 登录 Cookie，也用于保护保存的 AI Provider Key。不会显示给用户。 |
 
 每个 API 都要求已签名会话；管理 API 要求管理员角色。浏览器带有 Origin 的写请求还必须来自当前应用 Origin。已发布运行保持只读。
@@ -82,6 +83,6 @@ scan job → scan run → pages → rule results → result nodes
 
 ## 安全和部署边界
 
-生产扫描 Worker 必须通过显式的 EGRESS_PROXY_URL 出站；Web 为 PDF 渲染可使用独立的浏览器出站路径。生产部署使用 compose.prod.yaml、Caddy、三把 Docker secret 和独立数据目录，完整步骤见 [部署说明](./ops/deployment.md)。
+生产扫描 Worker 必须通过显式的 EGRESS_PROXY_URL 出站；Web 为 PDF 渲染可使用独立的浏览器出站路径。生产部署使用 compose.prod.yaml、Caddy、四个 Docker secret（其中 admissions secret 可为空且只挂载给 Web）和独立数据目录，完整步骤见 [部署说明](./ops/deployment.md)。
 
 系统的目标是小规模、可追溯的评估，不是开放式爬虫、通用 AI 平台或大型多租户 SaaS。

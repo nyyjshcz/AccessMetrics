@@ -17,6 +17,7 @@ const skipDocker = args.includes("--skip-docker");
 const requireDb = args.includes("--require-db");
 const errors: string[] = [];
 const warnings: string[] = [];
+const ADMISSIONS_ACCESS_KEY_PATTERN = /^[0-9A-HJKMNP-TV-Z]{4}$/;
 
 function parseEnvFile(file: string) {
   if (!fs.existsSync(file)) {
@@ -73,6 +74,16 @@ function checkSecret(secretsDir: string, name: string, minimumLength: number) {
   }
 }
 
+function checkAdmissionsAccessKey(secretsDir: string) {
+  const accessKey = checkSecret(secretsDir, "admissions_access_key", 0);
+  if (accessKey && !ADMISSIONS_ACCESS_KEY_PATTERN.test(accessKey.toUpperCase())) {
+    const file = path.resolve(secretsDir, "admissions_access_key");
+    errors.push(
+      `${path.relative(process.cwd(), file)} must be empty or contain a valid four-character code using 0-9A-HJKMNP-TV-Z`,
+    );
+  }
+}
+
 function checkDirectory(relativePath: string, expectedMode: number, label: string) {
   const directory = path.resolve(process.cwd(), relativePath);
   try {
@@ -122,6 +133,7 @@ checkDirectory(".secrets", 0o700, ".secrets");
 const sessionSecret = checkSecret(".secrets", "session_secret", 32);
 const adminKey = checkSecret(".secrets", "admin_access_key", 16);
 const visitorKey = checkSecret(".secrets", "visitor_access_key", 16);
+checkAdmissionsAccessKey(".secrets");
 if (adminKey && visitorKey && adminKey === visitorKey)
   errors.push("administrator and visitor access keys must differ");
 if (sessionSecret && (sessionSecret === adminKey || sessionSecret === visitorKey))

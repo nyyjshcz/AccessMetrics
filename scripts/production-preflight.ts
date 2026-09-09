@@ -12,6 +12,7 @@ const skipDocker = args.includes("--skip-docker");
 const errors: string[] = [];
 const warnings: string[] = [];
 let dockerChecked = false;
+const ADMISSIONS_ACCESS_KEY_PATTERN = /^[0-9A-HJKMNP-TV-Z]{4}$/;
 
 function parseEnvFile(file: string) {
   if (!fs.existsSync(file)) {
@@ -50,6 +51,14 @@ function checkSecret(name: string, minimumLength: number) {
     errors.push(`missing readable secret file: ${file}`);
     return "";
   }
+}
+
+function checkAdmissionsAccessKey() {
+  const accessKey = checkSecret("admissions_access_key", 0);
+  if (accessKey && !ADMISSIONS_ACCESS_KEY_PATTERN.test(accessKey.toUpperCase()))
+    errors.push(
+      ".secrets/admissions_access_key must be empty or contain a valid four-character code using 0-9A-HJKMNP-TV-Z",
+    );
 }
 
 function checkDirectory(relativePath: string, expectedMode: number, groupWritable = false) {
@@ -94,6 +103,7 @@ if (!/^.+@sha256:[a-f0-9]{64}$/i.test(env.EGRESS_PROXY_IMAGE ?? ""))
 const sessionSecret = checkSecret("session_secret", 32);
 const adminKey = checkSecret("admin_access_key", 16);
 const visitorKey = checkSecret("visitor_access_key", 16);
+checkAdmissionsAccessKey();
 if (adminKey && visitorKey && adminKey === visitorKey)
   errors.push("administrator and visitor access keys must differ");
 if (sessionSecret && (sessionSecret === adminKey || sessionSecret === visitorKey))

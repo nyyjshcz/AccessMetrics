@@ -2,6 +2,12 @@ import path from "node:path";
 import fs from "node:fs";
 import { z } from "zod";
 
+export const ADMISSIONS_ACCESS_KEY_PATTERN = /^[0-9A-HJKMNP-TV-Z]{4}$/;
+
+export function normalizeAdmissionsAccessKey(value: string) {
+  return value.trim().toUpperCase();
+}
+
 const envSchema = z.object({
   APP_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.string().default("./data/accesscheck.db"),
@@ -14,6 +20,11 @@ const envSchema = z.object({
     (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
     z.string().min(16).optional(),
   ),
+  ADMISSIONS_ACCESS_KEY: z.preprocess((value) => {
+    if (typeof value !== "string") return value;
+    const normalized = normalizeAdmissionsAccessKey(value);
+    return normalized === "" ? undefined : normalized;
+  }, z.string().regex(ADMISSIONS_ACCESS_KEY_PATTERN, "ADMISSIONS_ACCESS_KEY must be a four-symbol code").optional()),
   PRIVATE_EVIDENCE_ROOT: z.string().default("./private-inputs"),
   PUBLIC_EXPORT_ROOT: z.string().default("./data/exports"),
   APP_BASE_URL: z.string().url().default("http://localhost:3000"),
@@ -33,7 +44,12 @@ const envSchema = z.object({
 
 export const config = (() => {
   const fileBacked = { ...process.env } as Record<string, string | undefined>;
-  for (const key of ["SESSION_SECRET", "ADMIN_ACCESS_KEY", "VISITOR_ACCESS_KEY"]) {
+  for (const key of [
+    "SESSION_SECRET",
+    "ADMIN_ACCESS_KEY",
+    "VISITOR_ACCESS_KEY",
+    "ADMISSIONS_ACCESS_KEY",
+  ]) {
     const file = fileBacked[`${key}_FILE`];
     if (file && !fileBacked[key]) fileBacked[key] = fs.readFileSync(file, "utf8").trim();
   }

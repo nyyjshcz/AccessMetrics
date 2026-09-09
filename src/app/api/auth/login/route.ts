@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import {
   ACCESS_SESSION_COOKIE,
-  authenticateAccessKey,
+  authenticateAccessCredential,
   createAccessSession,
+  isAdmissionsAccessKeyCandidate,
   loginRedirectPath,
   sessionCookieOptions,
 } from "@/lib/access-control";
@@ -25,12 +26,31 @@ export async function POST(request: Request) {
       throw new AppError("ACCESS_LOGIN_INVALID", "登录请求包含未知字段", 400);
     if (typeof body.accessKey !== "string" || !body.accessKey)
       throw new AppError("ACCESS_LOGIN_INVALID", "请输入访问密钥", 422);
-    const role = authenticateAccessKey(body.accessKey);
+    if (isAdmissionsAccessKeyCandidate(body.accessKey)) {
+      const admissionsRate = consumeRateLimit(
+        requestClientKey(request, "admissions-login"),
+        5,
+        60 * 60_000,
+      );
+      if (!admissionsRate.allowed)
+        throw new AppError(
+          "ACCESS_LOGIN_RATE_LIMITED",
+          "尝试次数过多，请稍后再试",
+          429,
+          admissionsRate,
+        );
+    }
+    const credential = authenticateAccessCredential(body.accessKey);
+    const { role } = credential;
     const response = NextResponse.json({
       role,
       redirectTo: loginRedirectPath(body.next, role),
     });
-    response.cookies.set(ACCESS_SESSION_COOKIE, createAccessSession(role), sessionCookieOptions());
+    response.cookies.set(
+      ACCESS_SESSION_COOKIE,
+      createAccessSession(credential),
+      sessionCookieOptions(),
+    );
     return response;
   } catch (error) {
     return NextResponse.json(errorEnvelope(error, request), {

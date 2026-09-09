@@ -19,6 +19,15 @@ vi.mock("playwright", () => ({
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "accesscheck-access-control-"));
 const adminAccessKey = "access-control-admin-key-0123456789";
 const visitorAccessKey = "access-control-visitor-key-0123456789";
+const admissionsAccessKey = "A2C4";
+const rotatedAdmissionsAccessKey = "B3D5";
+const admissionsAccessKeyFile = path.join(testRoot, "admissions-access-key");
+const legacyAdminSession =
+  "v1.admin.4102444800.legacy_admin_nonce_000.z__EtIuDMEsV21BxhV1QJlTVuDuZxS8Y5bcTxZlWbGE";
+const originalAdmissionsAccessKey = process.env.ADMISSIONS_ACCESS_KEY;
+const originalAdmissionsAccessKeyFile = process.env.ADMISSIONS_ACCESS_KEY_FILE;
+
+fs.writeFileSync(admissionsAccessKeyFile, `${admissionsAccessKey.toLowerCase()}\n`);
 
 process.env.APP_ENV = "test";
 process.env.APP_BASE_URL = "http://localhost:3000";
@@ -28,6 +37,8 @@ process.env.PUBLIC_EXPORT_ROOT = path.join(testRoot, "public");
 process.env.SESSION_SECRET = "access-control-test-session-secret-0123456789";
 process.env.ADMIN_ACCESS_KEY = adminAccessKey;
 process.env.VISITOR_ACCESS_KEY = visitorAccessKey;
+delete process.env.ADMISSIONS_ACCESS_KEY;
+process.env.ADMISSIONS_ACCESS_KEY_FILE = admissionsAccessKeyFile;
 
 const dbModule = await import("@/lib/db");
 const repositories = await import("@/lib/repositories");
@@ -39,11 +50,15 @@ const reportHtmlRoute = await import("@/app/api/reports/[runId]/html/route");
 const reportPdfRoute = await import("@/app/api/reports/[runId]/pdf/route");
 const publishRoute = await import("@/app/api/runs/[runId]/publish/route");
 
-async function login(accessKey: string, next?: string) {
+async function login(accessKey: string, next?: string, client?: string) {
   const response = await loginRoute.POST(
     new Request("http://localhost:3000/api/auth/login", {
       method: "POST",
-      headers: { Origin: "http://localhost:3000", "content-type": "application/json" },
+      headers: {
+        Origin: "http://localhost:3000",
+        "content-type": "application/json",
+        ...(client ? { "x-accesscheck-trusted-proxy": "caddy", "x-forwarded-for": client } : {}),
+      },
       body: JSON.stringify({ accessKey, next }),
     }),
   );
@@ -55,6 +70,26 @@ async function login(accessKey: string, next?: string) {
 
 function requestWithCookie(url: string, cookie: string) {
   return new Request(url, { headers: { cookie } });
+}
+
+function sessionValue(cookie: string) {
+  return cookie.slice("accesscheck_session=".length);
+}
+
+function restoreAdmissionsFixture() {
+  fs.writeFileSync(admissionsAccessKeyFile, `${admissionsAccessKey.toLowerCase()}\n`);
+  delete process.env.ADMISSIONS_ACCESS_KEY;
+  process.env.ADMISSIONS_ACCESS_KEY_FILE = admissionsAccessKeyFile;
+}
+
+async function importFreshConfig() {
+  vi.resetModules();
+  return import("@/lib/config");
+}
+
+async function importFreshAccessControl() {
+  vi.resetModules();
+  return import("@/lib/access-control");
 }
 
 describe("administrator and visitor access keys", () => {
@@ -131,8 +166,6 @@ describe("administrator and visitor access keys", () => {
     incompleteRunId = createFixtureRun("running");
   });
 
-  afterAll(() => dbModule.closeDb());
-
   it("issues role-scoped sessions and enforces report-only visitor access", async () => {
     const admin = await login(adminAccessKey, "/scans");
     expect(admin.response.status).toBe(200);
@@ -202,13 +235,19 @@ describe("administrator and visitor access keys", () => {
       [reportPdfRoute, "pdf"],
     ] as const) {
       const adminResponse = await route.GET(
-        requestWithCookie(`http://localhost:3000/api/reports/${unpublishedRunId}/${suffix}`, admin.cookie),
+        requestWithCookie(
+          `http://localhost:3000/api/reports/${unpublishedRunId}/${suffix}`,
+          admin.cookie,
+        ),
         params,
       );
       expect(adminResponse.status).toBe(200);
 
       const visitorResponse = await route.GET(
-        requestWithCookie(`http://localhost:3000/api/reports/${unpublishedRunId}/${suffix}`, visitor.cookie),
+        requestWithCookie(
+          `http://localhost:3000/api/reports/${unpublishedRunId}/${suffix}`,
+          visitor.cookie,
+        ),
         params,
       );
       expect(visitorResponse.status).toBe(404);
@@ -225,7 +264,10 @@ describe("administrator and visitor access keys", () => {
       [reportPdfRoute, "pdf"],
     ] as const) {
       const response = await route.GET(
-        requestWithCookie(`http://localhost:3000/api/reports/${incompleteRunId}/${suffix}`, admin.cookie),
+        requestWithCookie(
+          `http://localhost:3000/api/reports/${incompleteRunId}/${suffix}`,
+          admin.cookie,
+        ),
         params,
       );
       expect(response.status).toBe(404);
@@ -341,5 +383,127 @@ describe("administrator and visitor access keys", () => {
       params,
     );
     expect(visitorReport.status).toBe(200);
+  });
+
+  describe("admissions credential source", () => {
+    it("rejects malformed admissions secrets loaded from a file source", async () => {
+      fs.writeFileSync(admissionsAccessKeyFile, "i0o1\n");
+      try {
+        await expect(importFreshConfig()).rejects.toThrow();
+      } finally {
+        restoreAdmissionsFixture();
+        vi.resetModules();
+      }
+    });
+
+    it("accepts a case-insensitive file-backed admissions code as an administrator", async () => {
+      const admissions = await login(admissionsAccessKey.toLowerCase(), "/scans", "198.51.100.20");
+      expect(admissions.response.status).toBe(200);
+      expect(await admissions.response.json()).toMatchObject({
+        role: "admin",
+        redirectTo: "/scans",
+      });
+      expect(admissions.cookie).toContain("accesscheck_session=");
+
+      const adminApi = await scansRoute.GET(
+        requestWithCookie("http://localhost:3000/api/scans?view=active", admissions.cookie),
+      );
+      expect(adminApi.status).toBe(200);
+    });
+
+    it("keeps admin and visitor credentials case-sensitive and role-scoped", async () => {
+      const admin = await login(adminAccessKey, undefined, "198.51.100.21");
+      expect(admin.response.status).toBe(200);
+      expect(await admin.response.json()).toMatchObject({ role: "admin" });
+
+      const visitor = await login(visitorAccessKey, undefined, "198.51.100.21");
+      expect(visitor.response.status).toBe(200);
+      expect(await visitor.response.json()).toMatchObject({ role: "visitor" });
+
+      const normalizedAdmin = await login(adminAccessKey.toUpperCase(), undefined, "198.51.100.21");
+      expect(normalizedAdmin.response.status).toBe(401);
+      expect((await normalizedAdmin.response.json()).error).toMatchObject({
+        code: "ACCESS_KEY_INVALID",
+      });
+    });
+
+    it("rejects a wrong admissions-formatted code with the generic invalid-key response", async () => {
+      const invalid = await login("C4E6", undefined, "198.51.100.22");
+      expect(invalid.response.status).toBe(401);
+      expect((await invalid.response.json()).error).toMatchObject({ code: "ACCESS_KEY_INVALID" });
+    });
+
+    it("continues to honor a signed v1 administrator session", async () => {
+      const response = await scansRoute.GET(
+        requestWithCookie(
+          "http://localhost:3000/api/scans?view=active",
+          `accesscheck_session=${legacyAdminSession}`,
+        ),
+      );
+      expect(response.status).toBe(200);
+    });
+
+    it("invalidates an admissions session when its secret is rotated or removed", async () => {
+      const admissions = await login(admissionsAccessKey, undefined, "198.51.100.23");
+      expect(admissions.response.status).toBe(200);
+      const session = sessionValue(admissions.cookie);
+      expect(session).toMatch(/^v2\./);
+
+      try {
+        fs.writeFileSync(admissionsAccessKeyFile, `${rotatedAdmissionsAccessKey}\n`);
+        const afterRotation = await importFreshAccessControl();
+        expect(afterRotation.verifyAccessSession(session)).toBeNull();
+
+        delete process.env.ADMISSIONS_ACCESS_KEY_FILE;
+        const afterRemoval = await importFreshAccessControl();
+        expect(afterRemoval.verifyAccessSession(session)).toBeNull();
+      } finally {
+        restoreAdmissionsFixture();
+        vi.resetModules();
+      }
+    });
+
+    it("limits admissions attempts to five per hour without blocking normal credentials", async () => {
+      const client = "198.51.100.24";
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const attemptResult = await login(admissionsAccessKey, undefined, client);
+        expect(attemptResult.response.status).toBe(200);
+      }
+
+      const limited = await login(admissionsAccessKey, undefined, client);
+      expect(limited.response.status).toBe(429);
+      expect((await limited.response.json()).error).toMatchObject({
+        code: "ACCESS_LOGIN_RATE_LIMITED",
+        details: expect.objectContaining({ retryAfterSeconds: expect.any(Number) }),
+      });
+
+      const normalAdmin = await login(adminAccessKey, undefined, client);
+      expect(normalAdmin.response.status).toBe(200);
+      const normalVisitor = await login(visitorAccessKey, undefined, client);
+      expect(normalVisitor.response.status).toBe(200);
+    });
+
+    it("retains the normal ten-attempt login limit for non-admissions credentials", async () => {
+      const client = "198.51.100.25";
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const invalid = await login("not-a-configured-normal-key", undefined, client);
+        expect(invalid.response.status).toBe(401);
+      }
+
+      const limited = await login("not-a-configured-normal-key", undefined, client);
+      expect(limited.response.status).toBe(429);
+      expect((await limited.response.json()).error).toMatchObject({
+        code: "ACCESS_LOGIN_RATE_LIMITED",
+      });
+    });
+  });
+
+  afterAll(() => {
+    dbModule.closeDb();
+    if (originalAdmissionsAccessKey === undefined) delete process.env.ADMISSIONS_ACCESS_KEY;
+    else process.env.ADMISSIONS_ACCESS_KEY = originalAdmissionsAccessKey;
+    if (originalAdmissionsAccessKeyFile === undefined)
+      delete process.env.ADMISSIONS_ACCESS_KEY_FILE;
+    else process.env.ADMISSIONS_ACCESS_KEY_FILE = originalAdmissionsAccessKeyFile;
   });
 });

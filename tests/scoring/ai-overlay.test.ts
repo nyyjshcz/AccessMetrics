@@ -901,6 +901,40 @@ describe("thin AI overlay", () => {
     ai.pauseAiBatch(fresh.batch.id);
   });
 
+  it("keeps an active batch visible after the selected provider settings change", () => {
+    const item = fixture(1, true);
+    const config = provider();
+    const active = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+    const current = ai.saveAiProvider({
+      id: config.id,
+      label: config.label,
+      baseUrl: config.baseUrl,
+      model: "qwen3.7-flash",
+      apiKey: "new-key",
+      maxConcurrentRequests: config.maxConcurrentRequests,
+      rateLimitRpm: config.rateLimitRpm,
+      enabled: true,
+    });
+
+    const visibleActive = ai.summarizeAiRun(item.run.id, current.id).batch;
+    expect(visibleActive?.id).toBe(active.batch.id);
+    expect(JSON.parse(visibleActive!.provider_snapshot_json).model).toBe(config.model);
+    expect(ai.createAiBatch({ runId: item.run.id, providerConfigId: current.id }).batch.id).toBe(
+      active.batch.id,
+    );
+
+    ai.pauseAiBatch(active.batch.id);
+    expect(ai.summarizeAiRun(item.run.id, current.id).batch).toMatchObject({
+      id: active.batch.id,
+      status: "paused",
+    });
+
+    const restarted = ai.createAiBatch({ runId: item.run.id, providerConfigId: current.id });
+    expect(restarted.batch.id).not.toBe(active.batch.id);
+    expect(JSON.parse(restarted.batch.provider_snapshot_json).model).toBe(current.model);
+    ai.pauseAiBatch(restarted.batch.id);
+  });
+
   it("does not mark a paused batch completed when only failed items remain", () => {
     const item = fixture(1, true);
     const config = provider();
@@ -1462,7 +1496,9 @@ describe("thin AI overlay", () => {
       resolved: 2,
       unresolved: 0,
     });
-    const resolvedHtml = await reportHtml.renderRunReportHtml(report.buildRunReportDto(item.run.id));
+    const resolvedHtml = await reportHtml.renderRunReportHtml(
+      report.buildRunReportDto(item.run.id),
+    );
     expect(resolvedHtml).toContain("尚无结论");
     expect(resolvedHtml).not.toContain("需进一步确认</span><strong>2");
   });

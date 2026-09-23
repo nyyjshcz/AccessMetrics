@@ -1,5 +1,7 @@
 # 飞牛 NAS 部署与 Tailscale 访问
 
+[English](./nas-tailscale.en.md)
+
 > **谁需要读：负责把项目部署到飞牛 NAS 的人。是否必读：部署和迁移时必读。** 其他成员不需要阅读本页。
 
 这是一份 NAS 专用说明。它不替代 VPS 的[部署说明](./deployment.md)。NAS 版使用 `compose.nas.yaml`：Web、扫描 Worker 和 AI Worker 共用同一份 SQLite 数据；Caddy 只在 NAS 本机的 `127.0.0.1:3000` 提供 HTTP，公网 HTTPS 由 Tailscale Funnel 提供。

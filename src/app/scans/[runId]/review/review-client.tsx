@@ -20,8 +20,8 @@ export default function ReviewClient({ runId, locale }: { runId: string; locale:
     setData(payload);
   }, [en, runId]);
   // The request synchronizes this client view with the server's scan state.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void load().catch((reason) =>
       setError(
         reason instanceof Error ? reason.message : en ? "Failed to load scan" : "读取扫描失败",

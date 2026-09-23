@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Locale } from "@/lib/i18n";
 
 type Provider = {
@@ -45,16 +45,35 @@ export default function AiOverlayCard({
   const [data, setData] = useState<any>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [pendingAction, setPendingAction] = useState<"start" | "pause" | "resume" | "retry" | null>(
+    null,
+  );
+  const requestSequence = useRef(0);
+  const actionLock = useRef(false);
 
   const query = providerId ? `?providerConfigId=${encodeURIComponent(providerId)}` : "";
 
   async function load() {
-    const [providerResponse, statusResponse] = await Promise.all([
-      fetch("/api/ai/providers", { cache: "no-store" }),
-      fetch(`/api/runs/${runId}/ai-review${query}`, { cache: "no-store" }),
-    ]);
-    const providerValue = await providerResponse.json();
-    const statusValue = await statusResponse.json();
+    const requestId = ++requestSequence.current;
+    const requestedQuery = query;
+    let providerResponse: Response;
+    let statusResponse: Response;
+    let providerValue: any;
+    let statusValue: any;
+    try {
+      [providerResponse, statusResponse] = await Promise.all([
+        fetch("/api/ai/providers", { cache: "no-store" }),
+        fetch(`/api/runs/${runId}/ai-review${requestedQuery}`, { cache: "no-store" }),
+      ]);
+      [providerValue, statusValue] = await Promise.all([
+        providerResponse.json(),
+        statusResponse.json(),
+      ]);
+    } catch (reason) {
+      if (requestId !== requestSequence.current) return;
+      throw reason;
+    }
+    if (requestId !== requestSequence.current) return;
     if (!providerResponse.ok)
       throw new Error(
         providerValue.error?.message ??
@@ -153,8 +172,7 @@ export default function AiOverlayCard({
       return en
         ? "Processing; remaining items will continue automatically"
         : "正在处理，剩余项目会自动继续，无需手动点击";
-    if (queued > 0)
-      return en ? `${queued} items waiting for review` : `${queued} 项正在等待复核`;
+    if (queued > 0) return en ? `${queued} items waiting for review` : `${queued} 项正在等待复核`;
     return en ? "Waiting for processing status" : "等待处理状态更新";
   })();
   const isReadOnly = readOnly || Boolean(data?.readOnly);
@@ -186,6 +204,10 @@ export default function AiOverlayCard({
     (status === "failed" || status === "paused") &&
     Boolean(selectedProvider) &&
     !currentProviderMatchesBatch;
+  const activeBatch = status === "queued" || status === "running";
+  const selectedConfigDiffersFromBatch = Boolean(
+    selectedProvider && batchSnapshot && !currentProviderMatchesBatch,
+  );
 
   useEffect(() => {
     const initialLoad = window.setTimeout(() => {
@@ -201,6 +223,7 @@ export default function AiOverlayCard({
     }, 0);
     return () => {
       window.clearTimeout(initialLoad);
+      requestSequence.current += 1;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, query]);
@@ -214,68 +237,108 @@ export default function AiOverlayCard({
   }, [runId, query, status]);
 
   async function createBatch() {
-    if (isReadOnly) return;
+    if (isReadOnly || actionLock.current) return;
+    actionLock.current = true;
+    setPendingAction("start");
+    requestSequence.current += 1;
     if (!providerId) {
       setError(
         en
           ? "Save and enable a model configuration in AI settings first."
           : "请先在 AI 设置页保存并启用一个模型配置。",
       );
+      actionLock.current = false;
+      setPendingAction(null);
       return;
     }
     setError("");
     setMessage(en ? "Starting AI review…" : "正在启动 AI 复核…");
-    const response = await fetch(`/api/runs/${runId}/ai-review`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ providerConfigId: providerId }),
-    });
-    const value = await response.json();
-    if (!response.ok) {
-      setError(value.error?.message ?? (en ? "Failed to start AI review" : "启动 AI 复核失败"));
-      setMessage("");
-      return;
-    }
-    const returnedStatus = value.batch?.status ?? value.batch?.batch?.status;
-    const returnedProviderId =
-      value.batch?.provider_config_id ?? value.batch?.batch?.provider_config_id;
-    const returnedStats = value.stats ?? value.batch?.stats ?? null;
-    const returnedPending =
-      Number(returnedStats?.queued ?? 0) + Number(returnedStats?.running ?? 0);
-    setMessage(
-      returnedStatus === "failed"
-        ? returnedPending > 0
+    try {
+      const response = await fetch(`/api/runs/${runId}/ai-review`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ providerConfigId: providerId }),
+      });
+      const value = await response.json();
+      requestSequence.current += 1;
+      if (!response.ok) {
+        setError(value.error?.message ?? (en ? "Failed to start AI review" : "启动 AI 复核失败"));
+        setMessage("");
+        return;
+      }
+      const returnedStatus = value.batch?.status ?? value.batch?.batch?.status;
+      const returnedStats = value.stats ?? value.batch?.stats ?? null;
+      const returnedPending =
+        Number(returnedStats?.queued ?? 0) + Number(returnedStats?.running ?? 0);
+      setMessage(
+        returnedStatus === "queued" || returnedStatus === "running"
           ? en
-            ? "The previous review run stopped with items remaining; click Continue review."
-            : "上一次复核已停止，仍有项目待处理，请点击“继续复核”。"
+            ? "An AI review is already active for this scan; it was not stopped or duplicated."
+            : "当前扫描已有正在运行的 AI 复核；任务没有停止，也没有重复创建。"
+          : returnedStatus === "failed"
+            ? returnedPending > 0
+              ? en
+                ? "The previous review run stopped with items remaining; click Continue review."
+                : "上一次复核已停止，仍有项目待处理，请点击“继续复核”。"
+              : en
+                ? "A previous review run failed with this configuration; click Retry failed items."
+                : "当前配置已有失败的复核记录，请点击“重试失败项”。"
+            : en
+              ? "AI review started; items will be processed one by one."
+              : "AI 复核已启动，项目会逐项处理。",
+      );
+      setData((current: any) => ({ ...current, ...value }));
+      onBatchChange?.();
+    } catch (reason) {
+      requestSequence.current += 1;
+      setMessage("");
+      setError(
+        reason instanceof Error
+          ? reason.message
           : en
-            ? "A previous review run failed with this configuration; click Retry failed items."
-            : "当前配置已有失败的复核记录，请点击“重试失败项”。"
-        : en
-          ? "AI review started; items will be processed one by one."
-          : "AI 复核已启动，项目会逐项处理。",
-    );
-    if (typeof returnedProviderId === "string" && returnedProviderId)
-      setProviderId(returnedProviderId);
-    setData((current: any) => ({ ...current, ...value }));
-    onBatchChange?.();
+            ? "Failed to start AI review"
+            : "启动 AI 复核失败",
+      );
+    } finally {
+      actionLock.current = false;
+      setPendingAction(null);
+    }
   }
 
   async function action(actionName: "pause" | "resume" | "retry") {
-    if (isReadOnly) return;
+    if (isReadOnly || actionLock.current) return;
     const batchId = batch?.id;
     if (!batchId) return;
-    const response = await fetch(`/api/ai/batches/${batchId}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: actionName }),
-    });
-    const value = await response.json();
-    if (!response.ok)
-      setError(value.error?.message ?? (en ? "Failed to update AI review" : "更新 AI 复核失败"));
-    else {
-      setData((current: any) => ({ ...current, batch: value.batch, stats: value.stats }));
-      onBatchChange?.();
+    actionLock.current = true;
+    setPendingAction(actionName);
+    requestSequence.current += 1;
+    setError("");
+    try {
+      const response = await fetch(`/api/ai/batches/${batchId}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: actionName }),
+      });
+      const value = await response.json();
+      requestSequence.current += 1;
+      if (!response.ok)
+        setError(value.error?.message ?? (en ? "Failed to update AI review" : "更新 AI 复核失败"));
+      else {
+        setData((current: any) => ({ ...current, batch: value.batch, stats: value.stats }));
+        onBatchChange?.();
+      }
+    } catch (reason) {
+      requestSequence.current += 1;
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : en
+            ? "Failed to update AI review"
+            : "更新 AI 复核失败",
+      );
+    } finally {
+      actionLock.current = false;
+      setPendingAction(null);
     }
   }
 
@@ -308,8 +371,11 @@ export default function AiOverlayCard({
           {en ? "Model service" : "模型服务"}
           <select
             value={providerId}
-            onChange={(event) => setProviderId(event.target.value)}
-            disabled={isReadOnly}
+            onChange={(event) => {
+              requestSequence.current += 1;
+              setProviderId(event.target.value);
+            }}
+            disabled={isReadOnly || pendingAction !== null}
           >
             <option value="">{en ? "Select" : "请选择"}</option>
             {providers.map((provider) => (
@@ -401,7 +467,11 @@ export default function AiOverlayCard({
           <p>
             {en ? "Model used for this review: " : "本次复核使用的模型："}
             <strong>{batchSnapshot?.model ?? (en ? "Unknown" : "未知")}</strong>
-            {batchSnapshot?.label ? (en ? ` (${batchSnapshot.label})` : `（${batchSnapshot.label}）`) : ""}
+            {batchSnapshot?.label
+              ? en
+                ? ` (${batchSnapshot.label})`
+                : `（${batchSnapshot.label}）`
+              : ""}
           </p>
           <p className="ai-review-summary">
             {en ? (
@@ -419,46 +489,82 @@ export default function AiOverlayCard({
           {en ? "AI review has not started for this scope yet." : "该范围还没有开始 AI 复核。"}
         </p>
       )}
+      {activeBatch && selectedConfigDiffersFromBatch ? (
+        <p className="notice">
+          {en
+            ? `This review is still using ${batchSnapshot?.model ?? "the previous model"}. Pause it before starting over with the selected model.`
+            : `当前复核仍使用 ${batchSnapshot?.model ?? "原模型"}。如需改用所选模型，请先暂停当前复核，再按当前设置重新开始。`}
+        </p>
+      ) : null}
       {canCreateWithCurrentConfig ? (
         <p className="notice">
           {en
-            ? "The model service settings changed; the previous failed review is preserved. Start a new review with the current settings."
-            : "模型服务设置已变化；之前失败的复核记录会保留，你可以按当前设置重新开始。"}
+            ? "The model service settings changed; the previous review is preserved. Start a new review with the selected settings."
+            : "模型服务设置已变化；之前的复核记录会保留，你可以按所选设置重新开始。"}
         </p>
       ) : null}
       {!isReadOnly ? (
-        <div>
+        <div className="ai-review-actions">
           {!hasBatch ? (
-            <button type="button" onClick={createBatch}>
-              {en ? "Start review" : "开始复核"}
+            <button type="button" onClick={createBatch} disabled={pendingAction !== null}>
+              {pendingAction === "start"
+                ? en
+                  ? "Starting…"
+                  : "启动中…"
+                : en
+                  ? "Start review"
+                  : "开始复核"}
             </button>
           ) : null}{" "}
           {canCreateWithCurrentConfig ? (
-            <button type="button" onClick={createBatch}>
-              {en
-                ? "Restart review with current settings"
-                : "按当前设置重新开始复核"}
+            <button type="button" onClick={createBatch} disabled={pendingAction !== null}>
+              {pendingAction === "start"
+                ? en
+                  ? "Starting…"
+                  : "启动中…"
+                : en
+                  ? "Restart with selected model"
+                  : "按所选模型重新开始"}
             </button>
           ) : null}{" "}
           {status === "queued" || status === "running" ? (
-            <button type="button" className="secondary" onClick={() => action("pause")}>
-              {en ? "Pause" : "暂停"}
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => action("pause")}
+              disabled={pendingAction !== null}
+            >
+              {pendingAction === "pause" ? (en ? "Pausing…" : "暂停中…") : en ? "Pause" : "暂停"}
             </button>
           ) : null}{" "}
           {status === "paused" ? (
-            <button type="button" className="secondary" onClick={() => action("resume")}>
-              {en ? "Resume" : "继续"}
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => action("resume")}
+              disabled={pendingAction !== null}
+            >
+              {pendingAction === "resume" ? (en ? "Resuming…" : "继续中…") : en ? "Resume" : "继续"}
             </button>
           ) : null}{" "}
           {status === "failed" ? (
-            <button type="button" className="secondary" onClick={() => action("retry")}>
-              {failedBatchHasPending
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => action("retry")}
+              disabled={pendingAction !== null}
+            >
+              {pendingAction === "retry"
                 ? en
-                  ? "Continue pending items"
-                  : "继续处理未完成项"
-                : en
-                  ? "Retry failed items"
-                  : "重试失败项"}
+                  ? "Retrying…"
+                  : "重试中…"
+                : failedBatchHasPending
+                  ? en
+                    ? "Continue pending items"
+                    : "继续处理未完成项"
+                  : en
+                    ? "Retry failed items"
+                    : "重试失败项"}
             </button>
           ) : null}
           {status === "completed" ? (

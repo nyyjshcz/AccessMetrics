@@ -2106,6 +2106,25 @@ textarea {
   margin: 14px 0;
 }
 
+.ai-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.ai-review-actions button {
+  max-width: 100%;
+  min-height: 42px;
+  padding: 9px 15px;
+  white-space: normal;
+}
+
+.ai-review-actions button.secondary {
+  border: 1px solid var(--line-strong);
+}
+
 .ai-monitor {
   margin: 20px 0;
   padding: 18px;

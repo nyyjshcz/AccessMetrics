@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 const stylesheet = fs.readFileSync(path.join(process.cwd(), "src", "app", "globals.css"), "utf8");
 
 function rule(selector: string) {
-  const match = stylesheet.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`, "s"));
+  const match = stylesheet.match(
+    new RegExp(`${selector.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`, "s"),
+  );
   expect(match, `Expected a ${selector} style rule`).not.toBeNull();
   return match![1];
 }
@@ -17,6 +19,16 @@ describe("review page header contrast", () => {
   });
 
   it("does not render the full-report link as white text on a white surface", () => {
-    expect(rule(".review-page-header .secondary-link")).toMatch(/background:\s*rgba\(255,\s*255,\s*255,\s*(?:0)?\.1\d?\)/i);
+    expect(rule(".review-page-header .secondary-link")).toMatch(
+      /background:\s*rgba\(255,\s*255,\s*255,\s*(?:0)?\.1\d?\)/i,
+    );
+  });
+});
+
+describe("AI review controls", () => {
+  it("gives review actions consistent spacing and a usable button hit area", () => {
+    expect(rule(".ai-review-actions")).toMatch(/display:\s*flex/);
+    expect(rule(".ai-review-actions button")).toMatch(/min-height:\s*42px/);
+    expect(rule(".ai-review-actions button")).toMatch(/padding:\s*9px 15px/);
   });
 });

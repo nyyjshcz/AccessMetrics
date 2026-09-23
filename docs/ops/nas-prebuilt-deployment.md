@@ -1,5 +1,7 @@
 # 飞牛 NAS 预构建镜像部署
 
+[English](./nas-prebuilt-deployment.en.md)
+
 > AccessCheck 在 NAS 上唯一采用的部署方式：本机完成构建和验证，NAS 只加载镜像并运行。NAS 不执行 Docker build，也不执行 Docker pull。
 
 ## 固定约定

@@ -2,6 +2,8 @@
 
 > **谁需要读：代码负责人。是否必读：代码维护时必读，其他人选读。** 读完你会知道 Web、两个 Worker、SQLite 和报告如何协作。
 
+语言： [English](./architecture.en.md)
+
 ## 一句话概览
 
 AccessCheck 由一个 Next.js Web 应用、一个扫描 Worker、一个 AI Worker 和一个 SQLite 数据库组成。Web 负责授权、展示和创建任务；两个 Worker 只领取队列中的工作；所有报告都从数据库中的可追溯结果即时生成。

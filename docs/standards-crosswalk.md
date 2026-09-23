@@ -2,6 +2,8 @@
 
 > **谁需要读：教授、项目评审和展示者。是否必读：是。** 这是评审阅读路径的必读资料。其他角色只在需要核对规则来源时查阅。读完你会知道规则怎样映射到 WCAG A/AA，以及映射不能证明什么。
 
+[English](./standards-crosswalk.en.md) | **中文**
+
 ## 当前映射做什么
 
 扫描使用 axe-core 的规则结果，并以项目维护的[冻结规则目录](../configs/axe-rule-catalog.json)将规则映射到 WCAG 2.2 成功准则和四项原则：可感知（Perceivable）、可操作（Operable）、易理解（Understandable）、兼容性（Robust）。当前规则目录版本为 `wcag-2.2-axe-4.13.0-v1`。该目录是项目维护的规则映射数据，不是 WCAG 官方认证清单。当前工作只做 WCAG 2.2 映射，不等于中国国家标准、地方标准或其他法规的符合性评估。

@@ -48,8 +48,7 @@ const RATE_LIMIT_FALLBACK_DELAY_MS = 60_000;
 // gap between starts; the user-configured concurrent-request cap still applies
 // independently to requests that take longer than that interval.
 const OPENROUTER_FREE_REQUESTS_PER_MINUTE = 20;
-const OPENROUTER_FREE_REQUEST_INTERVAL_MS =
-  60_000 / OPENROUTER_FREE_REQUESTS_PER_MINUTE;
+const OPENROUTER_FREE_REQUEST_INTERVAL_MS = 60_000 / OPENROUTER_FREE_REQUESTS_PER_MINUTE;
 const nextOpenRouterFreeRequestAt = new Map<string, number>();
 
 function now() {
@@ -155,9 +154,7 @@ function configuredRateLimitRpm(input: {
   // Snapshots created before this setting existed have no field; keep their
   // previous OpenRouter-free behavior when they are resumed.
   if (input.rateLimitRpm === undefined)
-    return isOpenRouterFreeProvider(input)
-      ? OPENROUTER_FREE_REQUESTS_PER_MINUTE
-      : null;
+    return isOpenRouterFreeProvider(input) ? OPENROUTER_FREE_REQUESTS_PER_MINUTE : null;
   return normalizeStoredRateLimit(input.rateLimitRpm);
 }
 
@@ -274,7 +271,8 @@ export function saveAiProvider(input: {
   );
   // An omitted key, or a blank key while editing, means “keep the existing
   // secret”. New providers may still be saved without a key.
-  const suppliedKey = input.apiKey === undefined || input.apiKey === null ? null : String(input.apiKey).trim();
+  const suppliedKey =
+    input.apiKey === undefined || input.apiKey === null ? null : String(input.apiKey).trim();
   const rawKey = existing && suppliedKey === "" ? null : suppliedKey;
   const encrypted =
     rawKey === null ? (existing?.encrypted_api_key ?? null) : rawKey ? encryptSecret(rawKey) : null;
@@ -532,7 +530,11 @@ export function getAiBatch(batchId: string) {
   return { batch, stats: batchStats(batch.id) };
 }
 
-function removeHumanResolvedQueueItems(db: ReturnType<typeof getDb>, batchId: string, runId: string) {
+function removeHumanResolvedQueueItems(
+  db: ReturnType<typeof getDb>,
+  batchId: string,
+  runId: string,
+) {
   db.prepare(
     `DELETE FROM ai_review_items
      WHERE batch_id=? AND status IN ('queued','failed')
@@ -548,7 +550,11 @@ function removeHumanResolvedQueueItems(db: ReturnType<typeof getDb>, batchId: st
   ).run(batchId, runId);
 }
 
-function assertNoOtherActiveBatch(db: ReturnType<typeof getDb>, runId: string, exceptBatchId?: string) {
+function assertNoOtherActiveBatch(
+  db: ReturnType<typeof getDb>,
+  runId: string,
+  exceptBatchId?: string,
+) {
   const active = db
     .prepare(
       `SELECT id FROM ai_review_batches
@@ -691,10 +697,9 @@ export function resumeAiBatch(batchId: string) {
     assertNoOtherActiveBatch(db, batch.run_id, batchId);
     removeHumanResolvedQueueItems(db, batchId, batch.run_id);
     if (finishWhenNoQueuedItems(db, batchId, timestamp) > 0)
-      db.prepare("UPDATE ai_review_batches SET status='queued',updated_at=?,completed_at=NULL WHERE id=?").run(
-        timestamp,
-        batchId,
-      );
+      db.prepare(
+        "UPDATE ai_review_batches SET status='queued',updated_at=?,completed_at=NULL WHERE id=?",
+      ).run(timestamp, batchId);
   });
   return getAiBatch(batchId);
 }
@@ -770,7 +775,8 @@ function transientRetryAt(error: unknown) {
       : null;
   // For a 429 without an explicit provider wait, retry in one minute. A
   // supplied Retry-After remains authoritative.
-  const delay = requestedDelay === null ? RATE_LIMIT_FALLBACK_DELAY_MS : Math.max(1_000, requestedDelay);
+  const delay =
+    requestedDelay === null ? RATE_LIMIT_FALLBACK_DELAY_MS : Math.max(1_000, requestedDelay);
   return new Date(Date.now() + delay).toISOString();
 }
 
@@ -889,7 +895,10 @@ async function callProvider(
       "AI_PROVIDER_REQUEST_FAILED",
       `模型请求失败（HTTP ${response.status}）`,
       502,
-      { httpStatus: response.status, retryAfterMs: retryAfterMs(response.headers.get("retry-after")) },
+      {
+        httpStatus: response.status,
+        retryAfterMs: retryAfterMs(response.headers.get("retry-after")),
+      },
     );
   const body = (await response.json()) as any;
   const content = normalizeResponseContent(body?.choices?.[0]?.message?.content);
@@ -1021,13 +1030,18 @@ function canStartOpenRouterFreeRequest(
         )
         .get(item.provider_config_id, cutoff) as { updated_at?: string | null });
   const recentMs = Date.parse(recent.updated_at ?? "");
-  return !Number.isFinite(recentMs) || recentMs + OPENROUTER_FREE_REQUEST_INTERVAL_MS <= timestampMs;
+  return (
+    !Number.isFinite(recentMs) || recentMs + OPENROUTER_FREE_REQUEST_INTERVAL_MS <= timestampMs
+  );
 }
 
-function noteOpenRouterFreeRequestStart(item: {
-  provider_config_id: string;
-  provider_key_fingerprint?: string | null;
-}, timestampMs: number) {
+function noteOpenRouterFreeRequestStart(
+  item: {
+    provider_config_id: string;
+    provider_key_fingerprint?: string | null;
+  },
+  timestampMs: number,
+) {
   nextOpenRouterFreeRequestAt.set(
     openRouterFreePacingKey(item),
     timestampMs + OPENROUTER_FREE_REQUEST_INTERVAL_MS,
@@ -1258,27 +1272,43 @@ export function summarizeAiRun(runId: string, providerConfigId?: string) {
     )
     .get(runId) as { count: number };
   let runBatch: any;
-  if (providerConfigId) {
-    const provider = getProviderRow(providerConfigId);
-    const candidates = db
-      .prepare(
-        `SELECT b.* FROM ai_review_batches b
-         WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL
-           AND b.provider_config_id=?
-         ORDER BY b.created_at DESC,b.id DESC`,
-      )
-      .all(runId, providerConfigId) as any[];
-    runBatch = candidates.find((batch) =>
-      providerSnapshotHashMatches(provider, batch.provider_snapshot_hash),
-    );
+  const activeBatch = db
+    .prepare(
+      `SELECT b.* FROM ai_review_batches b
+       WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL
+         AND b.status IN ('queued','running')
+       ORDER BY b.created_at DESC,b.id DESC LIMIT 1`,
+    )
+    .get(runId) as any;
+  if (activeBatch) {
+    // A run has one active review regardless of which provider the user has
+    // currently selected. Its provider snapshot is immutable for the batch.
+    runBatch = activeBatch;
   } else {
-    runBatch = db
-      .prepare(
-        `SELECT b.* FROM ai_review_batches b
-         WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL
-         ORDER BY CASE WHEN b.status IN ('queued','running') THEN 0 ELSE 1 END,b.created_at DESC,b.id DESC LIMIT 1`,
-      )
-      .get(runId) as any;
+    if (providerConfigId) {
+      const provider = getProviderRow(providerConfigId);
+      const candidates = db
+        .prepare(
+          `SELECT b.* FROM ai_review_batches b
+           WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL
+             AND b.provider_config_id=?
+           ORDER BY b.created_at DESC,b.id DESC`,
+        )
+        .all(runId, providerConfigId) as any[];
+      runBatch = candidates.find((batch) =>
+        providerSnapshotHashMatches(provider, batch.provider_snapshot_hash),
+      );
+    }
+    // If the selected provider was edited or replaced, keep the last batch
+    // visible so the user can see its frozen settings and explicitly restart.
+    if (!runBatch)
+      runBatch = db
+        .prepare(
+          `SELECT b.* FROM ai_review_batches b
+           WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL
+           ORDER BY b.created_at DESC,b.id DESC LIMIT 1`,
+        )
+        .get(runId) as any;
   }
   const aiOverlay = loadAiOverlayForRun(runId);
   const overlay = loadEffectiveOverlayForRun(runId);

@@ -30,6 +30,10 @@ const catalog: Record<string, { "zh-CN": string; en: string }> = {
     en: "This scan already has an active AI batch",
   },
   AI_BATCH_NOT_FOUND: { "zh-CN": "AI 批次不存在", en: "AI batch not found" },
+  AI_BATCH_PROVIDER_REMOVED: {
+    "zh-CN": "该批次使用的模型配置已删除；请选择当前模型重新开始复核",
+    en: "The model configuration used by this batch was deleted; select a current model to start a new review",
+  },
   AI_BATCH_RETRY_REQUIRED: {
     "zh-CN": "失败的批次必须先重试失败项",
     en: "Retry the failed items in the batch before continuing",

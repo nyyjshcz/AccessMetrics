@@ -83,6 +83,7 @@ export default function AiOverlayCard({
   const stats = data?.batch?.stats ?? data?.stats ?? null;
   const status = batch?.status;
   const hasBatch = Boolean(batch);
+  const providerRemoved = Boolean(batch && !batch.provider_config_id);
   const queued = Number(stats?.queued ?? 0);
   const running = Number(stats?.running ?? 0);
   const delayed = Number(stats?.delayed ?? 0);
@@ -128,6 +129,10 @@ export default function AiOverlayCard({
                   ? "Waiting for status update"
                   : "等待状态更新";
   const workerStatus = (() => {
+    if (providerRemoved)
+      return en
+        ? "The model configuration was deleted; completed results are kept and no further requests will be sent."
+        : "原模型配置已删除；已完成结论保留，不会再向该模型发出请求。";
     if (status === "paused")
       return en ? "Paused; no more model requests will be sent" : "已暂停，不会再发起模型请求";
     if (status === "completed") return en ? "All items processed" : "全部项目已处理完成";
@@ -183,9 +188,10 @@ export default function AiOverlayCard({
     batchSnapshot.rateLimitRpm === selectedProvider.rateLimitRpm,
   );
   const canCreateWithCurrentConfig =
+    !isReadOnly &&
     (status === "failed" || status === "paused") &&
     Boolean(selectedProvider) &&
-    !currentProviderMatchesBatch;
+    (providerRemoved || !currentProviderMatchesBatch);
 
   useEffect(() => {
     const initialLoad = window.setTimeout(() => {
@@ -421,9 +427,20 @@ export default function AiOverlayCard({
       )}
       {canCreateWithCurrentConfig ? (
         <p className="notice">
+          {providerRemoved
+            ? en
+              ? "The previous review results are preserved. Select a model above to start a new review; the deleted model will not be used again."
+              : "之前已完成的复核结论会保留。选择上方模型即可重新开始，已删除的模型不会再被调用。"
+            : en
+              ? "The model service settings changed; the previous failed review is preserved. Start a new review with the current settings."
+              : "模型服务设置已变化；之前失败的复核记录会保留，你可以按当前设置重新开始。"}
+        </p>
+      ) : null}
+      {providerRemoved && isReadOnly ? (
+        <p className="notice">
           {en
-            ? "The model service settings changed; the previous failed review is preserved. Start a new review with the current settings."
-            : "模型服务设置已变化；之前失败的复核记录会保留，你可以按当前设置重新开始。"}
+            ? "The model configuration was deleted. Completed results remain in this published report; this batch will not make more requests."
+            : "原模型配置已删除。已完成结论仍保留在这份已发布报告中，该批次不会继续发出模型请求。"}
         </p>
       ) : null}
       {!isReadOnly ? (
@@ -445,12 +462,12 @@ export default function AiOverlayCard({
               {en ? "Pause" : "暂停"}
             </button>
           ) : null}{" "}
-          {status === "paused" ? (
+          {status === "paused" && !providerRemoved ? (
             <button type="button" className="secondary" onClick={() => action("resume")}>
               {en ? "Resume" : "继续"}
             </button>
           ) : null}{" "}
-          {status === "failed" ? (
+          {status === "failed" && !providerRemoved ? (
             <button type="button" className="secondary" onClick={() => action("retry")}>
               {failedBatchHasPending
                 ? en

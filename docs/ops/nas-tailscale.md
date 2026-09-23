@@ -13,7 +13,7 @@
 - 确认飞牛已启用 Docker、Docker Compose、SSH（默认 22 端口）和 Tailscale。
 - 确认 NAS 有足够磁盘保存数据库、私有证据、报告导出和 Docker 镜像。
 - 确认 Tailscale 已登录 NAS，并已启用 MagicDNS、HTTPS 证书和 Funnel 权限。
-- 真实 `.env.nas`、`.secrets/`、`data/` 和 `private-inputs/` 都不能提交 Git。
+- 真实 `.env.nas`、`.secrets/`、`data/` 和 `private-inputs/` 都不能提交 Git；任何招生访问码也绝不能写入日志。
 
 ## 通过 SSH 部署
 
@@ -31,7 +31,7 @@ mkdir -p .secrets private-inputs data data/exports
 APP_BASE_URL=https://nas-name.tailnet-name.ts.net
 ```
 
-迁移当前数据前，先停止本机 Web、扫描 Worker 和 AI Worker，并用项目备份流程得到一致副本。迁移 `data/`、`private-inputs/`、`data/exports/` 和三个 secret 文件。`session_secret` 必须保留原值，否则已保存的远程 AI Provider Key 无法解密。不迁移指向 `127.0.0.1:1234` 的 LM Studio 等本机 AI Provider；远程 Provider 可保留。
+迁移当前数据前，先停止本机 Web、扫描 Worker 和 AI Worker，并用项目备份流程得到一致副本。迁移 `data/`、`private-inputs/`、`data/exports/` 和既有的三个 secret 文件；首次启用此版本时另建 `.secrets/admissions_access_key`，留空即禁用。`session_secret` 必须保留原值，否则已保存的远程 AI Provider Key 无法解密。不迁移指向 `127.0.0.1:1234` 的 LM Studio 等本机 AI Provider；远程 Provider 可保留。
 
 不要把密钥写进 Compose、`.env.nas`、Shell 历史或 Git。NAS 使用非 Swarm Compose 时，Compose 的 `uid`、`gid`、`mode` 字段不会改变 secret bind mount 的权限；因此必须直接设置宿主机文件的数字组和权限。让 secret 文件归 root 所有、属于共享读取组 10000，并设为 0440：
 
@@ -41,12 +41,29 @@ chmod 700 private-inputs
 chown -R 10001:10000 data
 find data -type d -exec chmod 2770 {} +
 find data -type f -exec chmod 0660 {} +
+# 首次部署时创建可选招生访问码文件；已有启用的文件不会被覆盖。
+test -e .secrets/admissions_access_key || : > .secrets/admissions_access_key
 chown root:10000 .secrets/*
 chmod 0440 .secrets/*
 docker compose --env-file .env.nas -f compose.nas.yaml config --quiet
 ```
 
-这三个文件分别供 Web 读取访问控制和会话密钥，AI Worker 读取会话密钥。Compose 会把它们挂载到 `/run/secrets/`；应用容器仍以非 root 用户运行，依靠组 10000 读取。`deploy:nas:check` 会只检查文件类型、权限和组，不会输出密钥内容。
+三个既有 secret 分别供 Web 读取访问控制和会话密钥，AI Worker 只读取会话密钥；可选的 `admissions_access_key` 只挂载给 Web。Compose 会把它们以只读文件挂载到 `/run/secrets/`；应用容器仍以非 root 用户运行，依靠组 10000 读取。`deploy:nas:check` 会只检查文件类型、权限、组和招生码格式，不会输出密钥内容。
+
+## 可选招生访问码
+
+`.secrets/admissions_access_key` 是共享的完整管理员访问码：留空表示禁用；非空时必须恰好是 `0-9A-HJKMNP-TV-Z` 中的四个字符。用它成功登录会得到完整管理员权限，每次登录的会话有效七天。只通过受信任的密码管理器或 `sudoedit .secrets/admissions_access_key` 写入或更换它，绝不能把实际访问码放进 Git、Compose、`.env.nas`、Shell 历史或日志。
+
+要立即撤销这一共享访问，可将这个已忽略的文件清空，或安全地替换为新码，然后只重建 Web：
+
+```sh
+sudo truncate -s 0 .secrets/admissions_access_key
+sudo chown root:10000 .secrets/admissions_access_key
+sudo chmod 0440 .secrets/admissions_access_key
+sudo docker compose --env-file .env.nas -f compose.nas.yaml up -d --no-build --pull never --force-recreate web
+```
+
+替换时使用同一条只重建 Web 的命令。新 Web 进程读取新文件后，旧招生访问码签发的会话会立即失效；不要重建 Worker、AI Worker 或 Caddy。
 
 启动并检查（不允许在 NAS 上构建）：
 

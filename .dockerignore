@@ -17,6 +17,7 @@ artifacts/
 .playwright-cli/
 .claude/
 .local-agent/
+.superpowers/
 undefined/
 
 # The image is built from checked-in source only.

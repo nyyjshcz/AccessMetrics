@@ -10,7 +10,7 @@
 
 1. 安装 Node.js 24.19.0 与 pnpm 11.19.0。
 2. 将 .env.example 复制为 .env.local。
-3. 设置不同且足够长的 SESSION_SECRET、ADMIN_ACCESS_KEY、VISITOR_ACCESS_KEY。
+3. 设置不同且足够长的 SESSION_SECRET、ADMIN_ACCESS_KEY、VISITOR_ACCESS_KEY；可选的 ADMISSIONS_ACCESS_KEY 留空即禁用，启用时必须是 `0-9A-HJKMNP-TV-Z` 中的四个字符。
 4. 运行 pnpm install，再运行 pnpm db:migrate。
 
 日常启动：
@@ -43,8 +43,9 @@
 | SESSION_SECRET | 仅服务器环境变量或 secret 文件 | 会话 Cookie 签名与 AI Provider Key 加密。 |
 | ADMIN_ACCESS_KEY | 仅交给管理员 | 登录后可以管理扫描和 AI。 |
 | VISITOR_ACCESS_KEY | 只交给报告读者 | 登录后只能查看已发布报告。 |
+| ADMISSIONS_ACCESS_KEY | 仅服务器环境变量或 Web 专用 secret 文件 | 可选的共享完整管理员访问码；留空禁用，每次成功登录的会话有效七天。 |
 
-不要把 .env.local、.env.production、.secrets 或数据库提交到 Git。
+不要把 .env.local、.env.production、.secrets 或数据库提交到 Git，也绝不能把招生访问码写入日志。
 
 ## 常用检查命令
 
@@ -82,7 +83,7 @@
 
 - 可用域名与 HTTPS；
 - 生产 .env.production；
-- 三个独立 secret 文件；
+- 四个独立 secret 文件；其中 `.secrets/admissions_access_key` 必须存在，但可为空以禁用可选招生访问码；
 - 已固定 digest 的 egress proxy 镜像；
 - Linux 数据目录、导出目录与正确权限。
 

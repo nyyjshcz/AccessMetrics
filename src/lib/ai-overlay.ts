@@ -319,16 +319,15 @@ export function saveAiProvider(input: {
 
 export function deleteAiProvider(providerId: string) {
   getProviderRow(providerId);
-  try {
-    getDb().prepare("DELETE FROM ai_provider_configs WHERE id=?").run(providerId);
-  } catch (error) {
-    throw new AppError(
-      "AI_PROVIDER_IN_USE",
-      "已有 AI 批次引用该提供商，不能删除",
-      409,
-      String(error),
-    );
-  }
+  transaction((db) => {
+    const timestamp = now();
+    db.prepare(
+      `UPDATE ai_review_batches
+       SET status='paused',completed_at=NULL,updated_at=?
+       WHERE provider_config_id=? AND status NOT IN ('completed','cancelled')`,
+    ).run(timestamp, providerId);
+    db.prepare("DELETE FROM ai_provider_configs WHERE id=?").run(providerId);
+  });
 }
 
 export async function listProviderModels(providerId: string) {
@@ -607,7 +606,7 @@ export function createAiBatch(input: { runId: string; providerConfigId: string }
     .get(batchKey) as any;
   if (existing) {
     if (
-      existing.provider_config_id !== provider.id ||
+      (existing.provider_config_id !== null && existing.provider_config_id !== provider.id) ||
       existing.provider_snapshot_hash !== snapshotHash ||
       existing.prompt_hash !== promptHash
     )
@@ -616,6 +615,12 @@ export function createAiBatch(input: { runId: string; providerConfigId: string }
         "同一 AI batch 的 provider 或 prompt snapshot 已冻结",
         409,
       );
+    if (existing.provider_config_id === null && existing.status !== "completed")
+      transaction((db) => {
+        db.prepare(
+          "UPDATE ai_review_batches SET provider_config_id=?,updated_at=? WHERE id=? AND provider_config_id IS NULL",
+        ).run(provider.id, now(), existing.id);
+      });
     // A paused/terminal batch may be revisited after a local ad_hoc review was
     // saved. Remove those queue items, but preserve the batch lifecycle status;
     // resume/retry are the only operations allowed to reactivate a batch.
@@ -688,6 +693,12 @@ export function resumeAiBatch(batchId: string) {
   const batch = getBatchRow(batchId);
   if (!batch.run_id || batch.page_id || batch.study_freeze_id)
     throw new AppError("AI_BATCH_SCOPE_INVALID", "旧范围 AI batch 不能在本地流程中恢复", 409);
+  if (!batch.provider_config_id)
+    throw new AppError(
+      "AI_BATCH_PROVIDER_REMOVED",
+      "该批次使用的模型配置已删除；请选择当前模型重新开始复核",
+      409,
+    );
   assertRunMutable(batch.run_id);
   if (batch.status === "completed") return getAiBatch(batchId);
   if (batch.status === "failed")
@@ -708,6 +719,12 @@ export function retryAiBatch(batchId: string) {
   const batch = getBatchRow(batchId);
   if (!batch.run_id || batch.page_id || batch.study_freeze_id)
     throw new AppError("AI_BATCH_SCOPE_INVALID", "旧范围 AI batch 不能在本地流程中重试", 409);
+  if (!batch.provider_config_id)
+    throw new AppError(
+      "AI_BATCH_PROVIDER_REMOVED",
+      "该批次使用的模型配置已删除；请选择当前模型重新开始复核",
+      409,
+    );
   assertRunMutable(batch.run_id);
   const timestamp = now();
   transaction((db) => {

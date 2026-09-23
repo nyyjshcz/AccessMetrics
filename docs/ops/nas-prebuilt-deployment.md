@@ -10,6 +10,7 @@
 - 构建平台固定为 `linux/amd64`。
 - 应用镜像为 `accesscheck-nas:local`，出口代理镜像为 `accesscheck-nas-egress:local`。
 - `data/`、`data/exports/`、`private-inputs/` 和 `.secrets/` 是 NAS 宿主机数据，不能放进镜像或归档，也不能执行 `down -v`。
+- `.secrets/admissions_access_key` 必须存在；留空表示可选招生访问码已禁用，并且只会挂载给 Web。
 - NAS 上的 Docker 命令使用 `sudo`。
 
 ## 1. 本机构建、验证、导出
@@ -42,6 +43,10 @@ sudo docker tag accesscheck-nas:local "accesscheck-nas:rollback-$rollback_stamp"
 sudo docker tag accesscheck-nas-egress:local "accesscheck-nas-egress:rollback-$rollback_stamp"
 
 sudo docker load -i /home/D3AC/accesscheck-nas-images.tar
+# 首次部署时创建空文件；已有启用的招生访问码不会被覆盖。
+test -e .secrets/admissions_access_key || : > .secrets/admissions_access_key
+sudo chown root:10000 .secrets/admissions_access_key
+sudo chmod 0440 .secrets/admissions_access_key
 sudo docker compose --env-file .env.nas -f compose.nas.yaml config --quiet
 
 # 只替换使用新镜像的服务；不要把 caddy 放进命令，也不要执行 down。
@@ -61,6 +66,16 @@ sudo docker compose --env-file .env.nas -f compose.nas.yaml up -d --no-build --p
 ```
 
 确认新版本健康后再考虑删除不再需要的旧镜像；归档在本机保留到验收完成。清理时不要删除 `data`、`private-inputs`、`.secrets` 或 Caddy 命名卷。
+
+## 可选招生访问码
+
+`.secrets/admissions_access_key` 是共享的完整管理员访问码：空文件禁用；启用时写入 `0-9A-HJKMNP-TV-Z` 中的四个字符。每次成功登录的会话有效七天。仅通过受信任的密码管理器或 `sudoedit` 更新这个已忽略文件，绝不能把实际访问码提交到 Git、打包进镜像归档或写入日志。
+
+要启用、更换或立即撤销它，只更新或清空该文件并只重建 Web；不要重启 Caddy、Worker 或 AI Worker：
+
+```sh
+sudo docker compose --env-file .env.nas -f compose.nas.yaml up -d --no-build --pull never --force-recreate web
+```
 
 ## 扫描故障修复的验收
 

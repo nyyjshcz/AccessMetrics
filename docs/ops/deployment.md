@@ -36,10 +36,12 @@ chmod 700 .secrets
 openssl rand -base64 48 > .secrets/session_secret
 openssl rand -base64 32 > .secrets/admin_access_key
 openssl rand -base64 32 > .secrets/visitor_access_key
+# This optional Web-only secret starts disabled; do not overwrite it if enabled later.
+test -e .secrets/admissions_access_key || : > .secrets/admissions_access_key
 chmod 600 .secrets/*
 ```
 
-管理员与访客密钥必须不同。把它们保存在密码管理器中：管理员能创建扫描、管理 AI 和发布报告；访客只能查看已发布报告。生产 Compose 会以共享 GID 和 `umask 0002` 运行三个写入 SQLite 的进程；不要把 `data/` 改回 `0700`，否则 Worker 无法写入同一个数据库。`private-inputs/` 则必须保持 `0700`，因为它只提供给 Web。
+管理员与访客密钥必须不同。把它们保存在密码管理器中：管理员能创建扫描、管理 AI 和发布报告；访客只能查看已发布报告。`.secrets/admissions_access_key` 是可选的 Web 专用共享完整管理员访问码；空文件表示禁用，启用时必须是 `0-9A-HJKMNP-TV-Z` 中的四个字符。每次成功登录的会话有效七天。绝不能把实际访问码提交到 Git、写入 `.env.production`、Shell 历史或日志。生产 Compose 会以共享 GID 和 `umask 0002` 运行三个写入 SQLite 的进程；不要把 `data/` 改回 `0700`，否则 Worker 无法写入同一个数据库。`private-inputs/` 则必须保持 `0700`，因为它只提供给 Web。
 
 创建服务器本地的 .env.production（不要提交）：
 
@@ -97,6 +99,8 @@ docker compose --env-file .env.production -f compose.prod.yaml up -d --build
 chmod 600 .secrets/admin_access_key .secrets/visitor_access_key
 docker compose --env-file .env.production -f compose.prod.yaml up -d --force-recreate web
 ```
+
+招生访问码同样只需更新或清空已忽略的 `.secrets/admissions_access_key`，然后只重建 Web。清空会禁用它；更换或清空后，旧招生访问码签发的会话会失效。使用受信任的密码管理器或安全编辑器修改文件，不要将实际访问码放进命令行或日志。
 
 ## 备份与恢复
 

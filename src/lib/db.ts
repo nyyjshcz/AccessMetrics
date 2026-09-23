@@ -70,16 +70,16 @@ export function migrate() {
     migration029,
     migration030,
     migration031,
+    migration032,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
     if (applied.has(version)) continue;
-    // Migration 021 rebuilds the legacy pages table to remove the original
-    // site-wide UNIQUE(site_id, canonical_url) constraint. SQLite cannot drop
-    // that auto-index in place, and the rebuild must temporarily disable FK
-    // enforcement while child tables continue to reference the same name.
-    const legacyPagesRebuild = version === 21 && hasLegacyPagesUniqueConstraint(db);
-    if (legacyPagesRebuild) db.pragma("foreign_keys = OFF");
+    // SQLite cannot alter these constraints in place. Rebuild the parent table
+    // while child tables continue to reference it by name.
+    const requiresForeignKeysOff =
+      (version === 21 && hasLegacyPagesUniqueConstraint(db)) || version === 32;
+    if (requiresForeignKeysOff) db.pragma("foreign_keys = OFF");
     try {
       db.transaction(() => {
         migrations[index](db);
@@ -89,7 +89,7 @@ export function migrate() {
         );
       })();
     } finally {
-      if (legacyPagesRebuild) db.pragma("foreign_keys = ON");
+      if (requiresForeignKeysOff) db.pragma("foreign_keys = ON");
     }
     logger.info({ version }, "database migration applied");
   }
@@ -1034,9 +1034,7 @@ function migration030(db: Database.Database) {
     (row) => row.name === "rate_limit_rpm",
   );
   if (!hasColumn)
-    db.exec(
-      "ALTER TABLE ai_provider_configs ADD COLUMN rate_limit_rpm INTEGER NOT NULL DEFAULT 0",
-    );
+    db.exec("ALTER TABLE ai_provider_configs ADD COLUMN rate_limit_rpm INTEGER NOT NULL DEFAULT 0");
   // Existing OpenRouter free providers already used the built-in 20 RPM pace;
   // preserve that behavior while making the strategy optional for future edits.
   db.exec(`
@@ -1053,6 +1051,49 @@ function migration031(db: Database.Database) {
     (row) => row.name === "crawl_summary_json",
   );
   if (!present) db.exec("ALTER TABLE scan_runs ADD COLUMN crawl_summary_json TEXT");
+}
+
+function migration032(db: Database.Database) {
+  db.exec(`
+    CREATE TABLE ai_review_batches_new (
+      id TEXT PRIMARY KEY,
+      batch_key TEXT NOT NULL UNIQUE,
+      run_id TEXT REFERENCES scan_runs(id) ON DELETE RESTRICT,
+      page_id TEXT REFERENCES pages(id) ON DELETE RESTRICT,
+      study_freeze_id TEXT REFERENCES study_freezes(id) ON DELETE RESTRICT,
+      provider_config_id TEXT REFERENCES ai_provider_configs(id) ON DELETE SET NULL,
+      provider_snapshot_json TEXT NOT NULL,
+      provider_snapshot_hash TEXT NOT NULL,
+      prompt_version TEXT NOT NULL,
+      prompt_hash TEXT NOT NULL,
+      evidence_version TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('queued','running','paused','completed','failed','cancelled')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT,
+      CHECK (
+        (study_freeze_id IS NOT NULL AND run_id IS NULL AND page_id IS NULL)
+        OR (study_freeze_id IS NULL AND run_id IS NOT NULL)
+      )
+    );
+    INSERT INTO ai_review_batches_new (
+      id,batch_key,run_id,page_id,study_freeze_id,provider_config_id,
+      provider_snapshot_json,provider_snapshot_hash,prompt_version,prompt_hash,
+      evidence_version,status,created_at,updated_at,completed_at
+    )
+    SELECT
+      id,batch_key,run_id,page_id,study_freeze_id,provider_config_id,
+      provider_snapshot_json,provider_snapshot_hash,prompt_version,prompt_hash,
+      evidence_version,status,created_at,updated_at,completed_at
+    FROM ai_review_batches;
+    DROP TABLE ai_review_batches;
+    ALTER TABLE ai_review_batches_new RENAME TO ai_review_batches;
+    CREATE UNIQUE INDEX idx_ai_formal_batch_study_freeze
+      ON ai_review_batches(study_freeze_id)
+      WHERE study_freeze_id IS NOT NULL AND run_id IS NULL AND page_id IS NULL;
+    CREATE INDEX idx_ai_batches_scope
+      ON ai_review_batches(run_id,page_id,study_freeze_id,status,updated_at);
+  `);
 }
 
 export type Db = Database.Database;

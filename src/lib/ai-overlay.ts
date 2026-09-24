@@ -757,13 +757,16 @@ export function pauseAiBatch(batchId: string) {
   transaction((db) => {
     db.prepare(
       `UPDATE ai_api_attempts SET cancelled_at=COALESCE(cancelled_at,?)
-       WHERE batch_id=? AND status='running'`,
+       WHERE id IN (
+         SELECT a.id FROM ai_api_attempts a
+         JOIN ai_review_items i ON i.id=a.item_id
+         WHERE i.batch_id=? AND i.status='running'
+           AND a.retry_cycle=i.retry_cycle AND a.attempt_number=i.attempt_count
+       )`,
     ).run(timestamp, batchId);
-    db.prepare(
-      `UPDATE ai_review_items SET status='queued',lease_owner=NULL,lease_until=NULL,
-         next_retry_at=NULL,updated_at=?,completed_at=NULL
-       WHERE batch_id=? AND status='running'`,
-    ).run(timestamp, batchId);
+    // Keep each running lease until its worker acknowledges cancellation. Web
+    // and AI Worker are separate containers, so resume must not make the same
+    // item claimable while the previous paid request is still in flight.
     db.prepare(
       `UPDATE ai_review_batches SET status='paused',cancel_requested_at=?,completed_at=NULL,updated_at=?
        WHERE id=? AND status IN ('queued','running')`,
@@ -836,18 +839,20 @@ export function retryAiBatch(batchId: string) {
   assertBatchSourceAndSnapshot(batch);
   if (batch.status === "cancelled")
     throw new AppError("AI_BATCH_CANCELLED", "已取消的 AI 批次不能重试", 409);
-  const retryRow = getDb()
-    .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND status='failed'")
-    .get(batchId) as { count: number };
-  const retriedCount = Number(retryRow.count);
+  let retriedCount = 0;
   const timestamp = now();
   transaction((db) => {
     assertNoOtherActiveBatch(db, batch.run_id, batchId);
     removeHumanResolvedQueueItems(db, batchId, batch.run_id);
+    const retryRow = db
+      .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND status='failed'")
+      .get(batchId) as { count: number };
+    retriedCount = Number(retryRow.count);
     db.prepare(
       "UPDATE ai_review_items SET status='queued',verdict=NULL,reason=NULL,lease_owner=NULL,lease_until=NULL,attempt_count=0,retry_cycle=retry_cycle+1,next_retry_at=NULL,response_hash=NULL,last_error=NULL,updated_at=?,completed_at=NULL WHERE batch_id=? AND status='failed'",
     ).run(timestamp, batchId);
-    if (retriedCount > 0 && finishWhenNoQueuedItems(db, batchId, timestamp) > 0)
+    const pending = finishWhenNoQueuedItems(db, batchId, timestamp);
+    if (retriedCount > 0 && pending > 0)
       db.prepare(
         "UPDATE ai_review_batches SET status='queued',cancel_requested_at=NULL,updated_at=?,completed_at=NULL WHERE id=? AND status IN ('failed','paused','completed')",
       ).run(timestamp, batchId);
@@ -1352,7 +1357,22 @@ function completeItem(
            AND b.cancel_requested_at IS NULL AND i.status='running' AND i.lease_owner=?`,
       )
       .get(item.id, item.batch_id, item.run_id, attemptId, item.lease_owner);
-    if (!valid) return;
+    if (!valid) {
+      // A provider may resolve at the same time the cross-container cancel is
+      // observed. Discard that response, but release the lease only now that
+      // the request has settled so an immediate resume cannot duplicate it.
+      db.prepare(
+        `UPDATE ai_review_items SET status='queued',last_error=NULL,lease_owner=NULL,
+           lease_until=NULL,next_retry_at=NULL,updated_at=?,completed_at=NULL
+         WHERE id=? AND batch_id=? AND status='running' AND lease_owner=?
+           AND EXISTS (
+             SELECT 1 FROM ai_api_attempts a JOIN ai_review_batches b ON b.id=ai_review_items.batch_id
+             WHERE a.id=? AND a.item_id=ai_review_items.id AND a.cancelled_at IS NOT NULL
+               AND b.status IN ('paused','queued','running')
+           )`,
+      ).run(timestamp, item.id, item.batch_id, item.lease_owner, attemptId);
+      return;
+    }
     const changed = db
       .prepare(
         "UPDATE ai_review_items SET status='completed',verdict=?,reason=?,response_hash=?,last_error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=?,completed_at=? WHERE id=? AND status='running' AND lease_owner=?",
@@ -1488,9 +1508,21 @@ function failItem(item: any, error: unknown) {
       (error instanceof Error && error.name === "AbortError") ||
       Boolean(cancellation?.cancel_requested_at || attemptCancelled?.cancelled_at);
     if (isCancelled) {
+      const retryAfterCancellation = Boolean(
+        cancellation?.cancel_requested_at || attemptCancelled?.cancelled_at,
+      );
       db.prepare(
-        "UPDATE ai_review_items SET status='cancelled',last_error='AI_ATTEMPT_CANCELLED',lease_owner=NULL,lease_until=NULL,next_retry_at=NULL,updated_at=?,completed_at=? WHERE id=? AND status='running' AND lease_owner=?",
-      ).run(timestamp, timestamp, item.id, item.lease_owner);
+        `UPDATE ai_review_items SET status=?,last_error=?,lease_owner=NULL,lease_until=NULL,
+           next_retry_at=NULL,updated_at=?,completed_at=?
+         WHERE id=? AND status='running' AND lease_owner=?`,
+      ).run(
+        retryAfterCancellation ? "queued" : "cancelled",
+        retryAfterCancellation ? null : "AI_ATTEMPT_CANCELLED",
+        timestamp,
+        retryAfterCancellation ? null : timestamp,
+        item.id,
+        item.lease_owner,
+      );
       return;
     }
     const current = db

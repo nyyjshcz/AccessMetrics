@@ -341,6 +341,103 @@ describe("AI lifecycle integration", () => {
     }
   });
 
+  it("does not issue a duplicate call when a cross-container pause is resumed before abort settles", async () => {
+    const { run } = fixture(1);
+    dbModule
+      .getDb()
+      .prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running','failed')")
+      .run();
+    const configured = provider();
+    const started = await postReview(run.id, configured.id);
+    const batchId = (await started.json()).batch.id as string;
+    let requestSignal: AbortSignal | undefined;
+    let resolveFetch: ((response: Response) => void) | undefined;
+    let rejectFetch: ((reason?: unknown) => void) | undefined;
+    let fetchCalls = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+      fetchCalls += 1;
+      if (fetchCalls > 1)
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: JSON.stringify({ verdict: "uncertain", reason: "test" }) } }],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
+      return new Promise<Response>((resolve, reject) => {
+        resolveFetch = resolve;
+        rejectFetch = reject;
+        requestSignal = init?.signal as AbortSignal;
+        requestSignal.addEventListener(
+          "abort",
+          () => reject(new DOMException("The operation was aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    });
+    const abortSpy = vi.spyOn(AbortController.prototype, "abort").mockImplementation(() => {});
+    let processing: Promise<boolean> | undefined;
+    try {
+      processing = ai.processNextAiItem("remote-worker-slot");
+      for (let wait = 0; wait < 50 && !requestSignal; wait += 1)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(requestSignal).toBeDefined();
+
+      // Model a Web container recording the durable cancel request. Its local
+      // aborter cannot reach the request owned by the separate AI Worker.
+      const paused = await postBatchAction(batchId, "pause");
+      expect(paused.status).toBe(200);
+      expect((await paused.json()).batch.status).toBe("paused");
+      expect(dbModule.getDb().prepare(
+        "SELECT status,lease_owner,lease_until FROM ai_review_items WHERE batch_id=?",
+      ).get(batchId)).toMatchObject({
+        status: "running",
+        lease_owner: "remote-worker-slot",
+        lease_until: expect.any(String),
+      });
+
+      const resumed = await postBatchAction(batchId, "resume");
+      expect(resumed.status).toBe(200);
+      expect((await resumed.json()).batch.status).toBe("queued");
+      await expect(ai.processNextAiItem("second-worker-slot")).resolves.toBe(false);
+      expect(fetchCalls).toBe(1);
+
+      // A provider can still deliver a response after the durable cancel was
+      // recorded. Discard it, release the old lease, then allow one new call.
+      resolveFetch?.(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: JSON.stringify({ verdict: "uncertain", reason: "late" }) } }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+      await expect(processing).resolves.toBe(true);
+      expect(dbModule.getDb().prepare(
+        "SELECT status,attempt_count,lease_owner,verdict FROM ai_review_items WHERE batch_id=?",
+      ).get(batchId)).toMatchObject({
+        status: "queued",
+        attempt_count: 1,
+        lease_owner: null,
+        verdict: null,
+      });
+      await expect(ai.processNextAiItem("after-cancel-settled-worker")).resolves.toBe(true);
+      expect(fetchCalls).toBe(2);
+      expect(dbModule.getDb().prepare(
+        "SELECT status,attempt_count,verdict FROM ai_review_items WHERE batch_id=?",
+      ).get(batchId)).toMatchObject({ status: "completed", attempt_count: 2, verdict: "uncertain" });
+    } finally {
+      abortSpy.mockRestore();
+      if (processing && requestSignal && !requestSignal.aborted) {
+        ai.pauseAiBatch(batchId);
+        rejectFetch?.(new DOMException("Test cleanup", "AbortError"));
+      }
+      await processing?.catch(() => undefined);
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("rejects resume after its provider snapshot becomes stale", async () => {
     const { run } = fixture(1);
     const configured = provider();
@@ -405,6 +502,31 @@ describe("AI lifecycle integration", () => {
     expect(await retried.json()).toMatchObject({ retriedCount: 1, batch: { status: "queued" } });
     expect(db.prepare("SELECT status,attempt_count,retry_cycle FROM ai_review_items WHERE id=?").get(rows[0].id)).toEqual({ status: "queued", attempt_count: 0, retry_cycle: 1 });
     expect(db.prepare("SELECT status,attempt_count,retry_cycle,verdict FROM ai_review_items WHERE id=?").get(rows[1].id)).toEqual({ status: "completed", attempt_count: 0, retry_cycle: 0, verdict: "problem" });
+  });
+
+  it("does not count a failed item that a human review resolves before retry", async () => {
+    const { run } = fixture(1);
+    const configured = provider();
+    const started = await postReview(run.id, configured.id);
+    const batchId = (await started.json()).batch.id as string;
+    const db = dbModule.getDb();
+    const item = db
+      .prepare("SELECT id,result_node_id FROM ai_review_items WHERE batch_id=?")
+      .get(batchId) as { id: string; result_node_id: string };
+    const timestamp = new Date().toISOString();
+    db.prepare(
+      "UPDATE ai_review_items SET status='failed',attempt_count=3,completed_at=? WHERE id=?",
+    ).run(timestamp, item.id);
+    db.prepare("UPDATE ai_review_batches SET status='failed' WHERE id=?").run(batchId);
+    db.prepare(
+      "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,is_current,reviewed_at) VALUES (?,?,NULL,'ad_hoc','local','not_problem','resolved manually',1,1,?)",
+    ).run(`manual_${crypto.randomUUID()}`, item.result_node_id, timestamp);
+
+    const retried = await postBatchAction(batchId, "retry");
+
+    expect(retried.status).toBe(200);
+    expect(await retried.json()).toMatchObject({ retriedCount: 0, batch: { status: "completed" } });
+    expect(db.prepare("SELECT COUNT(*) count FROM ai_review_items WHERE id=?").get(item.id)).toEqual({ count: 0 });
   });
 
   it("does not make a provider call when explicit resume finds an exhausted cycle", async () => {

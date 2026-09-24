@@ -12,6 +12,17 @@ import { SCORE_MODEL_VERSION } from "./score";
 import { canonicalizeUrl } from "./url-security";
 
 const now = () => new Date().toISOString();
+const aiAttemptAborters = new Map<string, Set<() => void>>();
+
+export function registerAiAttemptAborter(runId: string, abort: () => void) {
+  const aborters = aiAttemptAborters.get(runId) ?? new Set<() => void>();
+  aborters.add(abort);
+  aiAttemptAborters.set(runId, aborters);
+  return () => {
+    aborters.delete(abort);
+    if (aborters.size === 0) aiAttemptAborters.delete(runId);
+  };
+}
 export function upsertSite(origin: string, name = origin, category?: string, candidateId?: string) {
   const existing = ((candidateId
     ? getDb().prepare("SELECT * FROM sites WHERE candidate_id=?").get(candidateId)
@@ -108,12 +119,13 @@ export function deleteTerminalScanJob(jobId: string) {
     if (!DELETABLE_JOB_STATUSES.has(job.status))
       throw new AppError("SCAN_JOB_NOT_TERMINAL", "仅已结束的任务可以删除", 409);
 
-    const run = db.prepare("SELECT id,published FROM scan_runs WHERE job_id=?").get(jobId) as
-      | { id: string; published: number }
-      | undefined;
-    if (run?.published) throw new AppError("RUN_PUBLISHED_READ_ONLY", "已发布报告不能删除", 409);
+    const runs = db
+      .prepare("SELECT id,published FROM scan_runs WHERE job_id=? ORDER BY started_at DESC")
+      .all(jobId) as Array<{ id: string; published: number }>;
+    if (runs.some((run) => run.published))
+      throw new AppError("RUN_PUBLISHED_READ_ONLY", "已发布报告不能删除", 409);
 
-    if (run) {
+    for (const run of runs) {
       const studyReference = db
         .prepare(
           `SELECT 'study_run_attempts' AS source FROM study_run_attempts WHERE run_id=?
@@ -121,7 +133,7 @@ export function deleteTerminalScanJob(jobId: string) {
            SELECT 'study_export_runs' AS source FROM study_export_runs WHERE run_id=?
            LIMIT 1`,
         )
-        .get(run.id, run.id) as { source: string } | undefined;
+        .all(run.id, run.id) as Array<{ source: string }>;
       const manualSampleReference = db
         .prepare(
           `SELECT ms.id
@@ -132,7 +144,7 @@ export function deleteTerminalScanJob(jobId: string) {
            LIMIT 1`,
         )
         .get(run.id) as { id: string } | undefined;
-      if (studyReference || manualSampleReference)
+      if (studyReference.length > 0 || manualSampleReference)
         throw new AppError("SCAN_STUDY_REFERENCED", "研究记录引用了该扫描，不能删除", 409);
     }
 
@@ -140,9 +152,9 @@ export function deleteTerminalScanJob(jobId: string) {
       .prepare(
         `SELECT page_id AS id FROM job_pages WHERE job_id=?
          UNION
-         SELECT id FROM pages WHERE run_id=?`,
+         SELECT id FROM pages WHERE run_id IN (${runs.length ? runs.map(() => "?").join(",") : "NULL"})`,
       )
-      .all(jobId, run?.id ?? "") as Array<{ id: string }>;
+      .all(jobId, ...runs.map((run) => run.id)) as Array<{ id: string }>;
     const sharedPage = db
       .prepare(
         `SELECT jp.page_id
@@ -158,36 +170,36 @@ export function deleteTerminalScanJob(jobId: string) {
     if (sharedPage)
       throw new AppError("SCAN_SHARED_PAGE_REFERENCED", "任务页面仍被其他任务引用，不能删除", 409);
 
-    if (run) {
+    if (runs.length > 0) {
       const timestamp = now();
-      // Prevent further claims before removing the batch.  A request already
-      // in flight uses guarded updates, which become no-ops after this
-      // transaction removes its item row.
+      const runIds = runs.map((run) => run.id);
+      const placeholders = runIds.map(() => "?").join(",");
       db.prepare(
-        `UPDATE ai_review_batches
-         SET status='cancelled',updated_at=?,completed_at=COALESCE(completed_at,?)
-         WHERE run_id=? AND status IN ('queued','running')`,
-      ).run(timestamp, timestamp, run.id);
+        `UPDATE ai_api_attempts SET
+           cancelled_at=CASE WHEN status='running' THEN COALESCE(cancelled_at,?) ELSE cancelled_at END,
+           run_id=NULL,batch_id=NULL,item_id=NULL,provider_config_id=NULL
+         WHERE run_id IN (${placeholders})`,
+      ).run(timestamp, ...runIds);
+      for (const runId of runIds) for (const abort of aiAttemptAborters.get(runId) ?? []) abort();
       db.prepare(
-        "DELETE FROM ai_review_items WHERE batch_id IN (SELECT id FROM ai_review_batches WHERE run_id=?)",
-      ).run(run.id);
+        `UPDATE ai_review_batches SET status='cancelled',updated_at=?,completed_at=COALESCE(completed_at,?) WHERE run_id IN (${placeholders})`,
+      ).run(timestamp, timestamp, ...runIds);
       db.prepare(
-        `DELETE FROM manual_reviews
-         WHERE result_node_id IN (
-           SELECT n.id
-           FROM result_nodes n
-           JOIN rule_results rr ON rr.id=n.rule_result_id
-           WHERE rr.run_id=?
+        `DELETE FROM ai_review_items WHERE batch_id IN (SELECT id FROM ai_review_batches WHERE run_id IN (${placeholders}))`,
+      ).run(...runIds);
+      db.prepare(
+        `DELETE FROM manual_reviews WHERE result_node_id IN (
+           SELECT n.id FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id IN (${placeholders})
          )`,
-      ).run(run.id);
-      db.prepare("DELETE FROM ai_review_batches WHERE run_id=?").run(run.id);
+      ).run(...runIds);
+      db.prepare(`DELETE FROM ai_review_batches WHERE run_id IN (${placeholders})`).run(...runIds);
       db.prepare(
-        "DELETE FROM result_nodes WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id=?)",
-      ).run(run.id);
-      db.prepare("DELETE FROM rule_results WHERE run_id=?").run(run.id);
-      db.prepare("DELETE FROM page_scores WHERE run_id=?").run(run.id);
-      db.prepare("DELETE FROM site_scores WHERE run_id=?").run(run.id);
-      db.prepare("DELETE FROM exports WHERE run_id=?").run(run.id);
+        `DELETE FROM result_nodes WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id IN (${placeholders}))`,
+      ).run(...runIds);
+      db.prepare(`DELETE FROM rule_results WHERE run_id IN (${placeholders})`).run(...runIds);
+      db.prepare(`DELETE FROM page_scores WHERE run_id IN (${placeholders})`).run(...runIds);
+      db.prepare(`DELETE FROM site_scores WHERE run_id IN (${placeholders})`).run(...runIds);
+      db.prepare(`DELETE FROM exports WHERE run_id IN (${placeholders})`).run(...runIds);
     }
 
     db.prepare("DELETE FROM job_pages WHERE job_id=?").run(jobId);
@@ -196,10 +208,13 @@ export function deleteTerminalScanJob(jobId: string) {
         ...pageIds.map((page) => page.id),
       );
     }
-    if (run) db.prepare("DELETE FROM scan_runs WHERE id=?").run(run.id);
+    if (runs.length > 0)
+      db.prepare(`DELETE FROM scan_runs WHERE id IN (${runs.map(() => "?").join(",")})`).run(
+        ...runs.map((run) => run.id),
+      );
     db.prepare("DELETE FROM scan_jobs WHERE id=?").run(jobId);
 
-    return { jobId, runId: run?.id ?? null };
+    return { jobId, runId: runs[0]?.id ?? null };
   });
 }
 export function createRun(job: any) {

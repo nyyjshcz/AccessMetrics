@@ -115,14 +115,122 @@ describe("thin AI overlay", () => {
   beforeAll(() => dbModule.migrate());
   afterAll(() => dbModule.closeDb());
 
-  it("adds only the evidence columns and three AI tables", () => {
+  it("migrates lifecycle persistence to version 033 idempotently", () => {
+    const db = dbModule.getDb();
+    expect(
+      (
+        db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
+          version: number;
+        }
+      ).version,
+    ).toBe(33);
+
+    // Recreate the pre-033 schema to exercise upgrading an installed 032 database.
+    db.exec(`
+      DROP INDEX IF EXISTS idx_ai_attempts_active;
+      DROP INDEX IF EXISTS idx_ai_attempts_history;
+      DROP INDEX IF EXISTS idx_ai_worker_liveness;
+      DROP INDEX IF EXISTS idx_ai_items_due_queue;
+      DROP TABLE ai_api_attempts;
+      DROP TABLE ai_worker_instances;
+      ALTER TABLE ai_review_items DROP COLUMN next_retry_at;
+      ALTER TABLE ai_review_items DROP COLUMN retry_cycle;
+      ALTER TABLE ai_review_batches DROP COLUMN cancel_requested_at;
+      DELETE FROM schema_migrations WHERE version=33;
+    `);
+    expect(
+      (
+        db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
+          version: number;
+        }
+      ).version,
+    ).toBe(32);
+    dbModule.migrate();
+    dbModule.migrate();
+
+    expect(
+      (
+        db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
+          version: number;
+        }
+      ).version,
+    ).toBe(33);
+    const tableColumns = (table: string) =>
+      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+        (column) => column.name,
+      );
+    expect(tableColumns("ai_api_attempts")).toEqual(
+      expect.arrayContaining([
+        "id",
+        "worker_id",
+        "slot",
+        "run_id",
+        "batch_id",
+        "item_id",
+        "provider_config_id",
+        "provider_label",
+        "model",
+        "retry_cycle",
+        "attempt_number",
+        "started_at",
+        "ended_at",
+        "duration_ms",
+        "status",
+        "http_status",
+        "error_code",
+        "input_tokens",
+        "output_tokens",
+        "reported_cost",
+        "currency",
+        "cancelled_at",
+      ]),
+    );
+    expect(tableColumns("ai_worker_instances")).toEqual(
+      expect.arrayContaining(["worker_id", "started_at", "last_seen_at", "stopped_at"]),
+    );
+    expect(tableColumns("ai_review_items")).toEqual(
+      expect.arrayContaining(["retry_cycle", "next_retry_at"]),
+    );
+    expect(tableColumns("ai_review_batches")).toContain("cancel_requested_at");
+    const indexes = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as Array<{
+        name: string;
+      }>
+    ).map((row) => row.name);
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        "idx_ai_attempts_active",
+        "idx_ai_attempts_history",
+        "idx_ai_worker_liveness",
+        "idx_ai_items_due_queue",
+      ]),
+    );
+    const attemptColumns = db.prepare("PRAGMA table_info(ai_api_attempts)").all() as Array<{
+      name: string;
+      notnull: number;
+    }>;
+    for (const nullableColumn of ["run_id", "batch_id", "item_id", "provider_config_id"])
+      expect(attemptColumns.find((column) => column.name === nullableColumn)?.notnull).toBe(0);
+    expect(db.prepare("PRAGMA foreign_key_list(ai_api_attempts)").all()).toHaveLength(0);
+    expect(tableColumns("ai_api_attempts")).not.toEqual(
+      expect.arrayContaining(["api_key", "prompt", "url", "page_content", "raw_response"]),
+    );
+  });
+
+  it("adds evidence columns and the AI persistence tables", () => {
     const tables = (
       dbModule
         .getDb()
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'ai_%'")
         .all() as Array<{ name: string }>
     ).map((row) => row.name);
-    expect(tables.sort()).toEqual(["ai_provider_configs", "ai_review_batches", "ai_review_items"]);
+    expect(tables.sort()).toEqual([
+      "ai_api_attempts",
+      "ai_provider_configs",
+      "ai_review_batches",
+      "ai_review_items",
+      "ai_worker_instances",
+    ]);
     const columns = (
       dbModule.getDb().prepare("PRAGMA table_info(result_nodes)").all() as Array<{ name: string }>
     ).map((row) => row.name);

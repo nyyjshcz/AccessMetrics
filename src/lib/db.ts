@@ -71,6 +71,7 @@ export function migrate() {
     migration030,
     migration031,
     migration032,
+    migration033,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -1093,6 +1094,61 @@ function migration032(db: Database.Database) {
       WHERE study_freeze_id IS NOT NULL AND run_id IS NULL AND page_id IS NULL;
     CREATE INDEX idx_ai_batches_scope
       ON ai_review_batches(run_id,page_id,study_freeze_id,status,updated_at);
+  `);
+}
+
+function migration033(db: Database.Database) {
+  const addColumn = (table: string, column: string, definition: string) => {
+    const present = (db.prepare(`PRAGMA table_info(${table})`).all() as any[]).some(
+      (row) => row.name === column,
+    );
+    if (!present) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+
+  addColumn("ai_review_items", "retry_cycle", "INTEGER NOT NULL DEFAULT 0");
+  addColumn("ai_review_items", "next_retry_at", "TEXT");
+  addColumn("ai_review_batches", "cancel_requested_at", "TEXT");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_api_attempts (
+      id TEXT PRIMARY KEY,
+      worker_id TEXT NOT NULL,
+      slot INTEGER NOT NULL,
+      run_id TEXT,
+      batch_id TEXT,
+      item_id TEXT,
+      provider_config_id TEXT,
+      provider_label TEXT NOT NULL,
+      model TEXT NOT NULL,
+      retry_cycle INTEGER NOT NULL,
+      attempt_number INTEGER NOT NULL,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      duration_ms INTEGER,
+      status TEXT NOT NULL,
+      http_status INTEGER,
+      error_code TEXT,
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      reported_cost REAL,
+      currency TEXT,
+      cancelled_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS ai_worker_instances (
+      worker_id TEXT PRIMARY KEY,
+      started_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      stopped_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_attempts_active
+      ON ai_api_attempts(status,started_at)
+      WHERE status='running';
+    CREATE INDEX IF NOT EXISTS idx_ai_attempts_history
+      ON ai_api_attempts(started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_ai_worker_liveness
+      ON ai_worker_instances(last_seen_at,stopped_at);
+    CREATE INDEX IF NOT EXISTS idx_ai_items_due_queue
+      ON ai_review_items(status,next_retry_at,updated_at);
   `);
 }
 

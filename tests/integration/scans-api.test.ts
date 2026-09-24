@@ -242,6 +242,145 @@ describe("scans list route", () => {
     );
   });
 
+  it("deletes AI batches and items in every status while preserving other scans and reports", async () => {
+    const db = dbModule.getDb();
+    const makeScan = (label: string) => {
+      const origin = `https://delete-status-${label}-${Math.random().toString(36).slice(2)}.example`;
+      const job = repositories.createScanJob(origin, {
+        maxPages: 1,
+        sameOriginOnly: true,
+        respectRobots: true,
+      });
+      const run = repositories.createRun(job);
+      saveIncompleteForDelete(run.id, job.site_id, origin);
+      db.prepare("UPDATE scan_jobs SET status='completed',finished_at=? WHERE id=?").run(
+        new Date().toISOString(),
+        job.id,
+      );
+      return { job, run };
+    };
+    const target = makeScan("target");
+    const other = makeScan("other");
+    const provider = ai.saveAiProvider({
+      label: "状态删除模型",
+      baseUrl: "http://127.0.0.1:1234/v1",
+      model: "delete-status-model",
+      apiKey: "delete-status-key",
+      maxConcurrentRequests: 1,
+      enabled: true,
+    });
+    const statuses = ["queued", "running", "paused", "completed", "failed", "cancelled"];
+    const targetBatches = statuses.map((status) => {
+      const batch = ai.createAiBatch({ runId: target.run.id, providerConfigId: provider.id });
+      db.prepare("UPDATE ai_review_batches SET status=? WHERE id=?").run(status, batch.batch.id);
+      db.prepare("UPDATE ai_review_items SET status=?,verdict=? WHERE batch_id=?").run(
+        ["queued", "running", "completed", "failed"].includes(status) ? status : "queued",
+        status === "completed" ? "problem" : null,
+        batch.batch.id,
+      );
+      db.prepare(
+        "INSERT INTO ai_api_attempts(id,worker_id,slot,run_id,batch_id,item_id,provider_config_id,provider_label,model,retry_cycle,attempt_number,started_at,status) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,'running' FROM ai_review_items WHERE batch_id=? LIMIT 1",
+      ).run(
+        `attempt_${Date.now()}_${Math.random()}`,
+        "delete-test-worker",
+        0,
+        target.run.id,
+        batch.batch.id,
+        `${batch.batch.id}-item`,
+        provider.id,
+        "test provider",
+        "test model",
+        0,
+        1,
+        new Date().toISOString(),
+        batch.batch.id,
+      );
+      return batch.batch.id;
+    });
+    const otherBatch = ai.createAiBatch({ runId: other.run.id, providerConfigId: provider.id });
+    db.prepare("UPDATE ai_review_batches SET status='completed' WHERE id=?").run(
+      otherBatch.batch.id,
+    );
+    db.prepare(
+      "UPDATE ai_review_items SET status='completed',verdict='not_problem' WHERE batch_id=?",
+    ).run(otherBatch.batch.id);
+    const otherCompletedItem = db
+      .prepare("SELECT id,result_node_id,verdict FROM ai_review_items WHERE batch_id=?")
+      .get(otherBatch.batch.id) as { id: string; result_node_id: string; verdict: string };
+    const otherExportId = `export_${Math.random().toString(36).slice(2)}`;
+    db.prepare(
+      "INSERT INTO exports(id,run_id,kind,path,manifest_hash,created_at,status) VALUES (?,?,?,?,?,?,?)",
+    ).run(
+      otherExportId,
+      other.run.id,
+      "json",
+      "other-scan-report.json",
+      "other-report-hash",
+      new Date().toISOString(),
+      "completed",
+    );
+    const deleteResponse = await scanJobRoute.DELETE(
+      new Request(`http://localhost:3000/api/scans/${target.job.id}`, { method: "DELETE" }),
+      { params: Promise.resolve({ jobId: target.job.id }) },
+    );
+    expect(deleteResponse.status).toBe(200);
+    expect(
+      db.prepare("SELECT COUNT(*) count FROM ai_review_batches WHERE run_id=?").get(target.run.id),
+    ).toEqual({ count: 0 });
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) count FROM ai_review_items WHERE batch_id IN (" +
+            targetBatches.map(() => "?").join(",") +
+            ")",
+        )
+        .get(...targetBatches),
+    ).toEqual({ count: 0 });
+    const retainedAttempts = db
+      .prepare(
+        "SELECT run_id,batch_id,item_id,provider_config_id,cancelled_at,status FROM ai_api_attempts WHERE worker_id='delete-test-worker'",
+      )
+      .all() as Array<Record<string, unknown>>;
+    expect(retainedAttempts).toHaveLength(statuses.length);
+    expect(
+      retainedAttempts.every(
+        (attempt) =>
+          attempt.cancelled_at &&
+          !attempt.run_id &&
+          !attempt.batch_id &&
+          !attempt.item_id &&
+          !attempt.provider_config_id,
+      ),
+    ).toBe(true);
+    expect(
+      db.prepare("SELECT id FROM ai_review_batches WHERE id=?").get(otherBatch.batch.id),
+    ).toBeDefined();
+    expect(db.prepare("SELECT id FROM scan_jobs WHERE id=?").get(other.job.id)).toBeDefined();
+    expect(db.prepare("SELECT id FROM scan_runs WHERE id=?").get(other.run.id)).toBeDefined();
+    expect(
+      db.prepare("SELECT id,run_id,status FROM exports WHERE id=?").get(otherExportId),
+    ).toMatchObject({ id: otherExportId, run_id: other.run.id, status: "completed" });
+    expect(
+      db
+        .prepare("SELECT id,result_node_id,status,verdict FROM ai_review_items WHERE id=?")
+        .get(otherCompletedItem.id),
+    ).toMatchObject({
+      id: otherCompletedItem.id,
+      result_node_id: otherCompletedItem.result_node_id,
+      status: "completed",
+      verdict: "not_problem",
+    });
+    expect(
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) count FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=?",
+          )
+          .get(other.run.id) as { count: number }
+      ).count,
+    ).toBeGreaterThan(0);
+  });
+
   it("allows every terminal job without a run to be deleted", async () => {
     const db = dbModule.getDb();
     for (const status of ["completed", "failed", "cancelled"]) {

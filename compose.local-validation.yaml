@@ -1,0 +1,68 @@
+# Isolated, local-only Docker validation stack. It uses project-scoped named
+# volumes and ephemeral credentials supplied by the invoking shell.
+services:
+  web:
+    image: accesscheck-nas:local
+    build: .
+    environment:
+      APP_ENV: test
+      APP_BASE_URL: http://127.0.0.1:3107
+      HOSTNAME: 0.0.0.0
+      DATABASE_URL: /var/lib/accesscheck/data/accesscheck.db
+      PRIVATE_EVIDENCE_ROOT: /var/lib/accesscheck/private-evidence
+      PUBLIC_EXPORT_ROOT: /var/lib/accesscheck/public-exports
+      SESSION_SECRET: ${ACCESSCHECK_VALIDATION_SESSION_SECRET:?provide an ephemeral validation secret}
+      ADMIN_ACCESS_KEY: ${ACCESSCHECK_VALIDATION_ADMIN_KEY:?provide an ephemeral admin key}
+      VISITOR_ACCESS_KEY: ${ACCESSCHECK_VALIDATION_VISITOR_KEY:?provide an ephemeral visitor key}
+      DNS_RESOLVER_MODE: proxy
+      EGRESS_PROXY_URL: http://egress-proxy:8080
+    volumes:
+      - validation-data:/var/lib/accesscheck/data
+      - validation-private:/var/lib/accesscheck/private-evidence
+      - validation-exports:/var/lib/accesscheck/public-exports
+    ports: ["127.0.0.1:3107:3000"]
+    networks: [app]
+    command: ["node", "standalone/server.js"]
+    healthcheck:
+      test: ["CMD", "node", "scripts/healthcheck.mjs"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+
+  worker:
+    image: accesscheck-nas:local
+    build: .
+    environment:
+      APP_ENV: test
+      DATABASE_URL: /var/lib/accesscheck/data/accesscheck.db
+      HTTP_PROXY: http://egress-proxy:8080
+      HTTPS_PROXY: http://egress-proxy:8080
+      NO_PROXY: localhost,127.0.0.1,egress-proxy
+      EGRESS_PROXY_URL: http://egress-proxy:8080
+      DNS_RESOLVER_MODE: proxy
+    volumes:
+      - validation-data:/var/lib/accesscheck/data
+    networks: [scan-isolated]
+    command: ["node", "node_modules/tsx/dist/cli.mjs", "src/worker/index.ts"]
+    depends_on:
+      egress-proxy:
+        condition: service_started
+
+  egress-proxy:
+    image: accesscheck-nas-egress:local
+    build:
+      context: ./tools/egress-proxy
+    read_only: true
+    networks: [app, scan-isolated, external-egress]
+    expose: [8080]
+
+volumes:
+  validation-data:
+  validation-private:
+  validation-exports:
+
+networks:
+  app:
+  scan-isolated:
+    internal: true
+  external-egress:

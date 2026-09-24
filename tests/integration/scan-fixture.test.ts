@@ -6,6 +6,74 @@ import { discoverSite, discoverSiteDetailed } from "@/lib/crawler";
 import { scanPage, closeScanner } from "@/lib/scan-page";
 
 describe("known issue fixture scanner", () => {
+  it("keeps a same-origin link visible when DNS fails before its navigation", async () => {
+    let candidateRequests = 0;
+    const server = http.createServer((request, response) => {
+      if (request.url === "/robots.txt") {
+        response.setHeader("content-type", "text/plain");
+        response.end("User-agent: *\nDisallow: /blocked\n");
+        return;
+      }
+      if (request.url === "/discovery-root.html") {
+        response.setHeader("content-type", "text/html");
+        response.end(
+          '<!doctype html><link rel="icon" href="data:,"><a href="/candidate.html">Candidate</a>',
+        );
+        return;
+      }
+      if (request.url === "/candidate.html") {
+        candidateRequests += 1;
+        response.setHeader("content-type", "text/html");
+        response.end("<!doctype html><title>Candidate</title>");
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const target = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}/`;
+    let lookupCalls = 0;
+    let transientFailures = 0;
+    const testPolicy = {
+      allowPrivateAddresses: true,
+      lookupAll: async () => {
+        lookupCalls += 1;
+        if (lookupCalls >= 6 && lookupCalls <= 8) {
+          transientFailures += 1;
+          throw Object.assign(new Error("temporary fixture resolver failure"), {
+            code: "EAI_AGAIN",
+          });
+        }
+        return ["127.0.0.1"];
+      },
+    };
+    try {
+      const result = await discoverSiteDetailed(`${target}discovery-root.html`, {
+        maxPages: 2,
+        delayMs: 0,
+        networkPolicy: testPolicy,
+      });
+
+      expect(transientFailures).toBe(3);
+      expect(candidateRequests).toBe(0);
+      expect(result).toMatchObject({
+        urls: [`${target}discovery-root.html`, `${target}candidate.html`],
+        summary: {
+          requestedPageLimit: 2,
+          scanTargetCount: 2,
+          skippedNotFoundCount: 0,
+          candidateLinkCount: 1,
+          queuedCandidateCount: 1,
+          discoveryValidationFailureCount: 1,
+          stopReason: "page_limit",
+        },
+      });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 10000);
+
   it("discovers deterministic same-origin pages and preserves key axe rule IDs", async () => {
     const root = path.join(process.cwd(), "tests", "fixtures", "known-issues");
     const serve = (request: http.IncomingMessage, response: http.ServerResponse, port?: number) => {
@@ -54,13 +122,17 @@ describe("known issue fixture scanner", () => {
       if (request.url === "/delayed.html") {
         response.statusCode = 200;
         response.setHeader("content-type", "text/html");
-        response.end('<!doctype html><html><body><script>setTimeout(() => { const b = document.createElement("button"); document.body.append(b); }, 100);</script></body></html>');
+        response.end(
+          '<!doctype html><html><body><script>setTimeout(() => { const b = document.createElement("button"); document.body.append(b); }, 100);</script></body></html>',
+        );
         return;
       }
       if (request.url === "/replacement-root.html") {
         response.statusCode = 200;
         response.setHeader("content-type", "text/html");
-        response.end('<!doctype html><a href="/missing-replacement.html">missing</a><a href="/gone-replacement.html">gone</a><a href="/replacement.html">replacement</a>');
+        response.end(
+          '<!doctype html><a href="/missing-replacement.html">missing</a><a href="/gone-replacement.html">gone</a><a href="/replacement.html">replacement</a>',
+        );
         return;
       }
       if (request.url === "/gone-replacement.html") {
@@ -192,11 +264,14 @@ describe("known issue fixture scanner", () => {
         expect(Array.from(node.aiEvidence!.json).length).toBeLessThanOrEqual(60_000);
         expect(evidence.complete).toBe(true);
         expect(evidence.version).toBe("ai-evidence-v2");
-        expect(evidence.facts).toEqual(expect.objectContaining({
-          target: expect.objectContaining({ tagName: expect.any(String) }),
-          page: expect.objectContaining({ url: expect.any(String) }),
-        }));
-        const outerHtml = (evidence.facts as { target?: { outerHtml?: unknown } }).target?.outerHtml;
+        expect(evidence.facts).toEqual(
+          expect.objectContaining({
+            target: expect.objectContaining({ tagName: expect.any(String) }),
+            page: expect.objectContaining({ url: expect.any(String) }),
+          }),
+        );
+        const outerHtml = (evidence.facts as { target?: { outerHtml?: unknown } }).target
+          ?.outerHtml;
         expect(outerHtml).toEqual(expect.any(String));
         expect(Array.from(outerHtml as string).length).toBe(6_000);
         expect(JSON.stringify(evidence.facts)).not.toContain('"rule"');

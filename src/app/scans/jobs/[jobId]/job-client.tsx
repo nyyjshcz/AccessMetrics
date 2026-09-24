@@ -48,6 +48,18 @@ export default function JobClient({ jobId, locale = "zh-CN" }: { jobId: string; 
   const deduplicated = Number(progress.deduplicated ?? 0);
   const queued = Number(progress.queued ?? 0);
   const scanning = Number(progress.scanning ?? 0);
+  const crawlSummary = data.crawlSummary as
+    | {
+        requestedPageLimit?: unknown;
+        scanTargetCount?: unknown;
+        skippedNotFoundCount?: unknown;
+        candidateLinkCount?: unknown;
+        queuedCandidateCount?: unknown;
+        discoveryValidationFailureCount?: unknown;
+        stopReason?: unknown;
+      }
+    | null
+    | undefined;
   let maxPages: number | null = null;
   try {
     const value = JSON.parse(data.job.options_json ?? "{}")?.maxPages;
@@ -60,6 +72,16 @@ export default function JobClient({ jobId, locale = "zh-CN" }: { jobId: string; 
     done && discovered === 0 && data.job.status === "failed" && data.failure;
   const progressBase = Math.max(1, discovered);
   const currentTarget = data.currentPage?.canonical_url ?? copy.waiting;
+  const stopReason =
+    crawlSummary?.stopReason === "page_limit"
+      ? copy.stopPageLimit
+      : crawlSummary?.stopReason === "duration_limit"
+        ? copy.stopDurationLimit
+        : crawlSummary?.stopReason === "queue_exhausted"
+          ? copy.stopQueueExhausted
+          : copy.stopUnknown;
+  const summaryCount = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
 
   return (
     <section className="scan-progress-page">
@@ -134,6 +156,24 @@ export default function JobClient({ jobId, locale = "zh-CN" }: { jobId: string; 
           {copy.note}
           {deduplicated > 0 ? ` ${copy.merged.replace("{count}", String(deduplicated))}` : ""}
         </p>
+        {crawlSummary ? (
+          <div className="notice" role="status">
+            <strong>{copy.discoveryDiagnostics}</strong>
+            <p>
+              {copy.discoverySummary
+                .replace("{reason}", stopReason)
+                .replace("{limit}", summaryCount(crawlSummary.requestedPageLimit ?? maxPages))
+                .replace("{targets}", summaryCount(crawlSummary.scanTargetCount ?? discovered))
+                .replace("{links}", summaryCount(crawlSummary.candidateLinkCount))
+                .replace("{queued}", summaryCount(crawlSummary.queuedCandidateCount))
+                .replace(
+                  "{validationFailures}",
+                  summaryCount(crawlSummary.discoveryValidationFailureCount),
+                )
+                .replace("{notFound}", summaryCount(crawlSummary.skippedNotFoundCount))}
+            </p>
+          </div>
+        ) : null}
         {data.run && done ? (
           <a className="button-link" href={`/scans/${data.run.id}`}>
             {copy.results}

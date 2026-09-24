@@ -55,7 +55,11 @@ export const messages = {
       readMethod: "报告阅读说明",
       assessMethod: "评估方法",
       readOrder: ["先看评分与覆盖范围", "再看高优先级整改事项", "必要时展开页面元素证据核对"],
-      assessPath: ["发现同站页面", "以真实浏览器状态运行页面检查", "把规则、页面元素与结论写入报告"],
+      assessPath: [
+        "发现同站页面",
+        "以真实浏览器状态运行页面检查",
+        "把规则、页面元素与结论写入报告",
+      ],
       currentWork: "当前工作",
       publishedOutput: "已发布成果",
       activeTasksTitle: "活动任务",
@@ -66,7 +70,8 @@ export const messages = {
       noReports: "还没有已发布报告",
       noTasks: "当前没有活动任务",
       noReportsBody: "完成扫描并发布后，报告会出现在这里，供持有访客密钥的人只读查看。",
-      noTasksBody: "从一个公开网站开始创建扫描；系统会记录页面覆盖、规则结果和可复核的页面元素证据。",
+      noTasksBody:
+        "从一个公开网站开始创建扫描；系统会记录页面覆盖、规则结果和可复核的页面元素证据。",
       view: "查看",
       delete: "删除",
       deleting: "删除中…",
@@ -144,6 +149,13 @@ export const messages = {
       activity: "当前活动",
       progress: "扫描进度",
       terminalSummary: "扫描已结束。请先查看页面覆盖，再打开结果查看规则与评分。",
+      discoveryDiagnostics: "页面发现诊断",
+      discoverySummary:
+        "发现停止原因：{reason}。目标上限 {limit} 页，扫描目标 {targets} 页；检查链接 {links} 条，同源候选入队 {queued} 个；{validationFailures} 个目标在导航前遇到 DNS 校验失败，但仍保留在扫描结果中；404/410 页面跳过 {notFound} 个。",
+      stopPageLimit: "达到页面上限",
+      stopQueueExhausted: "站内候选队列已耗尽",
+      stopDurationLimit: "达到页面发现时限",
+      stopUnknown: "停止原因未记录",
       discoveryFailureTitle: "页面发现前失败",
       discoveryFailureBody: "任务在发现任何页面前失败；没有生成失败页面记录。",
       discoveryFailureCode: "失败代码",
@@ -427,6 +439,13 @@ export const messages = {
       progress: "Scan progress",
       terminalSummary:
         "Scanning has ended. Review page coverage first, then open the results for rules and scores.",
+      discoveryDiagnostics: "Page discovery diagnostics",
+      discoverySummary:
+        "Discovery stopped because: {reason}. The cap was {limit} pages and {targets} scan targets were found; {links} links were checked, {queued} same-origin candidates were queued, {validationFailures} targets hit DNS validation errors before navigation but remain visible scan targets, and {notFound} 404/410 pages were skipped.",
+      stopPageLimit: "the page cap was reached",
+      stopQueueExhausted: "the same-site candidate queue was exhausted",
+      stopDurationLimit: "the discovery time limit was reached",
+      stopUnknown: "the stop reason was not recorded",
       discoveryFailureTitle: "Failed before page discovery",
       discoveryFailureBody:
         "The task failed before discovering any pages; no failed-page records were fabricated.",

@@ -44,6 +44,7 @@ const dbModule = await import("@/lib/db");
 const repositories = await import("@/lib/repositories");
 const loginRoute = await import("@/app/api/auth/login/route");
 const scansRoute = await import("@/app/api/scans/route");
+const scanJobRoute = await import("@/app/api/scans/[jobId]/route");
 const runRoute = await import("@/app/api/runs/[runId]/route");
 const reportJsonRoute = await import("@/app/api/reports/[runId]/json/route");
 const reportHtmlRoute = await import("@/app/api/reports/[runId]/html/route");
@@ -310,6 +311,41 @@ describe("administrator and visitor access keys", () => {
           error_message: "页面返回服务器错误",
         }),
       ],
+    });
+  });
+
+  it("exposes page-discovery diagnostics while the scan progress page is open", async () => {
+    const admin = await login(adminAccessKey, "/scans", "10.23.4.5");
+    const job = repositories.createScanJob("https://discovery-diagnostics.example", {
+      maxPages: 3,
+      sameOriginOnly: true,
+      respectRobots: true,
+    });
+    const run = repositories.createRun(job);
+    repositories.saveCrawlSummary(run.id, {
+      requestedPageLimit: 3,
+      scanTargetCount: 2,
+      skippedNotFoundCount: 1,
+      candidateLinkCount: 4,
+      queuedCandidateCount: 2,
+      discoveryValidationFailureCount: 1,
+      stopReason: "queue_exhausted",
+    });
+    const response = await scanJobRoute.GET(
+      requestWithCookie(`http://localhost:3000/api/scans/${job.id}`, admin.cookie),
+      { params: Promise.resolve({ jobId: job.id }) },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      crawlSummary: {
+        requestedPageLimit: 3,
+        scanTargetCount: 2,
+        skippedNotFoundCount: 1,
+        candidateLinkCount: 4,
+        queuedCandidateCount: 2,
+        discoveryValidationFailureCount: 1,
+        stopReason: "queue_exhausted",
+      },
     });
   });
 

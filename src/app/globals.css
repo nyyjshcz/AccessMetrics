@@ -3136,6 +3136,26 @@ th {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  margin-right: auto;
+}
+.report-downloads .secondary-link {
+  border-color: var(--line);
+  background: var(--paper-muted);
+  color: var(--ink-soft);
+}
+.report-downloads .secondary-link:hover {
+  border-color: var(--line-strong);
+  background: var(--sky-soft);
+  color: var(--ink);
+}
+.report-actions .report-primary-action,
+.report-actions .report-danger-action {
+  min-height: 44px;
+  padding: 10px 18px;
+  white-space: nowrap;
+}
+.report-actions .report-primary-action {
+  box-shadow: 0 5px 14px rgba(0, 125, 145, 0.2);
 }
 .report-actions p {
   flex-basis: 100%;

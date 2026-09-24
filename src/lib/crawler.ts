@@ -18,9 +18,15 @@ export interface CrawlSummary {
   requestedPageLimit: number;
   scanTargetCount: number;
   skippedNotFoundCount: number;
+  candidateLinkCount: number;
+  queuedCandidateCount: number;
+  discoveryValidationFailureCount: number;
   stopReason: "page_limit" | "queue_exhausted" | "duration_limit";
 }
-export interface DetailedDiscoveryResult { urls: string[]; summary: CrawlSummary }
+export interface DetailedDiscoveryResult {
+  urls: string[];
+  summary: CrawlSummary;
+}
 export async function discoverSite(
   startUrl: string,
   options: CrawlOptions = {},
@@ -45,6 +51,9 @@ export async function discoverSiteDetailed(
   const queued = new Set<string>([firstUrl]);
   const discovered = new Set<string>();
   let skippedNotFoundCount = 0;
+  let candidateLinkCount = 0;
+  let queuedCandidateCount = 0;
+  let discoveryValidationFailureCount = 0;
   const candidateReserve = Math.min(100, Math.max(maxPages * 5, maxPages));
   const browser: Browser = await chromium.launch(chromiumLaunchOptions());
   try {
@@ -120,29 +129,42 @@ export async function discoverSiteDetailed(
         const links = await page
           .locator("a[href]")
           .evaluateAll((anchors) => anchors.map((a) => (a as HTMLAnchorElement).href));
+        candidateLinkCount += links.length;
         for (const link of links) {
+          let normalized: string;
+          let candidate: URL;
           try {
-            const normalized = canonicalizeUrl(link);
-            await validateTargetUrl(normalized, options.networkPolicy);
-            if (
-              new URL(normalized).origin === origin &&
-              !visited.has(normalized) &&
-              !queued.has(normalized) &&
-              // A few candidate URLs may collapse to one final redirect URL.
-              // Keep enough discovery candidates to still reach the requested
-              // scan cap when another candidate is a duplicate redirect.
-              queue.length < candidateReserve
-            )
-              if (!isDisallowed(new URL(normalized).pathname, robots)) {
-                queue.push({ url: normalized, depth: currentEntry.depth + 1 });
-                queued.add(normalized);
-              }
+            normalized = canonicalizeUrl(link);
+            candidate = new URL(normalized);
           } catch {
-            /* ignore malformed links */
+            continue;
           }
+          if (
+            !/^https?:$/i.test(candidate.protocol) ||
+            candidate.username ||
+            candidate.password ||
+            candidate.origin !== origin ||
+            isDisallowed(candidate.pathname, robots) ||
+            visited.has(normalized) ||
+            queued.has(normalized) ||
+            // A few candidate URLs may collapse to one final redirect URL.
+            // Keep enough discovery candidates to still reach the requested
+            // scan cap when another candidate is a duplicate redirect.
+            queue.length >= candidateReserve
+          )
+            continue;
+
+          // This link has the already-validated homepage origin. Defer another
+          // DNS lookup until navigation; lookup failures must not silently drop
+          // a same-origin page from the discovery queue. The destination is
+          // still validated before navigation and by the egress proxy.
+          queue.push({ url: normalized, depth: currentEntry.depth + 1 });
+          queued.add(normalized);
+          queuedCandidateCount += 1;
         }
-      } catch {
+      } catch (error) {
         // Navigation errors remain targets so the worker records a failure.
+        if (isDnsLookupFailure(error)) discoveryValidationFailureCount += 1;
         if (!discovered.has(current)) discovered.add(current);
       }
       if ((options.delayMs ?? config.SCAN_DELAY_MS) > 0)
@@ -164,6 +186,9 @@ export async function discoverSiteDetailed(
         requestedPageLimit: maxPages,
         scanTargetCount: Math.min(discovered.size, maxPages),
         skippedNotFoundCount,
+        candidateLinkCount,
+        queuedCandidateCount,
+        discoveryValidationFailureCount,
         stopReason,
       },
     };
@@ -204,4 +229,13 @@ async function readRobots(
 }
 function isDisallowed(pathname: string, rules: string[]) {
   return rules.some((rule) => rule === "/" || (rule && pathname.startsWith(rule)));
+}
+
+function isDnsLookupFailure(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "DNS_LOOKUP_FAILED"
+  );
 }

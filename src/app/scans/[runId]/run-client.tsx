@@ -4,7 +4,7 @@ import Link from "next/link";
 import type { Route } from "next";
 import { useCallback, useEffect, useState } from "react";
 import StatusBadge from "@/components/status-badge";
-import type { Locale } from "@/lib/i18n";
+import { getMessages, type Locale } from "@/lib/i18n";
 
 type RunData = {
   run: { id: string; name: string; origin: string; status: string; published: number };
@@ -15,11 +15,20 @@ type RunData = {
     error_code: string | null;
     error_message?: string | null;
   }>;
-  crawlSummary?: { pageLimit?: number } | null;
+  crawlSummary?: {
+    requestedPageLimit?: number;
+    scanTargetCount?: number;
+    skippedNotFoundCount?: number;
+    candidateLinkCount?: number;
+    queuedCandidateCount?: number;
+    discoveryValidationFailureCount?: number;
+    stopReason?: string;
+  } | null;
 };
 
 export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; locale?: Locale }) {
   const en = locale === "en";
+  const jobCopy = getMessages(locale).job;
   const [data, setData] = useState<RunData | null>(null);
   const [error, setError] = useState("");
   const load = useCallback(async () => {
@@ -62,7 +71,7 @@ export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; 
   const pending = pages.filter((page) =>
     ["queued", "running", "pending"].includes(page.scan_status),
   ).length;
-  const limit = data.crawlSummary?.pageLimit ?? pages.length;
+  const limit = data.crawlSummary?.requestedPageLimit ?? pages.length;
   const terminal = ["completed", "completed_with_errors", "failed", "cancelled"].includes(
     data.run.status,
   );
@@ -158,6 +167,21 @@ export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; 
           <p className="run-coverage-note">
             {coverageNote(data, successful, limit, failed.length, en)}
           </p>
+          {data.crawlSummary ? (
+            <p className="notice" role="status">
+              {jobCopy.discoverySummary
+                .replace("{reason}", crawlStopReason(data.crawlSummary.stopReason, jobCopy))
+                .replace("{limit}", String(data.crawlSummary.requestedPageLimit ?? limit))
+                .replace("{targets}", String(data.crawlSummary.scanTargetCount ?? pages.length))
+                .replace("{links}", displayCount(data.crawlSummary.candidateLinkCount))
+                .replace("{queued}", displayCount(data.crawlSummary.queuedCandidateCount))
+                .replace(
+                  "{validationFailures}",
+                  displayCount(data.crawlSummary.discoveryValidationFailureCount),
+                )
+                .replace("{notFound}", displayCount(data.crawlSummary.skippedNotFoundCount))}
+            </p>
+          ) : null}
         </section>
         {failed.length ? (
           <section className="run-exceptions" aria-labelledby="scan-exceptions-heading">
@@ -199,6 +223,17 @@ export default function RunClient({ runId, locale = "zh-CN" }: { runId: string; 
       </div>
     </section>
   );
+}
+
+function displayCount(value: number | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "—";
+}
+
+function crawlStopReason(reason: string | undefined, copy: ReturnType<typeof getMessages>["job"]) {
+  if (reason === "page_limit") return copy.stopPageLimit;
+  if (reason === "queue_exhausted") return copy.stopQueueExhausted;
+  if (reason === "duration_limit") return copy.stopDurationLimit;
+  return copy.stopUnknown;
 }
 
 export function RunNextSteps({

@@ -3,7 +3,7 @@ import type { Route } from "next";
 import Link from "next/link";
 import { getPageRole } from "@/lib/access-control";
 import { LocaleSelector } from "@/components/locale-selector";
-import { getLocale, t, type Locale } from "@/lib/i18n-server";
+import { getLocale, getMessages, t, type Locale } from "@/lib/i18n-server";
 
 export async function generateMetadata() {
   const locale = await getLocale();
@@ -13,6 +13,7 @@ export async function generateMetadata() {
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const role = await getPageRole();
   const locale: Locale = await getLocale();
+  const aiCopy = getMessages(locale).ai;
   return (
     <html lang={locale}>
       <body>
@@ -39,6 +40,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
                   <Link href="/reports">{t(locale, "publishedReports")}</Link>
                   <Link href={"/team" as Route}>{t(locale, "teamNav")}</Link>
                   <Link href="/settings/ai">{t(locale, "aiSettings")}</Link>
+                  <Link href="/settings/ai/worker">{aiCopy.workerMonitor}</Link>
                 </>
               )}
               {role === "visitor" && (

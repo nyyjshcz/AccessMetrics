@@ -75,6 +75,9 @@ export async function processJob(job: any) {
               ),
               scanTargetCount: 0,
               skippedNotFoundCount: 0,
+              candidateLinkCount: 0,
+              queuedCandidateCount: 0,
+              discoveryValidationFailureCount: 0,
               stopReason: "queue_exhausted" as const,
             },
           };

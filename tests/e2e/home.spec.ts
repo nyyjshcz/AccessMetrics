@@ -121,6 +121,9 @@ test("语言切换会持久化，并覆盖登录、管理员导航和扫描页",
   await expect(page.getByRole("link", { name: "New scan" }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Active tasks", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Published reports", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "AI Worker runtime monitor", exact: true }),
+  ).toHaveAttribute("href", "/settings/ai/worker");
 
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
@@ -146,6 +149,11 @@ test("管理员登录后可访问扫描管理页面", async ({ page }) => {
   await expect(page.getByRole("link", { name: "活动任务", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "已发布报告", exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "AI 设置", exact: true })).toBeVisible();
+  const workerMonitorLink = page.getByRole("link", { name: "AI Worker 运行监控", exact: true });
+  await expect(workerMonitorLink).toHaveAttribute("href", "/settings/ai/worker");
+  await workerMonitorLink.click();
+  await expect(page).toHaveURL(/\/settings\/ai\/worker$/);
+  await expect(page.getByRole("heading", { name: "AI Worker 运行监控", level: 1 })).toBeVisible();
 
   await page.getByRole("link", { name: "新建扫描" }).first().click();
   await expect(page).toHaveURL(/\/scans\/new$/);
@@ -170,6 +178,8 @@ test("团队页面对访客开放并完整展示两位平级成员", async ({ pa
 
   await expect(page.getByRole("heading", { name: "团队成员" })).toBeVisible();
   await expect(page.getByRole("link", { name: "团队", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "AI Worker 运行监控", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "AI 设置", exact: true })).toHaveCount(0);
   const cards = page.locator(".member-card");
   await expect(cards).toHaveCount(2);
   await expect(cards.getByText("联合创始人", { exact: false })).toHaveCount(2);
@@ -280,6 +290,50 @@ async function createCompletedRun(page: Page, url: string) {
   expect(runPath).toMatch(/^\/scans\/run_/);
   return runPath!.split("/").pop()!;
 }
+
+test("扫描进度与结果页说明发现数量、停止原因和导航前 DNS 校验失败", async ({ page }) => {
+  test.setTimeout(120000);
+  const { fixture, url } = await startFixture();
+  try {
+    const runId = await createCompletedRun(page, url);
+    const db = new Database(path.join(process.cwd(), "data/e2e-accesscheck-local.db"));
+    let jobId = "";
+    try {
+      const row = db
+        .prepare("SELECT job_id,crawl_summary_json FROM scan_runs WHERE id=?")
+        .get(runId) as { job_id: string; crawl_summary_json: string | null };
+      jobId = row.job_id;
+      const summary = JSON.parse(row.crawl_summary_json ?? "{}") as Record<string, unknown>;
+      summary.candidateLinkCount = 4;
+      summary.queuedCandidateCount = 2;
+      summary.discoveryValidationFailureCount = 1;
+      db.prepare("UPDATE scan_runs SET crawl_summary_json=? WHERE id=?").run(
+        JSON.stringify(summary),
+        runId,
+      );
+    } finally {
+      db.close();
+    }
+
+    await page.goto(`/scans/jobs/${jobId}`);
+    const progressDiagnostics = page.locator(".scan-progress-panel");
+    await expect(progressDiagnostics).toContainText("页面发现诊断");
+    await expect(progressDiagnostics).toContainText("本次上限 1 页");
+    await expect(progressDiagnostics).toContainText("发现停止原因：达到页面上限");
+    await expect(progressDiagnostics).toContainText("检查链接 4 条，同源候选入队 2 个");
+    await expect(progressDiagnostics).toContainText(
+      "1 个目标在导航前遇到 DNS 校验失败，但仍保留在扫描结果中",
+    );
+
+    await page.goto(`/scans/${runId}`);
+    await expect(page.locator(".run-content")).toContainText("检查链接 4 条，同源候选入队 2 个");
+    await expect(page.locator(".run-content")).toContainText(
+      "1 个目标在导航前遇到 DNS 校验失败，但仍保留在扫描结果中",
+    );
+  } finally {
+    await new Promise<void>((resolve) => fixture.close(() => resolve()));
+  }
+});
 
 function ensureIncompleteReviewItem(runId: string) {
   const db = new Database(path.join(process.cwd(), "data/e2e-accesscheck-local.db"));
@@ -450,8 +504,40 @@ test("完成扫描后可选复核、人工结论、完整报告和发布导出",
     await page.context().clearCookies();
     await signIn(page, adminAccessKey, `/reports/${runId}`);
     await page.goto(`/reports/${runId}`);
-    await page.getByRole("button", { name: "发布报告" }).click();
+    const publishButton = page.getByRole("button", { name: "发布报告", exact: true });
+    const downloadLinks = page.locator(".report-downloads .secondary-link");
+    await expect(downloadLinks).toHaveCount(3);
+    await expect(publishButton).toHaveClass(/report-primary-action/);
+    await page.mouse.move(0, 0);
+    await expect(publishButton).toHaveCSS("background-color", "rgb(20, 123, 165)");
+    await expect(downloadLinks.first()).toHaveCSS("background-color", "rgb(247, 250, 251)");
+
+    let releasePublish!: () => void;
+    let publishReachedServer!: () => void;
+    const publishGate = new Promise<void>((resolve) => (releasePublish = resolve));
+    const publishRequestReachedServer = new Promise<void>(
+      (resolve) => (publishReachedServer = resolve),
+    );
+    const publishEndpoint = `**/api/runs/${runId}/publish`;
+    await page.route(publishEndpoint, async (route) => {
+      const response = await route.fetch();
+      publishReachedServer();
+      await publishGate;
+      await route.fulfill({ response });
+    });
+    await publishButton.click();
+    const publishingButton = page.getByRole("button", { name: "发布中…", exact: true });
+    await expect(publishingButton).toBeDisabled();
+    await expect(publishingButton).toHaveAttribute("aria-busy", "true");
+    await expect(page.getByRole("status")).toHaveText("正在发布报告…");
+    await publishRequestReachedServer;
+    releasePublish();
     await expect(page.getByText("报告已发布。")).toBeVisible();
+    await page.unroute(publishEndpoint);
+    const withdrawButton = page.getByRole("button", { name: "撤下报告", exact: true });
+    await page.mouse.move(0, 0);
+    await expect(withdrawButton).toHaveClass(/danger-button/);
+    await expect(withdrawButton).toHaveCSS("background-color", "rgb(174, 53, 45)");
     for (const suffix of ["html", "pdf", "json"])
       expect((await page.request.get(`/api/reports/${runId}/${suffix}`)).ok()).toBeTruthy();
     await page.getByRole("button", { name: "EN", exact: true }).click();
@@ -473,9 +559,29 @@ test("完成扫描后可选复核、人工结论、完整报告和发布导出",
     await page.context().clearCookies();
     await signIn(page, adminAccessKey, `/reports/${runId}`);
     await page.goto(`/reports/${runId}`);
+    let releaseWithdraw!: () => void;
+    let withdrawReachedServer!: () => void;
+    const withdrawGate = new Promise<void>((resolve) => (releaseWithdraw = resolve));
+    const withdrawRequestReachedServer = new Promise<void>(
+      (resolve) => (withdrawReachedServer = resolve),
+    );
+    const withdrawEndpoint = "**/api/runs/" + runId + "/publish";
+    await page.route(withdrawEndpoint, async (route) => {
+      const response = await route.fetch();
+      withdrawReachedServer();
+      await withdrawGate;
+      await route.fulfill({ response });
+    });
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "撤下报告" }).click();
+    const withdrawingButton = page.getByRole("button", { name: "撤下中…", exact: true });
+    await expect(withdrawingButton).toBeDisabled();
+    await expect(withdrawingButton).toHaveAttribute("aria-busy", "true");
+    await expect(page.getByRole("status")).toHaveText("正在撤下报告…");
+    await withdrawRequestReachedServer;
+    releaseWithdraw();
     await expect(page.getByText("报告已撤下。")).toBeVisible();
+    await page.unroute(withdrawEndpoint);
     await page.context().clearCookies();
     await signIn(page, visitorAccessKey, "/reports");
     expect((await page.request.get(`/reports/${runId}`)).status()).toBe(404);
@@ -496,6 +602,11 @@ test("AI 已完成结论可进入报告且发布门禁生效", async ({ page }) 
     await page.goto(`/reports/${runId}`);
     const publishButton = page.getByRole("button", { name: "发布报告" });
     await expect(publishButton).toBeDisabled();
+    await expect(publishButton).toHaveAttribute(
+      "aria-describedby",
+      "report-publish-disabled-reason",
+    );
+    await expect(page.locator("#report-publish-disabled-reason")).toBeVisible();
     completeAiBatch(runId);
     await page.reload();
     await expect(publishButton).toBeEnabled();

@@ -40,9 +40,20 @@ export async function GET(request: Request, context: { params: Promise<{ jobId: 
       : null;
     const run = getDb()
       .prepare(
-        "SELECT id,status,published FROM scan_runs WHERE job_id=? ORDER BY started_at DESC LIMIT 1",
+        "SELECT id,status,published,crawl_summary_json FROM scan_runs WHERE job_id=? ORDER BY started_at DESC LIMIT 1",
       )
-      .get(jobId);
+      .get(jobId) as
+      | { id: string; status: string; published: number; crawl_summary_json: string | null }
+      | undefined;
+    let crawlSummary: Record<string, unknown> | null = null;
+    if (run?.crawl_summary_json) {
+      try {
+        const parsed = JSON.parse(run.crawl_summary_json);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) crawlSummary = parsed;
+      } catch {
+        // The progress page remains available if older or interrupted metadata is malformed.
+      }
+    }
     const currentPage = getDb()
       .prepare(
         "SELECT p.id,p.canonical_url,jp.status FROM job_pages jp JOIN pages p ON p.id=jp.page_id WHERE jp.job_id=? AND jp.status='scanning' ORDER BY jp.discovery_order LIMIT 1",
@@ -54,6 +65,7 @@ export async function GET(request: Request, context: { params: Promise<{ jobId: 
       failure: failureCode ? { code: failureCode, message: failureMessage } : null,
       currentPage: currentPage ?? null,
       run: run ?? null,
+      crawlSummary,
     });
   } catch (error) {
     return NextResponse.json(errorEnvelope(error, request), {

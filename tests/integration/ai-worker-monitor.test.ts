@@ -237,6 +237,48 @@ describe("admin AI Worker monitor", () => {
     );
   });
 
+  it("keeps idle process workers online with one shared heartbeat and marks them stopped", () => {
+    vi.useFakeTimers();
+    const db = dbModule.getDb();
+    const workerIds = Array.from({ length: 16 }, (_, index) => `idle-process-worker-${index}`);
+    const stale = new Date(Date.now() - 20_000).toISOString();
+    const seed = db.prepare(
+      "INSERT INTO ai_worker_instances(worker_id,started_at,last_seen_at,stopped_at) VALUES (?,?,?,NULL)",
+    );
+    for (const workerId of workerIds) seed.run(workerId, stale, stale);
+
+    const writesBefore = (db.prepare("SELECT total_changes() AS total").get() as { total: number })
+      .total;
+    const heartbeat = ai.startAiWorkerHeartbeat(workerIds);
+    try {
+      vi.advanceTimersByTime(9_000);
+      const writesAfter = (db.prepare("SELECT total_changes() AS total").get() as { total: number })
+        .total;
+      expect(writesAfter - writesBefore).toBe(16 * 4);
+      const freshRows = db
+        .prepare(
+          "SELECT worker_id,last_seen_at,stopped_at FROM ai_worker_instances WHERE worker_id LIKE 'idle-process-worker-%'",
+        )
+        .all() as Array<{ worker_id: string; last_seen_at: string; stopped_at: string | null }>;
+      expect(freshRows).toHaveLength(16);
+      expect(freshRows.every((row) => Date.now() - Date.parse(row.last_seen_at) <= 10_000)).toBe(
+        true,
+      );
+      expect(freshRows.every((row) => row.stopped_at === null)).toBe(true);
+    } finally {
+      heartbeat.stop();
+      vi.useRealTimers();
+    }
+
+    const stoppedRows = db
+      .prepare(
+        "SELECT stopped_at FROM ai_worker_instances WHERE worker_id LIKE 'idle-process-worker-%'",
+      )
+      .all() as Array<{ stopped_at: string | null }>;
+    expect(stoppedRows).toHaveLength(16);
+    expect(stoppedRows.every((row) => row.stopped_at !== null)).toBe(true);
+  });
+
   it("serves repeated polls without database writes or provider network calls", async () => {
     fixture();
     const db = dbModule.getDb();

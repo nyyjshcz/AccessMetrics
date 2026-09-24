@@ -65,6 +65,33 @@ function now() {
   return new Date().toISOString();
 }
 
+export function startAiWorkerHeartbeat(workerIds: string[], intervalMs = 3_000) {
+  const updateHeartbeat = (stopped: boolean) =>
+    transaction((db) => {
+      const timestamp = now();
+      if (stopped) {
+        const markStopped = db.prepare(
+          "UPDATE ai_worker_instances SET last_seen_at=?,stopped_at=? WHERE worker_id=?",
+        );
+        for (const workerId of workerIds) markStopped.run(timestamp, timestamp, workerId);
+        return;
+      }
+      const heartbeat = db.prepare(
+        "INSERT INTO ai_worker_instances(worker_id,started_at,last_seen_at,stopped_at) VALUES (?,?,?,NULL) ON CONFLICT(worker_id) DO UPDATE SET last_seen_at=excluded.last_seen_at,stopped_at=NULL",
+      );
+      for (const workerId of workerIds) heartbeat.run(workerId, timestamp, timestamp);
+    });
+
+  updateHeartbeat(false);
+  const timer = setInterval(() => updateHeartbeat(false), intervalMs);
+  return {
+    stop() {
+      clearInterval(timer);
+      updateHeartbeat(true);
+    },
+  };
+}
+
 function encryptionKey() {
   return crypto
     .createHash("sha256")
@@ -780,9 +807,7 @@ function assertBatchSourceAndSnapshot(batch: any) {
   if (!batch.run_id || batch.page_id || batch.study_freeze_id)
     throw new AppError("AI_BATCH_SCOPE_INVALID", "旧范围 AI batch 不能在本地流程中恢复", 409);
   const scan = getDb()
-    .prepare(
-      `SELECT r.id FROM scan_runs r JOIN scan_jobs j ON j.id=r.job_id WHERE r.id=?`,
-    )
+    .prepare(`SELECT r.id FROM scan_runs r JOIN scan_jobs j ON j.id=r.job_id WHERE r.id=?`)
     .get(batch.run_id);
   if (!scan) throw new AppError("RUN_NOT_FOUND", "扫描不存在", 404);
   assertRunMutable(batch.run_id);
@@ -1596,9 +1621,6 @@ export async function processNextAiItem(workerId: string) {
       const cancelled = db
         .prepare("SELECT cancelled_at FROM ai_api_attempts WHERE id=?")
         .get(attempt.id) as { cancelled_at: string | null } | undefined;
-      db.prepare(
-        "INSERT INTO ai_worker_instances(worker_id,started_at,last_seen_at,stopped_at) VALUES (?,?,?,NULL) ON CONFLICT(worker_id) DO UPDATE SET last_seen_at=excluded.last_seen_at,stopped_at=NULL",
-      ).run(workerId, now(), now());
       if (cancelled?.cancelled_at) controller.abort();
     }
   };

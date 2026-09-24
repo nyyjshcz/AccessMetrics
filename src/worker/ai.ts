@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { migrate } from "../lib/db";
-import { processNextAiItem } from "../lib/ai-overlay";
+import { processNextAiItem, startAiWorkerHeartbeat } from "../lib/ai-overlay";
 
 const workerPrefix = `ai-worker-${process.pid}-${crypto.randomUUID()}`;
 const MAX_WORKER_SLOTS = 16;
@@ -24,7 +24,16 @@ async function consume(slot: number) {
 
 async function main() {
   migrate();
-  await Promise.all(Array.from({ length: MAX_WORKER_SLOTS }, (_, slot) => consume(slot + 1)));
+  const workerIds = Array.from(
+    { length: MAX_WORKER_SLOTS },
+    (_, slot) => `${workerPrefix}-${slot + 1}`,
+  );
+  const heartbeat = startAiWorkerHeartbeat(workerIds);
+  try {
+    await Promise.all(workerIds.map((_, index) => consume(index + 1)));
+  } finally {
+    heartbeat.stop();
+  }
 }
 
 main().catch((error) => {

@@ -2,8 +2,7 @@
 # volumes and ephemeral credentials supplied by the invoking shell.
 services:
   web:
-    image: accesscheck-nas:local
-    build: .
+    image: ${ACCESSCHECK_VALIDATION_APP_IMAGE:-accesscheck-nas:local}
     environment:
       APP_ENV: test
       APP_BASE_URL: http://127.0.0.1:3107
@@ -24,14 +23,17 @@ services:
     networks: [app]
     command: ["node", "standalone/server.js"]
     healthcheck:
-      test: ["CMD", "node", "scripts/healthcheck.mjs"]
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/health', { signal: AbortSignal.timeout(4000) }).then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
       interval: 5s
       timeout: 4s
       retries: 12
 
   worker:
-    image: accesscheck-nas:local
-    build: .
+    image: ${ACCESSCHECK_VALIDATION_APP_IMAGE:-accesscheck-nas:local}
     environment:
       APP_ENV: test
       DATABASE_URL: /var/lib/accesscheck/data/accesscheck.db
@@ -49,9 +51,7 @@ services:
         condition: service_started
 
   egress-proxy:
-    image: accesscheck-nas-egress:local
-    build:
-      context: ./tools/egress-proxy
+    image: ${ACCESSCHECK_VALIDATION_EGRESS_IMAGE:-accesscheck-nas-egress:local}
     read_only: true
     networks: [app, scan-isolated, external-egress]
     expose: [8080]

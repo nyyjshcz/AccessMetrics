@@ -754,6 +754,49 @@ function normalizeResponseContent(content: unknown) {
   return "";
 }
 
+type ProviderUsage = {
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  cost: number | null;
+  currency: string | null;
+};
+
+function providerReportedUsage(value: unknown): ProviderUsage {
+  const usage =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const tokenCount = (count: unknown) =>
+    typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : null;
+  return {
+    inputTokens: tokenCount(usage.prompt_tokens),
+    outputTokens: tokenCount(usage.completion_tokens),
+    totalTokens: tokenCount(usage.total_tokens),
+    cost: typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0
+      ? usage.cost
+      : null,
+    currency: typeof usage.currency === "string" && /^[A-Z]{3}$/.test(usage.currency)
+      ? usage.currency
+      : null,
+  };
+}
+
+function providerUsageFromError(error: unknown): ProviderUsage | null {
+  if (!(error instanceof AppError) || !error.details || typeof error.details !== "object") return null;
+  const details = error.details as { providerUsage?: unknown };
+  const usage = details.providerUsage;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return null;
+  const reported = usage as Partial<ProviderUsage>;
+  return providerReportedUsage({
+    prompt_tokens: reported.inputTokens,
+    completion_tokens: reported.outputTokens,
+    total_tokens: reported.totalTokens,
+    cost: reported.cost,
+    currency: reported.currency,
+  });
+}
+
 function retryAfterMs(value: string | null) {
   if (!value) return null;
   const seconds = Number(value);
@@ -862,7 +905,7 @@ async function callProvider(
 ): Promise<{
   result: { verdict: AiVerdict; reason: string; responseHash: string };
   httpStatus: number;
-  usage: { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null; cost: number | null; currency: string | null };
+  usage: ProviderUsage;
 }> {
   const key = decryptSecret(provider.encrypted_api_key);
   const localProvider = (() => {
@@ -896,6 +939,7 @@ async function callProvider(
   });
   if (response.status === 429)
     throw new AppError("AI_PROVIDER_RATE_LIMITED", "模型服务限流，等待后自动重试", 502, {
+      httpStatus: response.status,
       retryAfterMs: retryAfterMs(response.headers.get("retry-after")),
     });
   if (!response.ok)
@@ -916,38 +960,28 @@ async function callProvider(
       httpStatus: response.status,
     });
   }
+  const usage = providerReportedUsage(body?.usage);
   const content = normalizeResponseContent(body?.choices?.[0]?.message?.content);
   if (!content)
-    throw new AppError("AI_RESPONSE_EMPTY", "模型返回内容为空", 502, { httpStatus: response.status });
+    throw new AppError("AI_RESPONSE_EMPTY", "模型返回内容为空", 502, {
+      httpStatus: response.status,
+      providerUsage: usage,
+    });
   let parsedResult: ReturnType<typeof parseVerdict>;
   try {
     parsedResult = parseVerdict(content);
   } catch (error) {
     if (error instanceof AppError)
-      throw new AppError(error.code, error.message, error.status, { httpStatus: response.status });
+      throw new AppError(error.code, error.message, error.status, {
+        httpStatus: response.status,
+        providerUsage: usage,
+      });
     throw error;
   }
-  const usage = body?.usage;
-  const tokenCount = (value: unknown) =>
-    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
-  const reportedCost =
-    typeof usage?.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0
-      ? usage.cost
-      : null;
-  const currency =
-    typeof usage?.currency === "string" && /^[A-Z]{3}$/.test(usage.currency)
-      ? usage.currency
-      : null;
   return {
     result: parsedResult,
     httpStatus: response.status,
-    usage: {
-      inputTokens: tokenCount(usage?.prompt_tokens),
-      outputTokens: tokenCount(usage?.completion_tokens),
-      totalTokens: tokenCount(usage?.total_tokens),
-      cost: reportedCost,
-      currency,
-    },
+    usage,
   };
 }
 
@@ -1098,6 +1132,39 @@ function claimNextAiItem(workerId: string) {
     const timestamp = now();
     const timestampMs = Date.now();
     const leaseUntil = new Date(Date.now() + LEASE_MS).toISOString();
+    const exhaustedItems = db
+      .prepare(
+        `SELECT i.id,i.batch_id,i.retry_cycle
+         FROM ai_review_items i JOIN ai_review_batches b ON b.id=i.batch_id
+         WHERE b.run_id IS NOT NULL AND b.page_id IS NULL AND b.study_freeze_id IS NULL
+           AND b.status IN ('queued','running') AND i.attempt_count>=?
+           AND (i.status='queued' OR (i.status='running' AND i.lease_until IS NOT NULL AND i.lease_until<?))`,
+      )
+      .all(MAX_ATTEMPTS, timestamp) as Array<{ id: string; batch_id: string; retry_cycle: number }>;
+    for (const exhausted of exhaustedItems) {
+      const terminalized = db
+        .prepare(
+          `UPDATE ai_review_items
+           SET status='failed',last_error='AI_ATTEMPTS_EXHAUSTED',lease_owner=NULL,lease_until=NULL,
+               next_retry_at=NULL,updated_at=?,completed_at=?
+           WHERE id=? AND attempt_count>=?
+             AND (status='queued' OR (status='running' AND lease_until IS NOT NULL AND lease_until<?))`,
+        )
+        .run(timestamp, timestamp, exhausted.id, MAX_ATTEMPTS, timestamp);
+      if (terminalized.changes !== 1) continue;
+      const activeAttempts = db
+        .prepare("SELECT id,started_at FROM ai_api_attempts WHERE item_id=? AND retry_cycle=? AND status='running'")
+        .all(exhausted.id, exhausted.retry_cycle) as Array<{ id: string; started_at: string }>;
+      for (const activeAttempt of activeAttempts)
+        db.prepare(
+          "UPDATE ai_api_attempts SET ended_at=?,duration_ms=?,status='failed',error_code='AI_ATTEMPT_INTERRUPTED' WHERE id=? AND status='running'",
+        ).run(
+          timestamp,
+          Math.max(0, Date.parse(timestamp) - Date.parse(activeAttempt.started_at)),
+          activeAttempt.id,
+        );
+      finishWhenNoQueuedItems(db, exhausted.batch_id, timestamp);
+    }
     const item = db
       .prepare(
         `SELECT i.*,b.status AS batch_status,b.run_id,b.provider_config_id,b.provider_snapshot_json,b.provider_snapshot_hash,b.prompt_hash,b.prompt_version,b.evidence_version,p.key_fingerprint AS provider_key_fingerprint
@@ -1114,20 +1181,11 @@ function claimNextAiItem(workerId: string) {
                AND active_i.status='running'
                AND active_i.lease_until IS NOT NULL AND active_i.lease_until>=?
            ) < p.max_concurrent_requests
-           AND NOT EXISTS (
-             SELECT 1
-             FROM ai_review_items cooling_i
-             JOIN ai_review_batches cooling_b ON cooling_b.id=cooling_i.batch_id
-             WHERE cooling_b.run_id IS NOT NULL AND cooling_b.page_id IS NULL AND cooling_b.study_freeze_id IS NULL
-               AND cooling_b.provider_config_id=b.provider_config_id
-               AND cooling_b.status IN ('queued','running')
-               AND cooling_i.status='queued'
-               AND cooling_i.lease_until IS NOT NULL AND cooling_i.lease_until>?
-           )
-           AND ((i.status='queued' AND (i.next_retry_at IS NULL OR i.next_retry_at<=?)) OR (i.status='running' AND i.lease_until IS NOT NULL AND i.lease_until<?))
+           AND i.attempt_count<?
+           AND ((i.status='queued' AND (COALESCE(i.next_retry_at,i.lease_until) IS NULL OR COALESCE(i.next_retry_at,i.lease_until)<=?)) OR (i.status='running' AND i.lease_until IS NOT NULL AND i.lease_until<?))
            ORDER BY i.created_at,i.id LIMIT 1`,
       )
-      .get(timestamp, timestamp, timestamp, timestamp) as any;
+      .get(timestamp, MAX_ATTEMPTS, timestamp, timestamp) as any;
     if (!item) return null;
     let providerRateLimitRpm: number | null = null;
     try {
@@ -1142,9 +1200,9 @@ function claimNextAiItem(workerId: string) {
     if (isRateLimited && !canStartOpenRouterFreeRequest(db, item, timestampMs)) return null;
     const changed = db
       .prepare(
-        "UPDATE ai_review_items SET status='running',lease_owner=?,lease_until=?,attempt_count=attempt_count+1,updated_at=? WHERE id=? AND (status='queued' OR (status='running' AND lease_until IS NOT NULL AND lease_until<?))",
+        "UPDATE ai_review_items SET status='running',lease_owner=?,lease_until=?,attempt_count=attempt_count+1,updated_at=? WHERE id=? AND attempt_count<? AND (status='queued' OR (status='running' AND lease_until IS NOT NULL AND lease_until<?))",
       )
-      .run(workerId, leaseUntil, timestamp, item.id, timestamp);
+      .run(workerId, leaseUntil, timestamp, item.id, MAX_ATTEMPTS, timestamp);
     if (changed.changes !== 1) return null;
     if (isRateLimited) noteOpenRouterFreeRequestStart(item, timestampMs);
     db.prepare(
@@ -1239,11 +1297,16 @@ function startAttempt(item: any, workerId: string) {
 
 function finishAttempt(
   attempt: { id: string; startedAt: number },
-  result: { httpStatus?: number; usage?: { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null; cost: number | null; currency: string | null } } | null,
+  result: { httpStatus?: number; usage?: ProviderUsage } | null,
   error?: unknown,
 ) {
   const endedAt = now();
   const cancelled = error instanceof Error && error.name === "AbortError";
+  const usage = result?.usage ?? providerUsageFromError(error);
+  const errorDetails =
+    error instanceof AppError && error.details && typeof error.details === "object"
+      ? (error.details as { httpStatus?: unknown })
+      : null;
   getDb()
     .prepare(
       `UPDATE ai_api_attempts SET ended_at=?,duration_ms=?,status=?,http_status=?,error_code=?,
@@ -1253,13 +1316,13 @@ function finishAttempt(
       endedAt,
       Math.max(0, Date.now() - attempt.startedAt),
       error ? (cancelled ? "cancelled" : "failed") : "completed",
-      result?.httpStatus ?? (error instanceof AppError && typeof error.details?.httpStatus === "number" ? error.details.httpStatus : null),
+      result?.httpStatus ?? (typeof errorDetails?.httpStatus === "number" ? errorDetails.httpStatus : null),
       error ? safeAttemptErrorCode(error) : null,
-      result?.usage?.inputTokens ?? null,
-      result?.usage?.outputTokens ?? null,
-      result?.usage?.totalTokens ?? null,
-      result?.usage?.cost ?? null,
-      result?.usage?.currency ?? null,
+      usage?.inputTokens ?? null,
+      usage?.outputTokens ?? null,
+      usage?.totalTokens ?? null,
+      usage?.cost ?? null,
+      usage?.currency ?? null,
       cancelled ? endedAt : null,
       attempt.id,
     );

@@ -516,6 +516,12 @@ describe("thin AI overlay", () => {
         attempt_count: 1,
         last_error: "AI_PROVIDER_RATE_LIMITED",
       });
+      expect(
+        dbModule
+          .getDb()
+          .prepare("SELECT http_status FROM ai_api_attempts WHERE batch_id=?")
+          .get(batch.batch.id),
+      ).toEqual({ http_status: 429 });
       expect(new Date(row.lease_until).getTime()).toBeGreaterThan(Date.now());
 
       expect(await ai.processNextAiItem("rate-limit-worker")).toBe(false);
@@ -890,6 +896,13 @@ describe("thin AI overlay", () => {
     const first = db
       .prepare("SELECT id FROM ai_review_items WHERE batch_id=? ORDER BY id LIMIT 1")
       .get(batch.batch.id) as { id: string };
+    const second = db
+      .prepare("SELECT id FROM ai_review_items WHERE batch_id=? AND id<>?")
+      .get(batch.batch.id, first.id) as { id: string };
+    db.prepare("UPDATE ai_review_items SET lease_until=? WHERE id=?").run(
+      new Date(Date.now() + 60_000).toISOString(),
+      second.id,
+    );
     const timestamp = new Date().toISOString();
     db.prepare(
       "UPDATE ai_review_items SET status='failed',attempt_count=3,last_error='模型请求失败（HTTP 429）',completed_at=?,updated_at=? WHERE id=?",
@@ -901,7 +914,7 @@ describe("thin AI overlay", () => {
     expect(await ai.processNextAiItem("legacy-recovery-worker")).toBe(false);
     expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
       batch: { status: "queued" },
-      stats: { queued: 2, delayed: 1, failed: 0 },
+      stats: { queued: 2, delayed: 2, failed: 0 },
     });
     ai.pauseAiBatch(batch.batch.id);
   });
@@ -1303,6 +1316,120 @@ describe("thin AI overlay", () => {
       expect(storedError.last_error).not.toContain("not json");
     } finally {
       fetchSpy.mockRestore();
+    }
+  });
+
+  it("terminalizes an expired third-attempt lease without issuing a fourth provider call", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response("unavailable", { status: 503 }),
+    );
+    try {
+      const item = fixture(1, true);
+      const config = provider();
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      const db = dbModule.getDb();
+      const itemRow = db
+        .prepare("SELECT id FROM ai_review_items WHERE batch_id=?")
+        .get(batch.batch.id) as { id: string };
+      for (let call = 0; call < 3; call += 1) {
+        await ai.processNextAiItem("expired-third-attempt-worker");
+        if (call < 2)
+          db.prepare("UPDATE ai_review_items SET lease_until=NULL,next_retry_at=? WHERE id=?")
+            .run(new Date(Date.now() - 1_000).toISOString(), itemRow.id);
+      }
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+      db.prepare("UPDATE ai_review_items SET status='running',lease_owner='crashed-worker',lease_until=?,next_retry_at=NULL WHERE id=?")
+        .run(new Date(Date.now() - 1_000).toISOString(), itemRow.id);
+      db.prepare("UPDATE ai_review_batches SET status='running' WHERE id=?").run(batch.batch.id);
+      db.prepare("UPDATE ai_api_attempts SET status='running',ended_at=NULL,error_code=NULL WHERE item_id=? AND attempt_number=3 AND retry_cycle=0")
+        .run(itemRow.id);
+
+      expect(await ai.processNextAiItem("expired-third-attempt-worker")).toBe(false);
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+      expect(db.prepare("SELECT status,attempt_count,last_error,lease_owner,lease_until FROM ai_review_items WHERE id=?").get(itemRow.id))
+        .toEqual({ status: "failed", attempt_count: 3, last_error: "AI_ATTEMPTS_EXHAUSTED", lease_owner: null, lease_until: null });
+      expect(db.prepare("SELECT status,error_code,ended_at FROM ai_api_attempts WHERE item_id=? AND attempt_number=3 AND retry_cycle=0")
+        .get(itemRow.id)).toMatchObject({ status: "failed", error_code: "AI_ATTEMPT_INTERRUPTED", ended_at: expect.any(String) });
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "failed" }, stats: { failed: 1 } });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("keeps a cooling item delayed while claiming a ready item from the same provider", async () => {
+    let calls = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response("rate limited", { status: 429, headers: { "retry-after": "60" } })
+        : new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+    });
+    try {
+      const item = fixture(2, true);
+      const config = provider();
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      const db = dbModule.getDb();
+      const itemIds = db
+        .prepare("SELECT id FROM ai_review_items WHERE batch_id=? ORDER BY created_at,id")
+        .all(batch.batch.id) as Array<{ id: string }>;
+
+      expect(await ai.processNextAiItem("peer-item-worker")).toBe(true);
+      const cooling = db
+        .prepare("SELECT status,next_retry_at FROM ai_review_items WHERE id=?")
+        .get(itemIds[0].id) as { status: string; next_retry_at: string };
+      expect(cooling.status).toBe("queued");
+      expect(Date.parse(cooling.next_retry_at)).toBeGreaterThan(Date.now());
+      expect(await ai.processNextAiItem("peer-item-worker")).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(db.prepare("SELECT status FROM ai_review_items WHERE id=?").get(itemIds[1].id))
+        .toEqual({ status: "completed" });
+      expect(db.prepare("SELECT status FROM ai_review_items WHERE id=?").get(itemIds[0].id))
+        .toEqual({ status: "queued" });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("preserves validated provider usage when the verdict content is malformed", async () => {
+    for (const [content, errorCode] of [
+      ['{"verdict":"not_a_verdict","reason":"private response text"}', "AI_VERDICT_INVALID"],
+      ["  ", "AI_RESPONSE_EMPTY"],
+    ] as const) {
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+        new Response(JSON.stringify({
+          choices: [{ message: { content } }],
+          usage: { prompt_tokens: 41, completion_tokens: 12, total_tokens: 53, cost: 0.0075, currency: "USD" },
+        }), { status: 200, headers: { "content-type": "application/json" } }),
+      );
+      try {
+        const item = fixture(1, true);
+        const config = provider();
+        const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+        await ai.processNextAiItem("malformed-verdict-usage-worker");
+        const attempt = dbModule.getDb()
+          .prepare("SELECT status,error_code,input_tokens,output_tokens,total_tokens,reported_cost,currency FROM ai_api_attempts WHERE batch_id=?")
+          .get(batch.batch.id);
+        expect(attempt).toEqual({
+          status: "failed",
+          error_code: errorCode,
+          input_tokens: 41,
+          output_tokens: 12,
+          total_tokens: 53,
+          reported_cost: 0.0075,
+          currency: "USD",
+        });
+        const stored = dbModule.getDb()
+          .prepare("SELECT last_error FROM ai_review_items WHERE batch_id=?")
+          .get(batch.batch.id) as { last_error: string };
+        expect(stored.last_error).toBe(errorCode);
+        expect(JSON.stringify(attempt)).not.toContain("private response text");
+        expect(stored.last_error).not.toContain("private response text");
+      } finally {
+        fetchSpy.mockRestore();
+      }
     }
   });
 

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { migrate } from "../lib/db";
 import { processNextAiItem, startAiWorkerHeartbeat } from "../lib/ai-overlay";
+import { runAiWorkerPool } from "./ai-runtime";
 
 const workerPrefix = `ai-worker-${process.pid}-${crypto.randomUUID()}`;
 const MAX_WORKER_SLOTS = 16;
@@ -12,25 +13,17 @@ process.once("SIGTERM", () => {
   stopping = true;
 });
 
-const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function consume(slot: number) {
-  const workerId = `${workerPrefix}-${slot}`;
-  while (!stopping) {
-    const processed = await processNextAiItem(workerId);
-    if (!processed) await wait(1000);
-  }
-}
-
 async function main() {
   migrate();
-  const workerIds = Array.from(
-    { length: MAX_WORKER_SLOTS },
-    (_, slot) => `${workerPrefix}-${slot + 1}`,
-  );
-  const heartbeat = startAiWorkerHeartbeat(workerIds);
+  const heartbeat = startAiWorkerHeartbeat(workerPrefix);
   try {
-    await Promise.all(workerIds.map((_, index) => consume(index + 1)));
+    await runAiWorkerPool({
+      workerId: workerPrefix,
+      slots: MAX_WORKER_SLOTS,
+      isStopping: () => stopping,
+      processNext: processNextAiItem,
+      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    });
   } finally {
     heartbeat.stop();
   }

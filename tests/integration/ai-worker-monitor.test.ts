@@ -237,46 +237,88 @@ describe("admin AI Worker monitor", () => {
     );
   });
 
-  it("keeps idle process workers online with one shared heartbeat and marks them stopped", () => {
+  it("keeps one process heartbeat online for all active slots and marks it stopped", async () => {
     vi.useFakeTimers();
     const db = dbModule.getDb();
-    const workerIds = Array.from({ length: 16 }, (_, index) => `idle-process-worker-${index}`);
+    const workerId = `idle-process-worker-${crypto.randomUUID()}`;
     const stale = new Date(Date.now() - 20_000).toISOString();
-    const seed = db.prepare(
+    db.prepare(
       "INSERT INTO ai_worker_instances(worker_id,started_at,last_seen_at,stopped_at) VALUES (?,?,?,NULL)",
+    ).run(workerId, stale, stale);
+    const insertAttempt = db.prepare(
+      `INSERT INTO ai_api_attempts
+         (id,worker_id,slot,provider_label,model,retry_cycle,attempt_number,started_at,status)
+       VALUES (?,?,?,'fixture provider','fixture-model',0,1,?,'running')`,
     );
-    for (const workerId of workerIds) seed.run(workerId, stale, stale);
+    for (let slot = 1; slot <= 16; slot += 1)
+      insertAttempt.run(`${workerId}-attempt-${slot}`, workerId, slot, new Date().toISOString());
 
     const writesBefore = (db.prepare("SELECT total_changes() AS total").get() as { total: number })
       .total;
-    const heartbeat = ai.startAiWorkerHeartbeat(workerIds);
+    const heartbeat = ai.startAiWorkerHeartbeat(workerId);
     try {
       vi.advanceTimersByTime(9_000);
       const writesAfter = (db.prepare("SELECT total_changes() AS total").get() as { total: number })
         .total;
-      expect(writesAfter - writesBefore).toBe(16 * 4);
-      const freshRows = db
+      expect(writesAfter - writesBefore).toBe(4);
+      const workerRows = db
         .prepare(
-          "SELECT worker_id,last_seen_at,stopped_at FROM ai_worker_instances WHERE worker_id LIKE 'idle-process-worker-%'",
+          "SELECT worker_id,last_seen_at,stopped_at FROM ai_worker_instances WHERE worker_id=?",
         )
-        .all() as Array<{ worker_id: string; last_seen_at: string; stopped_at: string | null }>;
-      expect(freshRows).toHaveLength(16);
-      expect(freshRows.every((row) => Date.now() - Date.parse(row.last_seen_at) <= 10_000)).toBe(
-        true,
+        .all(workerId) as Array<{
+        worker_id: string;
+        last_seen_at: string;
+        stopped_at: string | null;
+      }>;
+      expect(workerRows).toHaveLength(1);
+      expect(Date.now() - Date.parse(workerRows[0].last_seen_at)).toBeLessThanOrEqual(10_000);
+      expect(workerRows[0].stopped_at).toBeNull();
+
+      const response = await monitorRoute.GET(request(adminCookie));
+      const body = await response.json();
+      const activeCalls = body.activeCalls.filter(
+        (call: { workerId: string }) => call.workerId === workerId,
       );
-      expect(freshRows.every((row) => row.stopped_at === null)).toBe(true);
+      expect(activeCalls).toHaveLength(16);
+      expect(activeCalls.map((call: { slot: number }) => call.slot)).toEqual(
+        Array.from({ length: 16 }, (_, index) => index + 1),
+      );
+      expect(activeCalls.every((call: { workerOnline: boolean }) => call.workerOnline)).toBe(true);
     } finally {
       heartbeat.stop();
       vi.useRealTimers();
     }
 
     const stoppedRows = db
-      .prepare(
-        "SELECT stopped_at FROM ai_worker_instances WHERE worker_id LIKE 'idle-process-worker-%'",
-      )
-      .all() as Array<{ stopped_at: string | null }>;
-    expect(stoppedRows).toHaveLength(16);
-    expect(stoppedRows.every((row) => row.stopped_at !== null)).toBe(true);
+      .prepare("SELECT stopped_at FROM ai_worker_instances WHERE worker_id=?")
+      .all(workerId) as Array<{ stopped_at: string | null }>;
+    expect(stoppedRows).toHaveLength(1);
+    expect(stoppedRows[0].stopped_at).not.toBeNull();
+  });
+
+  it("catches periodic heartbeat database failures without logging error details", () => {
+    vi.useFakeTimers();
+    const db = dbModule.getDb();
+    const workerId = `idle-error-worker-${crypto.randomUUID()}`;
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const heartbeat = ai.startAiWorkerHeartbeat(workerId);
+    try {
+      db.exec(`CREATE TEMP TRIGGER fail_ai_worker_heartbeat BEFORE UPDATE ON ai_worker_instances
+        WHEN NEW.worker_id='${workerId}' BEGIN SELECT RAISE(FAIL,'private database detail'); END;`);
+      vi.advanceTimersByTime(3_000);
+      expect(log).toHaveBeenCalledWith("AI worker heartbeat failed");
+      expect(log.mock.calls.flat().join(" ")).not.toContain("private database detail");
+      db.exec("DROP TRIGGER fail_ai_worker_heartbeat");
+      vi.advanceTimersByTime(3_000);
+      expect(
+        db.prepare("SELECT stopped_at FROM ai_worker_instances WHERE worker_id=?").get(workerId),
+      ).toMatchObject({ stopped_at: null });
+    } finally {
+      db.exec("DROP TRIGGER IF EXISTS fail_ai_worker_heartbeat");
+      heartbeat.stop();
+      log.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it("serves repeated polls without database writes or provider network calls", async () => {

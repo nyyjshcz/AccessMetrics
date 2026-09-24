@@ -65,27 +65,35 @@ function now() {
   return new Date().toISOString();
 }
 
-export function startAiWorkerHeartbeat(workerIds: string[], intervalMs = 3_000) {
-  const updateHeartbeat = (stopped: boolean) =>
-    transaction((db) => {
-      const timestamp = now();
-      if (stopped) {
-        const markStopped = db.prepare(
-          "UPDATE ai_worker_instances SET last_seen_at=?,stopped_at=? WHERE worker_id=?",
-        );
-        for (const workerId of workerIds) markStopped.run(timestamp, timestamp, workerId);
-        return;
-      }
-      const heartbeat = db.prepare(
-        "INSERT INTO ai_worker_instances(worker_id,started_at,last_seen_at,stopped_at) VALUES (?,?,?,NULL) ON CONFLICT(worker_id) DO UPDATE SET last_seen_at=excluded.last_seen_at,stopped_at=NULL",
-      );
-      for (const workerId of workerIds) heartbeat.run(workerId, timestamp, timestamp);
-    });
+export function startAiWorkerHeartbeat(workerId: string, intervalMs = 3_000) {
+  let stopped = false;
+  const updateHeartbeat = (markStopped = false) => {
+    try {
+      transaction((db) => {
+        const timestamp = now();
+        if (markStopped) {
+          db.prepare(
+            "UPDATE ai_worker_instances SET last_seen_at=?,stopped_at=? WHERE worker_id=?",
+          ).run(timestamp, timestamp, workerId);
+          return;
+        }
+        db.prepare(
+          "INSERT INTO ai_worker_instances(worker_id,started_at,last_seen_at,stopped_at) VALUES (?,?,?,NULL) ON CONFLICT(worker_id) DO UPDATE SET last_seen_at=excluded.last_seen_at,stopped_at=NULL",
+        ).run(workerId, timestamp, timestamp);
+      });
+    } catch {
+      console.error("AI worker heartbeat failed");
+    }
+  };
 
   updateHeartbeat(false);
-  const timer = setInterval(() => updateHeartbeat(false), intervalMs);
+  const timer = setInterval(() => {
+    if (!stopped) updateHeartbeat();
+  }, intervalMs);
   return {
     stop() {
+      if (stopped) return;
+      stopped = true;
       clearInterval(timer);
       updateHeartbeat(true);
     },
@@ -1272,7 +1280,7 @@ function noteOpenRouterFreeRequestStart(
   );
 }
 
-function claimNextAiItem(workerId: string) {
+function claimNextAiItem(workerId: string, slot: number) {
   return immediateTransaction((db) => {
     const timestamp = now();
     const timestampMs = Date.now();
@@ -1361,7 +1369,7 @@ function claimNextAiItem(workerId: string) {
       lease_until: leaseUntil,
       attempt_count: Number(item.attempt_count ?? 0) + 1,
     };
-    return { ...claimedItem, attempt: startAttempt(claimedItem, workerId, db) };
+    return { ...claimedItem, attempt: startAttempt(claimedItem, workerId, slot, db) };
   });
 }
 
@@ -1444,7 +1452,7 @@ function safeAttemptErrorCode(error: unknown) {
   return /^[A-Z0-9_]{1,80}$/.test(candidate) ? candidate : "AI_PROVIDER_ERROR";
 }
 
-function startAttempt(item: any, workerId: string, db: ReturnType<typeof getDb>) {
+function startAttempt(item: any, workerId: string, slot: number, db: ReturnType<typeof getDb>) {
   const timestamp = now();
   let snapshot: Partial<ProviderSnapshot> = {};
   try {
@@ -1460,7 +1468,7 @@ function startAttempt(item: any, workerId: string, db: ReturnType<typeof getDb>)
   ).run(
     attemptId,
     workerId,
-    0,
+    slot,
     item.run_id ?? null,
     item.batch_id,
     item.id,
@@ -1595,9 +1603,9 @@ function failItem(item: any, error: unknown) {
   });
 }
 
-export async function processNextAiItem(workerId: string) {
+export async function processNextAiItem(workerId: string, slot = 0) {
   recoverInterruptedAiBatches();
-  const claimed = claimNextAiItem(workerId);
+  const claimed = claimNextAiItem(workerId, slot);
   if (!claimed) return false;
   const { attempt, ...item } = claimed;
   item.attempt_id = attempt.id;

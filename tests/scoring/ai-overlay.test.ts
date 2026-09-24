@@ -459,7 +459,13 @@ describe("thin AI overlay", () => {
       const item = fixture(1, true);
       const config = provider(`http://127.0.0.1:${port}/v1`);
       const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
-      expect(await ai.processNextAiItem("test-worker")).toBe(true);
+      expect(await ai.processNextAiItem("test-worker", 7)).toBe(true);
+      expect(
+        dbModule
+          .getDb()
+          .prepare("SELECT worker_id,slot FROM ai_api_attempts WHERE batch_id=?")
+          .get(batch.batch.id),
+      ).toEqual({ worker_id: "test-worker", slot: 7 });
       const row = dbModule
         .getDb()
         .prepare(

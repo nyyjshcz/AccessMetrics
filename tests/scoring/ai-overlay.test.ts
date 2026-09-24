@@ -585,6 +585,159 @@ describe("thin AI overlay", () => {
     }
   });
 
+  it("lets deletion win after atomic claim without sending or retaining attempt scope IDs", async () => {
+    let requests = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      requests += 1;
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    try {
+      const item = fixture(1, true);
+      const db = dbModule.getDb();
+      const config = provider();
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      const jobId = (
+        db.prepare("SELECT job_id FROM scan_runs WHERE id=?").get(item.run.id) as {
+          job_id: string;
+        }
+      ).job_id;
+      db.prepare("UPDATE scan_jobs SET status='completed',finished_at=? WHERE id=?").run(
+        new Date().toISOString(),
+        jobId,
+      );
+
+      const processing = ai.processNextAiItem("claim-delete-race-worker");
+      const attempt = db
+        .prepare("SELECT id FROM ai_api_attempts WHERE worker_id=?")
+        .get("claim-delete-race-worker") as { id: string } | undefined;
+      expect(attempt).toBeDefined();
+      repositories.deleteTerminalScanJob(jobId);
+      await processing;
+
+      expect(requests).toBe(0);
+      expect(
+        db
+          .prepare(
+            "SELECT status,run_id,batch_id,item_id,provider_config_id,cancelled_at FROM ai_api_attempts WHERE id=?",
+          )
+          .get(attempt!.id),
+      ).toMatchObject({
+        status: "cancelled",
+        run_id: null,
+        batch_id: null,
+        item_id: null,
+        provider_config_id: null,
+        cancelled_at: expect.any(String),
+      });
+      expect(
+        db.prepare("SELECT id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id),
+      ).toBeUndefined();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("serializes request initiation before deletion and keeps a late success cancelled", async () => {
+    let requests = 0;
+    let requestStartedInsideTransaction = false;
+    let providerObservedAbort = false;
+    let jobId = "";
+    let resolveRequestStarted!: () => void;
+    let resolveResponse!: (response: Response) => void;
+    const requestStarted = new Promise<void>((resolve) => {
+      resolveRequestStarted = resolve;
+    });
+    const deferredResponse = new Promise<Response>((resolve) => {
+      resolveResponse = resolve;
+    });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+      requests += 1;
+      requestStartedInsideTransaction = dbModule.getDb().inTransaction;
+      const signal = init?.signal;
+      signal?.addEventListener(
+        "abort",
+        () => {
+          providerObservedAbort = true;
+        },
+        { once: true },
+      );
+      resolveRequestStarted();
+      return deferredResponse;
+    });
+    try {
+      const item = fixture(1, true);
+      const db = dbModule.getDb();
+      const config = provider();
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      jobId = (
+        db.prepare("SELECT job_id FROM scan_runs WHERE id=?").get(item.run.id) as {
+          job_id: string;
+        }
+      ).job_id;
+      db.prepare("UPDATE scan_jobs SET status='completed',finished_at=? WHERE id=?").run(
+        new Date().toISOString(),
+        jobId,
+      );
+
+      const processing = ai.processNextAiItem("serialized-delete-worker");
+      await requestStarted;
+      await repositories.deleteTerminalScanJob(jobId);
+      expect(
+        db
+          .prepare(
+            "SELECT status,run_id,batch_id,item_id,provider_config_id,cancelled_at FROM ai_api_attempts WHERE worker_id='serialized-delete-worker'",
+          )
+          .get(),
+      ).toMatchObject({
+        status: "running",
+        run_id: null,
+        batch_id: null,
+        item_id: null,
+        provider_config_id: null,
+        cancelled_at: expect.any(String),
+      });
+      expect(
+        db.prepare("SELECT id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id),
+      ).toBeUndefined();
+      resolveResponse(
+        new Response(
+          JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+      await processing;
+
+      expect(requests).toBe(1);
+      expect(requestStartedInsideTransaction).toBe(true);
+      expect(providerObservedAbort).toBe(true);
+      expect(
+        db
+          .prepare(
+            "SELECT status,run_id,batch_id,item_id,provider_config_id,cancelled_at,error_code FROM ai_api_attempts WHERE worker_id='serialized-delete-worker'",
+          )
+          .get(),
+      ).toMatchObject({
+        status: "cancelled",
+        run_id: null,
+        batch_id: null,
+        item_id: null,
+        provider_config_id: null,
+        cancelled_at: expect.any(String),
+        error_code: "AI_ATTEMPT_CANCELLED",
+      });
+      expect(
+        db
+          .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?")
+          .get(batch.batch.id),
+      ).toEqual({ count: 0 });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("waits and retries after a provider rate limit instead of failing the batch", async () => {
     let requests = 0;
     const server = http.createServer((request, response) => {

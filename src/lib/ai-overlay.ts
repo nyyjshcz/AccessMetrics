@@ -44,6 +44,11 @@ const MAX_REASON_LENGTH = 2000;
 // worker cannot claim the same item while the first request is still in flight.
 const LEASE_MS = 180_000;
 const MAX_ATTEMPTS = 3;
+
+function immediateTransaction<T>(fn: (db: ReturnType<typeof getDb>) => T) {
+  const db = getDb();
+  return db.transaction(() => fn(db)).immediate();
+}
 const RATE_LIMIT_FALLBACK_DELAY_MS = 60_000;
 const RETRY_BASE_DELAY_MS = 1_000;
 const RETRY_MAX_DELAY_MS = 5 * 60_000;
@@ -1133,7 +1138,7 @@ function noteOpenRouterFreeRequestStart(
 }
 
 function claimNextAiItem(workerId: string) {
-  return transaction((db) => {
+  return immediateTransaction((db) => {
     const timestamp = now();
     const timestampMs = Date.now();
     const leaseUntil = new Date(Date.now() + LEASE_MS).toISOString();
@@ -1215,12 +1220,13 @@ function claimNextAiItem(workerId: string) {
     db.prepare(
       "UPDATE ai_review_batches SET status='running',updated_at=? WHERE id=? AND status='queued'",
     ).run(timestamp, item.batch_id);
-    return {
+    const claimedItem = {
       ...item,
       lease_owner: workerId,
       lease_until: leaseUntil,
       attempt_count: Number(item.attempt_count ?? 0) + 1,
     };
+    return { ...claimedItem, attempt: startAttempt(claimedItem, workerId, db) };
   });
 }
 
@@ -1288,7 +1294,7 @@ function safeAttemptErrorCode(error: unknown) {
   return /^[A-Z0-9_]{1,80}$/.test(candidate) ? candidate : "AI_PROVIDER_ERROR";
 }
 
-function startAttempt(item: any, workerId: string) {
+function startAttempt(item: any, workerId: string, db: ReturnType<typeof getDb>) {
   const timestamp = now();
   let snapshot: Partial<ProviderSnapshot> = {};
   try {
@@ -1297,26 +1303,24 @@ function startAttempt(item: any, workerId: string) {
     // Keep the durable row even when a legacy provider snapshot is corrupt.
   }
   const attemptId = id("ai_attempt");
-  getDb()
-    .prepare(
-      `INSERT INTO ai_api_attempts
+  db.prepare(
+    `INSERT INTO ai_api_attempts
        (id,worker_id,slot,run_id,batch_id,item_id,provider_config_id,provider_label,model,retry_cycle,attempt_number,started_at,status)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'running')`,
-    )
-    .run(
-      attemptId,
-      workerId,
-      0,
-      item.run_id ?? null,
-      item.batch_id,
-      item.id,
-      item.provider_config_id,
-      typeof snapshot.label === "string" ? snapshot.label : "unknown",
-      typeof snapshot.model === "string" ? snapshot.model : "unknown",
-      Number(item.retry_cycle ?? 0),
-      Number(item.attempt_count ?? 1),
-      timestamp,
-    );
+  ).run(
+    attemptId,
+    workerId,
+    0,
+    item.run_id ?? null,
+    item.batch_id,
+    item.id,
+    item.provider_config_id,
+    typeof snapshot.label === "string" ? snapshot.label : "unknown",
+    typeof snapshot.model === "string" ? snapshot.model : "unknown",
+    Number(item.retry_cycle ?? 0),
+    Number(item.attempt_count ?? 1),
+    timestamp,
+  );
   return { id: attemptId, startedAt: Date.now(), runId: item.run_id as string };
 }
 
@@ -1326,12 +1330,7 @@ function finishAttempt(
   error?: unknown,
 ) {
   const endedAt = now();
-  const durableCancellation = getDb()
-    .prepare("SELECT cancelled_at FROM ai_api_attempts WHERE id=?")
-    .get(attempt.id) as { cancelled_at: string | null } | undefined;
-  const cancelled =
-    (error instanceof Error && error.name === "AbortError") ||
-    Boolean(durableCancellation?.cancelled_at);
+  const abortError = error instanceof Error && error.name === "AbortError";
   const usage = result?.usage ?? providerUsageFromError(error);
   const errorDetails =
     error instanceof AppError && error.details && typeof error.details === "object"
@@ -1339,22 +1338,31 @@ function finishAttempt(
       : null;
   getDb()
     .prepare(
-      `UPDATE ai_api_attempts SET ended_at=?,duration_ms=?,status=?,http_status=?,error_code=?,
-       input_tokens=?,output_tokens=?,total_tokens=?,reported_cost=?,currency=?,cancelled_at=COALESCE(cancelled_at,?) WHERE id=? AND status='running'`,
+      `UPDATE ai_api_attempts SET ended_at=?,duration_ms=?,
+       status=CASE WHEN cancelled_at IS NOT NULL OR ?=1 THEN 'cancelled' WHEN ?=1 THEN 'failed' ELSE 'completed' END,
+       http_status=?,
+       error_code=CASE WHEN cancelled_at IS NOT NULL OR ?=1 THEN 'AI_ATTEMPT_CANCELLED' WHEN ?=1 THEN ? ELSE NULL END,
+       input_tokens=?,output_tokens=?,total_tokens=?,reported_cost=?,currency=?,
+       cancelled_at=CASE WHEN ?=1 THEN COALESCE(cancelled_at,?) ELSE cancelled_at END
+       WHERE id=? AND status='running'`,
     )
     .run(
       endedAt,
       Math.max(0, Date.now() - attempt.startedAt),
-      error ? (cancelled ? "cancelled" : "failed") : "completed",
+      abortError ? 1 : 0,
+      error ? 1 : 0,
       result?.httpStatus ??
         (typeof errorDetails?.httpStatus === "number" ? errorDetails.httpStatus : null),
-      error ? safeAttemptErrorCode(error) : cancelled ? "AI_ATTEMPT_CANCELLED" : null,
+      abortError ? 1 : 0,
+      error ? 1 : 0,
+      error ? safeAttemptErrorCode(error) : null,
       usage?.inputTokens ?? null,
       usage?.outputTokens ?? null,
       usage?.totalTokens ?? null,
       usage?.cost ?? null,
       usage?.currency ?? null,
-      cancelled ? endedAt : null,
+      abortError ? 1 : 0,
+      endedAt,
       attempt.id,
     );
 }
@@ -1427,9 +1435,9 @@ function failItem(item: any, error: unknown) {
 
 export async function processNextAiItem(workerId: string) {
   recoverInterruptedAiBatches();
-  const item = claimNextAiItem(workerId);
-  if (!item) return false;
-  const attempt = startAttempt(item, workerId);
+  const claimed = claimNextAiItem(workerId);
+  if (!claimed) return false;
+  const { attempt, ...item } = claimed;
   item.attempt_id = attempt.id;
   const controller = new AbortController();
   const unregisterAborter = registerAiAttemptAborter(attempt.runId, () => controller.abort());
@@ -1455,47 +1463,53 @@ export async function processNextAiItem(workerId: string) {
   };
   const poller = pollCancellation();
   try {
-    const provider = getProviderRow(item.provider_config_id, true);
-    const snapshot = JSON.parse(item.provider_snapshot_json ?? "{}") as ProviderSnapshot;
-    if (
-      provider.key_fingerprint !== snapshot.keyFingerprint ||
-      !(
-        sha256(canonicalize(snapshot)) === item.provider_snapshot_hash ||
-        (snapshot.rateLimitRpm === undefined &&
-          providerSnapshotHashMatches(provider, item.provider_snapshot_hash))
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const { responsePromise } = immediateTransaction((db) => {
+      const provider = getProviderRow(item.provider_config_id, true);
+      const snapshot = JSON.parse(item.provider_snapshot_json ?? "{}") as ProviderSnapshot;
+      if (
+        provider.key_fingerprint !== snapshot.keyFingerprint ||
+        !(
+          sha256(canonicalize(snapshot)) === item.provider_snapshot_hash ||
+          (snapshot.rateLimitRpm === undefined &&
+            providerSnapshotHashMatches(provider, item.provider_snapshot_hash))
+        )
       )
-    )
-      throw new AppError(
-        "AI_PROVIDER_CHANGED",
-        "provider key 或 batch snapshot 已变化，当前 batch 不能继续",
-        409,
-      );
-    const current = getDb()
-      .prepare(
-        `SELECT r.id FROM scan_runs r JOIN ai_review_batches b ON b.run_id=r.id
-         JOIN ai_review_items i ON i.batch_id=b.id JOIN ai_provider_configs p ON p.id=b.provider_config_id
-         JOIN scan_jobs j ON j.id=r.job_id
-         WHERE r.id=? AND b.id=? AND i.id=? AND b.status='running' AND i.status='running'
-           AND i.lease_owner=? AND p.enabled=1 AND b.cancel_requested_at IS NULL`,
-      )
-      .get(item.run_id, item.batch_id, item.id, item.lease_owner);
-    const attemptState = getDb()
-      .prepare("SELECT cancelled_at FROM ai_api_attempts WHERE id=?")
-      .get(attempt.id) as { cancelled_at: string | null } | undefined;
-    if (!current || attemptState?.cancelled_at || controller.signal.aborted)
-      throw new DOMException("AI attempt cancelled", "AbortError");
-    const snapshotProvider = { ...provider, base_url: snapshot.baseUrl, model: snapshot.model };
-    const node = nodeContext(item.result_node_id);
-    if (!node || controller.signal.aborted)
-      throw new DOMException("AI attempt is no longer valid", "AbortError");
-    const evidence = evidenceForPrompt(node.ai_evidence_json);
-    const response = await callProvider(
-      snapshotProvider,
-      node,
-      evidence,
-      snapshot.requestParams ?? AI_REQUEST_PARAMS,
-      controller.signal,
-    );
+        throw new AppError(
+          "AI_PROVIDER_CHANGED",
+          "provider key 或 batch snapshot 已变化，当前 batch 不能继续",
+          409,
+        );
+      const current = db
+        .prepare(
+          `SELECT r.id FROM scan_runs r JOIN ai_review_batches b ON b.run_id=r.id
+           JOIN ai_review_items i ON i.batch_id=b.id JOIN ai_provider_configs p ON p.id=b.provider_config_id
+           JOIN scan_jobs j ON j.id=r.job_id
+           WHERE r.id=? AND b.id=? AND i.id=? AND b.status='running' AND i.status='running'
+             AND i.lease_owner=? AND p.enabled=1 AND b.cancel_requested_at IS NULL`,
+        )
+        .get(item.run_id, item.batch_id, item.id, item.lease_owner);
+      const attemptState = db
+        .prepare("SELECT cancelled_at FROM ai_api_attempts WHERE id=?")
+        .get(attempt.id) as { cancelled_at: string | null } | undefined;
+      if (!current || attemptState?.cancelled_at || controller.signal.aborted)
+        throw new DOMException("AI attempt cancelled", "AbortError");
+      const snapshotProvider = { ...provider, base_url: snapshot.baseUrl, model: snapshot.model };
+      const node = nodeContext(item.result_node_id);
+      if (!node || controller.signal.aborted)
+        throw new DOMException("AI attempt is no longer valid", "AbortError");
+      const evidence = evidenceForPrompt(node.ai_evidence_json);
+      return {
+        responsePromise: callProvider(
+          snapshotProvider,
+          node,
+          evidence,
+          snapshot.requestParams ?? AI_REQUEST_PARAMS,
+          controller.signal,
+        ),
+      };
+    });
+    const response = await responsePromise;
     finishAttempt(attempt, response);
     completeItem(item, response.result, attempt.id);
   } catch (error) {

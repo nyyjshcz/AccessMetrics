@@ -14,6 +14,11 @@ import { canonicalizeUrl } from "./url-security";
 const now = () => new Date().toISOString();
 const aiAttemptAborters = new Map<string, Set<() => void>>();
 
+function immediateTransaction<T>(fn: (db: ReturnType<typeof getDb>) => T) {
+  const db = getDb();
+  return db.transaction(() => fn(db)).immediate();
+}
+
 export function registerAiAttemptAborter(runId: string, abort: () => void) {
   const aborters = aiAttemptAborters.get(runId) ?? new Set<() => void>();
   aborters.add(abort);
@@ -111,7 +116,7 @@ const DELETABLE_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
  * without ever creating a run.
  */
 export function deleteTerminalScanJob(jobId: string) {
-  return transaction((db) => {
+  return immediateTransaction((db) => {
     const job = db.prepare("SELECT id,status FROM scan_jobs WHERE id=?").get(jobId) as
       | { id: string; status: string }
       | undefined;

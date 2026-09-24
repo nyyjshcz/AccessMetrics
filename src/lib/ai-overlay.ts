@@ -44,6 +44,9 @@ const MAX_REASON_LENGTH = 2000;
 const LEASE_MS = 180_000;
 const MAX_ATTEMPTS = 3;
 const RATE_LIMIT_FALLBACK_DELAY_MS = 60_000;
+const RETRY_BASE_DELAY_MS = 1_000;
+const RETRY_MAX_DELAY_MS = 5 * 60_000;
+const RETRY_AFTER_MAX_DELAY_MS = 24 * 60 * 60_000;
 // OpenRouter documents a 20 RPM limit for free variants. Keep a three-second
 // gap between starts; the user-configured concurrent-request cap still applies
 // independently to requests that take longer than that interval.
@@ -731,7 +734,7 @@ export function retryAiBatch(batchId: string) {
     assertNoOtherActiveBatch(db, batch.run_id, batchId);
     removeHumanResolvedQueueItems(db, batchId, batch.run_id);
     db.prepare(
-      "UPDATE ai_review_items SET status='queued',verdict=NULL,reason=NULL,lease_owner=NULL,lease_until=NULL,attempt_count=0,response_hash=NULL,last_error=NULL,updated_at=?,completed_at=NULL WHERE batch_id=? AND status='failed'",
+      "UPDATE ai_review_items SET status='queued',verdict=NULL,reason=NULL,lease_owner=NULL,lease_until=NULL,attempt_count=0,retry_cycle=retry_cycle+1,next_retry_at=NULL,response_hash=NULL,last_error=NULL,updated_at=?,completed_at=NULL WHERE batch_id=? AND status='failed'",
     ).run(timestamp, batchId);
     if (finishWhenNoQueuedItems(db, batchId, timestamp) > 0)
       db.prepare(
@@ -763,25 +766,7 @@ function isProviderRateLimit(error: unknown) {
   return error instanceof AppError && error.code === "AI_PROVIDER_RATE_LIMITED";
 }
 
-function isTransientProviderError(error: unknown) {
-  if (!(error instanceof AppError)) return true;
-  if (isProviderRateLimit(error)) return true;
-  if (["AI_RESPONSE_EMPTY", "AI_RESPONSE_INVALID", "AI_VERDICT_INVALID"].includes(error.code))
-    return true;
-  if (error.code !== "AI_PROVIDER_REQUEST_FAILED") return false;
-  const httpStatus =
-    error.details &&
-    typeof error.details === "object" &&
-    typeof (error.details as { httpStatus?: unknown }).httpStatus === "number"
-      ? (error.details as { httpStatus: number }).httpStatus
-      : 0;
-  return httpStatus === 408 || httpStatus === 425 || httpStatus >= 500;
-}
-
 function transientRetryAt(error: unknown) {
-  // Only provider rate limits are backpressure. All other transient failures
-  // are requeued immediately so a network hiccup or malformed response does
-  // not make the queue wait for a minute (or longer).
   if (!isProviderRateLimit(error)) return null;
   const requestedDelay =
     error instanceof AppError &&
@@ -790,10 +775,12 @@ function transientRetryAt(error: unknown) {
     typeof (error.details as { retryAfterMs?: unknown }).retryAfterMs === "number"
       ? (error.details as { retryAfterMs: number }).retryAfterMs
       : null;
-  // For a 429 without an explicit provider wait, retry in one minute. A
-  // supplied Retry-After remains authoritative.
-  const delay =
-    requestedDelay === null ? RATE_LIMIT_FALLBACK_DELAY_MS : Math.max(1_000, requestedDelay);
+  // For a 429 without an explicit provider wait, retry in one minute. Bound
+  // even a provider-supplied Retry-After so the queue cannot be parked forever.
+  const delay = Math.min(
+    RETRY_AFTER_MAX_DELAY_MS,
+    requestedDelay === null ? RATE_LIMIT_FALLBACK_DELAY_MS : Math.max(1_000, requestedDelay),
+  );
   return new Date(Date.now() + delay).toISOString();
 }
 
@@ -872,7 +859,11 @@ async function callProvider(
   node: any,
   evidence: any,
   requestParams: typeof AI_REQUEST_PARAMS,
-) {
+): Promise<{
+  result: { verdict: AiVerdict; reason: string; responseHash: string };
+  httpStatus: number;
+  usage: { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null; cost: number | null; currency: string | null };
+}> {
   const key = decryptSecret(provider.encrypted_api_key);
   const localProvider = (() => {
     try {
@@ -917,10 +908,47 @@ async function callProvider(
         retryAfterMs: retryAfterMs(response.headers.get("retry-after")),
       },
     );
-  const body = (await response.json()) as any;
+  let body: any;
+  try {
+    body = await response.json();
+  } catch {
+    throw new AppError("AI_RESPONSE_INVALID", "模型没有返回有效 JSON", 502, {
+      httpStatus: response.status,
+    });
+  }
   const content = normalizeResponseContent(body?.choices?.[0]?.message?.content);
-  if (!content) throw new AppError("AI_RESPONSE_EMPTY", "模型返回内容为空", 502);
-  return parseVerdict(content);
+  if (!content)
+    throw new AppError("AI_RESPONSE_EMPTY", "模型返回内容为空", 502, { httpStatus: response.status });
+  let parsedResult: ReturnType<typeof parseVerdict>;
+  try {
+    parsedResult = parseVerdict(content);
+  } catch (error) {
+    if (error instanceof AppError)
+      throw new AppError(error.code, error.message, error.status, { httpStatus: response.status });
+    throw error;
+  }
+  const usage = body?.usage;
+  const tokenCount = (value: unknown) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const reportedCost =
+    typeof usage?.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0
+      ? usage.cost
+      : null;
+  const currency =
+    typeof usage?.currency === "string" && /^[A-Z]{3}$/.test(usage.currency)
+      ? usage.currency
+      : null;
+  return {
+    result: parsedResult,
+    httpStatus: response.status,
+    usage: {
+      inputTokens: tokenCount(usage?.prompt_tokens),
+      outputTokens: tokenCount(usage?.completion_tokens),
+      totalTokens: tokenCount(usage?.total_tokens),
+      cost: reportedCost,
+      currency,
+    },
+  };
 }
 
 function recoverInterruptedAiBatches() {
@@ -1072,7 +1100,7 @@ function claimNextAiItem(workerId: string) {
     const leaseUntil = new Date(Date.now() + LEASE_MS).toISOString();
     const item = db
       .prepare(
-        `SELECT i.*,b.status AS batch_status,b.provider_config_id,b.provider_snapshot_json,b.provider_snapshot_hash,b.prompt_hash,b.prompt_version,b.evidence_version,p.key_fingerprint AS provider_key_fingerprint
+        `SELECT i.*,b.status AS batch_status,b.run_id,b.provider_config_id,b.provider_snapshot_json,b.provider_snapshot_hash,b.prompt_hash,b.prompt_version,b.evidence_version,p.key_fingerprint AS provider_key_fingerprint
          FROM ai_review_items i JOIN ai_review_batches b ON b.id=i.batch_id
          JOIN ai_provider_configs p ON p.id=b.provider_config_id
          WHERE b.run_id IS NOT NULL AND b.page_id IS NULL AND b.study_freeze_id IS NULL
@@ -1096,10 +1124,10 @@ function claimNextAiItem(workerId: string) {
                AND cooling_i.status='queued'
                AND cooling_i.lease_until IS NOT NULL AND cooling_i.lease_until>?
            )
-           AND (i.status='queued' OR (i.status='running' AND i.lease_until IS NOT NULL AND i.lease_until<?))
+           AND ((i.status='queued' AND (i.next_retry_at IS NULL OR i.next_retry_at<=?)) OR (i.status='running' AND i.lease_until IS NOT NULL AND i.lease_until<?))
            ORDER BY i.created_at,i.id LIMIT 1`,
       )
-      .get(timestamp, timestamp, timestamp) as any;
+      .get(timestamp, timestamp, timestamp, timestamp) as any;
     if (!item) return null;
     let providerRateLimitRpm: number | null = null;
     try {
@@ -1122,7 +1150,12 @@ function claimNextAiItem(workerId: string) {
     db.prepare(
       "UPDATE ai_review_batches SET status='running',updated_at=? WHERE id=? AND status='queued'",
     ).run(timestamp, item.batch_id);
-    return { ...item, lease_owner: workerId, lease_until: leaseUntil };
+    return {
+      ...item,
+      lease_owner: workerId,
+      lease_until: leaseUntil,
+      attempt_count: Number(item.attempt_count ?? 0) + 1,
+    };
   });
 }
 
@@ -1164,24 +1197,95 @@ function completeItem(
   });
 }
 
+function safeAttemptErrorCode(error: unknown) {
+  const candidate = error instanceof AppError ? error.code :
+    error instanceof Error && error.name === "TimeoutError" ? "AI_PROVIDER_TIMEOUT" :
+    error instanceof Error && error.name === "AbortError" ? "AI_PROVIDER_ABORTED" :
+    error instanceof TypeError ? "AI_PROVIDER_NETWORK_ERROR" : "AI_PROVIDER_ERROR";
+  return /^[A-Z0-9_]{1,80}$/.test(candidate) ? candidate : "AI_PROVIDER_ERROR";
+}
+
+function startAttempt(item: any, workerId: string) {
+  const timestamp = now();
+  let snapshot: Partial<ProviderSnapshot> = {};
+  try {
+    snapshot = JSON.parse(item.provider_snapshot_json ?? "{}") as Partial<ProviderSnapshot>;
+  } catch {
+    // Keep the durable row even when a legacy provider snapshot is corrupt.
+  }
+  const attemptId = id("ai_attempt");
+  getDb()
+    .prepare(
+      `INSERT INTO ai_api_attempts
+       (id,worker_id,slot,run_id,batch_id,item_id,provider_config_id,provider_label,model,retry_cycle,attempt_number,started_at,status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'running')`,
+    )
+    .run(
+      attemptId,
+      workerId,
+      0,
+      item.run_id ?? null,
+      item.batch_id,
+      item.id,
+      item.provider_config_id,
+      typeof snapshot.label === "string" ? snapshot.label : "unknown",
+      typeof snapshot.model === "string" ? snapshot.model : "unknown",
+      Number(item.retry_cycle ?? 0),
+      Number(item.attempt_count ?? 1),
+      timestamp,
+    );
+  return { id: attemptId, startedAt: Date.now() };
+}
+
+function finishAttempt(
+  attempt: { id: string; startedAt: number },
+  result: { httpStatus?: number; usage?: { inputTokens: number | null; outputTokens: number | null; totalTokens: number | null; cost: number | null; currency: string | null } } | null,
+  error?: unknown,
+) {
+  const endedAt = now();
+  const cancelled = error instanceof Error && error.name === "AbortError";
+  getDb()
+    .prepare(
+      `UPDATE ai_api_attempts SET ended_at=?,duration_ms=?,status=?,http_status=?,error_code=?,
+       input_tokens=?,output_tokens=?,total_tokens=?,reported_cost=?,currency=?,cancelled_at=? WHERE id=? AND status='running'`,
+    )
+    .run(
+      endedAt,
+      Math.max(0, Date.now() - attempt.startedAt),
+      error ? (cancelled ? "cancelled" : "failed") : "completed",
+      result?.httpStatus ?? (error instanceof AppError && typeof error.details?.httpStatus === "number" ? error.details.httpStatus : null),
+      error ? safeAttemptErrorCode(error) : null,
+      result?.usage?.inputTokens ?? null,
+      result?.usage?.outputTokens ?? null,
+      result?.usage?.totalTokens ?? null,
+      result?.usage?.cost ?? null,
+      result?.usage?.currency ?? null,
+      cancelled ? endedAt : null,
+      attempt.id,
+    );
+}
+
 function failItem(item: any, error: unknown) {
-  const message = (error instanceof AppError ? error.message : String(error)).slice(0, 1000);
+  const errorCode = safeAttemptErrorCode(error);
   const timestamp = now();
   transaction((db) => {
     const current = db
       .prepare("SELECT attempt_count FROM ai_review_items WHERE id=?")
       .get(item.id) as { attempt_count: number } | undefined;
     const attemptCount = Number(current?.attempt_count ?? item.attempt_count);
-    const transient = isTransientProviderError(error);
-    const terminal = !transient && attemptCount >= MAX_ATTEMPTS;
-    const nextRetryAt = transient ? transientRetryAt(error) : null;
+    const terminal = attemptCount >= MAX_ATTEMPTS;
+    const backoffAt = transientRetryAt(error) ?? new Date(
+      Date.now() + Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attemptCount - 1)),
+    ).toISOString();
+    const nextRetryAt = terminal ? null : backoffAt;
     const changed = db
       .prepare(
-        "UPDATE ai_review_items SET status=?,last_error=?,lease_owner=NULL,lease_until=?,updated_at=?,completed_at=? WHERE id=? AND status='running' AND lease_owner=?",
+        "UPDATE ai_review_items SET status=?,last_error=?,lease_owner=NULL,lease_until=?,next_retry_at=?,updated_at=?,completed_at=? WHERE id=? AND status='running' AND lease_owner=?",
       )
       .run(
         terminal ? "failed" : "queued",
-        message,
+        errorCode,
+        nextRetryAt,
         nextRetryAt,
         timestamp,
         terminal ? timestamp : null,
@@ -1211,6 +1315,7 @@ export async function processNextAiItem(workerId: string) {
   recoverInterruptedAiBatches();
   const item = claimNextAiItem(workerId);
   if (!item) return false;
+  const attempt = startAttempt(item, workerId);
   try {
     const provider = getProviderRow(item.provider_config_id, true);
     const snapshot = JSON.parse(item.provider_snapshot_json ?? "{}") as ProviderSnapshot;
@@ -1230,14 +1335,16 @@ export async function processNextAiItem(workerId: string) {
     const snapshotProvider = { ...provider, base_url: snapshot.baseUrl, model: snapshot.model };
     const node = nodeContext(item.result_node_id);
     const evidence = evidenceForPrompt(node.ai_evidence_json);
-    const result = await callProvider(
+    const response = await callProvider(
       snapshotProvider,
       node,
       evidence,
       snapshot.requestParams ?? AI_REQUEST_PARAMS,
     );
-    completeItem(item, result);
+    finishAttempt(attempt, response);
+    completeItem(item, response.result);
   } catch (error) {
+    finishAttempt(attempt, null, error);
     failItem(item, error);
   }
   return true;

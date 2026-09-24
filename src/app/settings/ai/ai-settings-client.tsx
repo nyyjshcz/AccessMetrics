@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { getMessages, type Locale } from "@/lib/i18n";
 
 type Provider = {
@@ -187,9 +188,14 @@ export default function AiSettingsClient({ locale = "zh-CN" }: { locale?: Locale
             {copy.lede}
           </p>
         </div>
-        <button type="button" onClick={() => edit()}>
-          {copy.add}
-        </button>
+        <div className="ai-settings-heading-actions">
+          <Link className="secondary-link" href="/settings/ai/worker">
+            {copy.openWorkerMonitor}
+          </Link>
+          <button type="button" onClick={() => edit()}>
+            {copy.add}
+          </button>
+        </div>
       </div>
       {notice && (
         <p className={notice.kind === "error" ? "error notice" : "success notice"} role="status">

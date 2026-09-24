@@ -1,0 +1,50 @@
+services:
+  web:
+    image: accesscheck-nas:local
+    environment:
+      APP_ENV: test
+      APP_BASE_URL: http://127.0.0.1:3000
+      HOSTNAME: 0.0.0.0
+      DATABASE_URL: /var/lib/accesscheck/data/accesscheck.db
+      PRIVATE_EVIDENCE_ROOT: /var/lib/accesscheck/private-evidence
+      PUBLIC_EXPORT_ROOT: /var/lib/accesscheck/public-exports
+      SESSION_SECRET: local-only-ai-monitor-smoke-session-secret
+      ADMIN_ACCESS_KEY: local-only-ai-monitor-smoke-admin-key
+      VISITOR_ACCESS_KEY: local-only-ai-monitor-smoke-visitor-key
+    volumes:
+      - monitor-smoke-data:/var/lib/accesscheck/data
+      - monitor-smoke-private:/var/lib/accesscheck/private-evidence
+      - monitor-smoke-exports:/var/lib/accesscheck/public-exports
+    command: ["node", "standalone/server.js"]
+    healthcheck:
+      test: ["CMD", "node", "scripts/healthcheck.mjs"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [monitor-smoke]
+
+  ai-worker:
+    image: accesscheck-nas:local
+    environment:
+      APP_ENV: test
+      DATABASE_URL: /var/lib/accesscheck/data/accesscheck.db
+      SESSION_SECRET: local-only-ai-monitor-smoke-session-secret
+    volumes:
+      - monitor-smoke-data:/var/lib/accesscheck/data
+    command:
+      - sh
+      - -c
+      - node scripts/fake-ai-provider.mjs & exec node node_modules/tsx/dist/cli.mjs src/worker/ai.ts
+    depends_on:
+      web:
+        condition: service_healthy
+    networks: [monitor-smoke]
+
+volumes:
+  monitor-smoke-data:
+  monitor-smoke-private:
+  monitor-smoke-exports:
+
+networks:
+  monitor-smoke:
+    internal: true

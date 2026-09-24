@@ -1130,6 +1130,7 @@ function migration033(db: Database.Database) {
       error_code TEXT,
       input_tokens INTEGER,
       output_tokens INTEGER,
+      total_tokens INTEGER,
       reported_cost REAL,
       currency TEXT,
       cancelled_at TEXT

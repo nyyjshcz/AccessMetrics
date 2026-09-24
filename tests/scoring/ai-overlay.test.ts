@@ -180,6 +180,7 @@ describe("thin AI overlay", () => {
         "error_code",
         "input_tokens",
         "output_tokens",
+        "total_tokens",
         "reported_cost",
         "currency",
         "cancelled_at",

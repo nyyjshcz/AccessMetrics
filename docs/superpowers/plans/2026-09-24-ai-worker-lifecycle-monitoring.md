@@ -99,9 +99,11 @@ Local verification record (2026-09-24): `accesscheck-nas:local`, `linux/amd64`, 
 
 **Files:** existing NAS Compose/deployment configuration only if image references or commands require adjustment; no Caddy changes.
 
-- [ ] Confirm focused tests, lint, typecheck, local Docker smoke, and `linux/amd64` image build have passed before touching NAS.
-- [ ] Create and integrity-check a NAS database backup; record current Web and AI Worker image IDs/tags for rollback.
-- [ ] Transfer the locally built app image over the LAN and load it on NAS. Do not build on NAS.
-- [ ] Recreate only `web` and `ai-worker` with the same verified image; do not restart `worker`, `egress-proxy`, or Caddy.
-- [ ] Verify database migration/integrity, Web health, admin monitor auth/read-only behavior, Worker liveness, and that deleted scans have no AI batches/items. Use only the fake-provider/local test path; do not create a real scan or call a paid API.
-- [ ] If health or migration verification fails, restore the recorded Web/AI Worker image tags and leave the database backup intact; report the exact rollback result.
+- [x] Confirm focused tests, lint, typecheck, local Docker smoke, and `linux/amd64` image build have passed before touching NAS.
+- [x] Create and integrity-check a NAS database backup; record current Web and AI Worker image IDs/tags for rollback.
+- [x] Transfer the locally built app image over the LAN and load it on NAS. Do not build on NAS.
+- [x] Recreate only `web` and `ai-worker` with the same verified image; do not restart `worker`, `egress-proxy`, or Caddy.
+- [x] Verify database migration/integrity, Web health, admin monitor auth/read-only behavior, Worker liveness, and that deleted scans have no AI batches/items. Use only the fake-provider/local test path; do not create a real scan or call a paid API.
+- [x] If health or migration verification fails, restore the recorded Web/AI Worker image tags and leave the database backup intact; report the exact rollback result. (Not needed: all post-deploy checks passed.)
+
+NAS rollout record (2026-09-24): online backup `/vol1/AccessCheck/app/data/accesscheck-pre-ai-worker-lifecycle-20260924-103514.db` passed `PRAGMA integrity_check` (`ok`), SHA-256 `434a6a20a8f3a38a53b97e33ad9bc121ba329150287c12ae6271f615c1ecf43e`. Separate rollback tags preserve the prior Web image `sha256:3805515ee3622d5cabca98f9c0b8f481af1b289d2dab9ea4bdee9d07555b150d` and AI Worker image `sha256:867c8c3ec5b137c551a99059357c31983c5767446e87d7b9a65c763b486ad831`. The locally built image tar transferred over LAN matched SHA-256 `79D234A801AACC25F47FEFD5E7287F00A42559A201033A267E0F52E739C84ACB`; NAS image config ID `sha256:79470c52336281f787a8deff5535ffe9b2b27ae1e3feb8fde5b332e4712991de` matches the build artifact. Only `web` and `ai-worker` were recreated. Web health returned 200; migration tables exist and DB integrity remains `ok`; monitor auth returned 200 with one online idle Worker, zero active calls, zero queued/running/paused batches, and zero API attempts since migration. Existing completed/cancelled history remains untouched (12 completed batches, 4 cancelled; 5,370 completed items). Deleted-scan orphan checks returned zero. Caddy, scan Worker, and egress-proxy retained their original container/image instances. No live scan or provider call was made. The NAS transfer tar was removed after verification; the local archive and NAS rollback/database backups were retained.

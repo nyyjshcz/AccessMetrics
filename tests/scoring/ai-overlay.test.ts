@@ -1282,7 +1282,10 @@ describe("thin AI overlay", () => {
     });
 
     expect(await ai.processNextAiItem("stale-recovery-worker")).toBe(false);
-    expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "failed" } });
+    expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "cancelled" } });
+    expect(
+      db.prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?").get(batch.batch.id),
+    ).toEqual({ count: 0 });
   });
 
   it("returns the batch for the selected current provider snapshot", () => {
@@ -1304,7 +1307,7 @@ describe("thin AI overlay", () => {
     ai.pauseAiBatch(fresh.batch.id);
   });
 
-  it("keeps an active batch visible after the selected provider settings change", () => {
+  it("cancels an old provider snapshot and explicitly starts the selected provider settings", () => {
     const item = fixture(1, true);
     const config = provider();
     const active = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
@@ -1319,18 +1322,13 @@ describe("thin AI overlay", () => {
       enabled: true,
     });
 
-    const visibleActive = ai.summarizeAiRun(item.run.id, current.id).batch;
-    expect(visibleActive?.id).toBe(active.batch.id);
-    expect(JSON.parse(visibleActive!.provider_snapshot_json).model).toBe(config.model);
-    expect(ai.createAiBatch({ runId: item.run.id, providerConfigId: current.id }).batch.id).toBe(
-      active.batch.id,
-    );
-
-    ai.pauseAiBatch(active.batch.id);
-    expect(ai.summarizeAiRun(item.run.id, current.id).batch).toMatchObject({
-      id: active.batch.id,
-      status: "paused",
-    });
+    expect(ai.getAiBatch(active.batch.id).batch.status).toBe("cancelled");
+    expect(
+      dbModule
+        .getDb()
+        .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?")
+        .get(active.batch.id),
+    ).toEqual({ count: 0 });
 
     const restarted = ai.createAiBatch({ runId: item.run.id, providerConfigId: current.id });
     expect(restarted.batch.id).not.toBe(active.batch.id);

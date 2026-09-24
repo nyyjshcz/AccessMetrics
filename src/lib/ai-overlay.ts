@@ -53,6 +53,7 @@ const RATE_LIMIT_FALLBACK_DELAY_MS = 60_000;
 const RETRY_BASE_DELAY_MS = 1_000;
 const RETRY_MAX_DELAY_MS = 5 * 60_000;
 const RETRY_AFTER_MAX_DELAY_MS = 24 * 60 * 60_000;
+const activeAiBatchAborters = new Map<string, Set<() => void>>();
 // OpenRouter documents a 20 RPM limit for free variants. Keep a three-second
 // gap between starts; the user-configured concurrent-request cap still applies
 // independently to requests that take longer than that interval.
@@ -287,10 +288,27 @@ export function saveAiProvider(input: {
     rawKey === null ? (existing?.encrypted_api_key ?? null) : rawKey ? encryptSecret(rawKey) : null;
   const keyFingerprint =
     rawKey === null ? (existing?.key_fingerprint ?? "") : rawKey ? sha256(rawKey) : "";
+  const enabled = input.enabled === false ? 0 : 1;
+  const materialSnapshotChanged =
+    existing !== null &&
+    (sha256(
+      canonicalize(
+        providerSnapshot({
+          ...existing,
+          label,
+          base_url: baseUrl,
+          model,
+          key_fingerprint: keyFingerprint,
+          rate_limit_rpm: rateLimitRpm ?? 0,
+        }),
+      ),
+    ) !== sha256(canonicalize(providerSnapshot(existing))) ||
+      (existing.enabled === 1 && enabled === 0));
   const timestamp = now();
   const providerId = existing?.id ?? id("aiprovider");
   transaction((db) => {
     if (existing) {
+      if (materialSnapshotChanged) cancelProviderWork(db, providerId, timestamp);
       db.prepare(
         "UPDATE ai_provider_configs SET label=?,base_url=?,model=?,encrypted_api_key=?,key_fingerprint=?,max_concurrent_requests=?,rate_limit_rpm=?,enabled=?,updated_at=? WHERE id=?",
       ).run(
@@ -301,7 +319,7 @@ export function saveAiProvider(input: {
         keyFingerprint,
         maxConcurrentRequests,
         rateLimitRpm ?? 0,
-        input.enabled === false ? 0 : 1,
+        enabled,
         timestamp,
         providerId,
       );
@@ -317,7 +335,7 @@ export function saveAiProvider(input: {
         keyFingerprint,
         maxConcurrentRequests,
         rateLimitRpm ?? 0,
-        input.enabled === false ? 0 : 1,
+        enabled,
         timestamp,
         timestamp,
       );
@@ -330,13 +348,27 @@ export function deleteAiProvider(providerId: string) {
   getProviderRow(providerId);
   transaction((db) => {
     const timestamp = now();
-    db.prepare(
-      `UPDATE ai_review_batches
-       SET status='paused',completed_at=NULL,updated_at=?
-       WHERE provider_config_id=? AND status NOT IN ('completed','cancelled')`,
-    ).run(timestamp, providerId);
+    cancelProviderWork(db, providerId, timestamp);
     db.prepare("DELETE FROM ai_provider_configs WHERE id=?").run(providerId);
   });
+}
+
+function cancelProviderWork(db: ReturnType<typeof getDb>, providerId: string, timestamp: string) {
+  db.prepare(
+    `UPDATE ai_api_attempts SET cancelled_at=COALESCE(cancelled_at,?)
+     WHERE provider_config_id=? AND status='running'`,
+  ).run(timestamp, providerId);
+  db.prepare(
+    `DELETE FROM ai_review_items WHERE status IN ('queued','failed','running') AND batch_id IN (
+       SELECT id FROM ai_review_batches WHERE provider_config_id=? AND status<>'completed'
+     )`,
+  ).run(providerId);
+  db.prepare(
+    `UPDATE ai_review_batches SET batch_key=batch_key || ':cancelled:' || id,
+       status='cancelled',cancel_requested_at=COALESCE(cancel_requested_at,?),
+       completed_at=?,updated_at=?
+     WHERE provider_config_id=? AND status NOT IN ('completed','cancelled')`,
+  ).run(timestamp, timestamp, timestamp, providerId);
 }
 
 export async function listProviderModels(providerId: string) {
@@ -577,6 +609,20 @@ function assertNoOtherActiveBatch(
     });
 }
 
+function cancelBatchWork(db: ReturnType<typeof getDb>, batchId: string, timestamp: string) {
+  db.prepare(
+    "UPDATE ai_api_attempts SET cancelled_at=COALESCE(cancelled_at,?) WHERE batch_id=? AND status='running'",
+  ).run(timestamp, batchId);
+  db.prepare(
+    "DELETE FROM ai_review_items WHERE batch_id=? AND status IN ('queued','failed','running')",
+  ).run(batchId);
+  db.prepare(
+    `UPDATE ai_review_batches SET batch_key=batch_key || ':cancelled:' || id,
+       status='cancelled',cancel_requested_at=COALESCE(cancel_requested_at,?),
+       completed_at=?,updated_at=? WHERE id=? AND status NOT IN ('completed','cancelled')`,
+  ).run(timestamp, timestamp, timestamp, batchId);
+}
+
 function finishWhenNoQueuedItems(db: ReturnType<typeof getDb>, batchId: string, timestamp: string) {
   const state = db
     .prepare(
@@ -602,14 +648,31 @@ export function createAiBatch(input: { runId: string; providerConfigId: string }
   assertRunMutable(input.runId);
   const run = getDb().prepare("SELECT id FROM scan_runs WHERE id=?").get(input.runId);
   if (!run) throw new AppError("RUN_NOT_FOUND", "扫描不存在", 404);
-  const activeId = hasActiveAiBatch(input.runId);
-  if (activeId) return getAiBatch(activeId);
   const provider = getProviderRow(input.providerConfigId, true);
   const snapshot = providerSnapshot(provider);
   const snapshotJson = canonicalize(snapshot);
   const snapshotHash = sha256(snapshotJson);
   const promptHash = AI_PROMPT_HASH;
   const batchKey = makeBatchKey(input.runId, snapshotHash, promptHash);
+  const staleTimestamp = now();
+  transaction((db) => {
+    const staleBatches = db
+      .prepare(
+        `SELECT id FROM ai_review_batches
+         WHERE run_id=? AND page_id IS NULL AND study_freeze_id IS NULL
+           AND status IN ('queued','running','paused','failed') AND provider_snapshot_hash<>?`,
+      )
+      .all(input.runId, snapshotHash) as Array<{ id: string }>;
+    for (const stale of staleBatches) cancelBatchWork(db, stale.id, staleTimestamp);
+  });
+  const sameSnapshotActive = getDb()
+    .prepare(
+      `SELECT id FROM ai_review_batches
+       WHERE run_id=? AND page_id IS NULL AND study_freeze_id IS NULL
+         AND status IN ('queued','running') AND provider_snapshot_hash=? LIMIT 1`,
+    )
+    .get(input.runId, snapshotHash) as { id: string } | undefined;
+  if (sameSnapshotActive) return getAiBatch(sameSnapshotActive.id);
   const existing = getDb()
     .prepare("SELECT * FROM ai_review_batches WHERE batch_key=?")
     .get(batchKey) as any;
@@ -690,35 +753,79 @@ export function createAiBatch(input: { runId: string; providerConfigId: string }
 export function pauseAiBatch(batchId: string) {
   const batch = getBatchRow(batchId);
   if (batch.run_id) assertRunMutable(batch.run_id);
-  getDb()
-    .prepare(
-      "UPDATE ai_review_batches SET status='paused',updated_at=? WHERE id=? AND status IN ('queued','running')",
-    )
-    .run(now(), batchId);
+  const timestamp = now();
+  transaction((db) => {
+    db.prepare(
+      `UPDATE ai_api_attempts SET cancelled_at=COALESCE(cancelled_at,?)
+       WHERE batch_id=? AND status='running'`,
+    ).run(timestamp, batchId);
+    db.prepare(
+      `UPDATE ai_review_items SET status='queued',lease_owner=NULL,lease_until=NULL,
+         next_retry_at=NULL,updated_at=?,completed_at=NULL
+       WHERE batch_id=? AND status='running'`,
+    ).run(timestamp, batchId);
+    db.prepare(
+      `UPDATE ai_review_batches SET status='paused',cancel_requested_at=?,completed_at=NULL,updated_at=?
+       WHERE id=? AND status IN ('queued','running')`,
+    ).run(timestamp, timestamp, batchId);
+  });
+  for (const abort of activeAiBatchAborters.get(batchId) ?? []) abort();
   return getAiBatch(batchId);
 }
 
-export function resumeAiBatch(batchId: string) {
-  const batch = getBatchRow(batchId);
+function assertBatchSourceAndSnapshot(batch: any) {
   if (!batch.run_id || batch.page_id || batch.study_freeze_id)
     throw new AppError("AI_BATCH_SCOPE_INVALID", "旧范围 AI batch 不能在本地流程中恢复", 409);
+  const scan = getDb()
+    .prepare(
+      `SELECT r.id FROM scan_runs r JOIN scan_jobs j ON j.id=r.job_id WHERE r.id=?`,
+    )
+    .get(batch.run_id);
+  if (!scan) throw new AppError("RUN_NOT_FOUND", "扫描不存在", 404);
+  assertRunMutable(batch.run_id);
+  if (batch.status === "cancelled")
+    throw new AppError("AI_BATCH_CANCELLED", "已取消的 AI 批次不能恢复", 409);
   if (!batch.provider_config_id)
     throw new AppError(
       "AI_BATCH_PROVIDER_REMOVED",
       "该批次使用的模型配置已删除；请选择当前模型重新开始复核",
       409,
     );
-  assertRunMutable(batch.run_id);
+  let provider: AiProviderRow;
+  try {
+    provider = getProviderRow(batch.provider_config_id, true);
+  } catch {
+    const timestamp = now();
+    transaction((db) => cancelBatchWork(db, batch.id, timestamp));
+    throw new AppError("AI_BATCH_CANCELLED", "模型配置已失效，该 AI 批次不能恢复", 409);
+  }
+  if (!providerSnapshotHashMatches(provider, batch.provider_snapshot_hash)) {
+    const timestamp = now();
+    transaction((db) => cancelBatchWork(db, batch.id, timestamp));
+    throw new AppError("AI_BATCH_CANCELLED", "模型配置快照已变化，该 AI 批次不能恢复", 409);
+  }
+}
+
+export function resumeAiBatch(batchId: string) {
+  const batch = getBatchRow(batchId);
+  assertBatchSourceAndSnapshot(batch);
   if (batch.status === "completed") return getAiBatch(batchId);
   if (batch.status === "failed")
     throw new AppError("AI_BATCH_RETRY_REQUIRED", "失败的批次必须先重试失败项", 409);
+  if (batch.status !== "paused")
+    throw new AppError("AI_BATCH_NOT_PAUSED", "只有已暂停的 AI 批次可以恢复", 409);
   const timestamp = now();
   transaction((db) => {
     assertNoOtherActiveBatch(db, batch.run_id, batchId);
     removeHumanResolvedQueueItems(db, batchId, batch.run_id);
+    db.prepare(
+      `UPDATE ai_review_items SET status='failed',last_error='AI_ATTEMPTS_EXHAUSTED',
+         lease_owner=NULL,lease_until=NULL,next_retry_at=NULL,updated_at=?,completed_at=?
+       WHERE batch_id=? AND status='queued' AND attempt_count>=?`,
+    ).run(timestamp, timestamp, batchId, MAX_ATTEMPTS);
     if (finishWhenNoQueuedItems(db, batchId, timestamp) > 0)
       db.prepare(
-        "UPDATE ai_review_batches SET status='queued',updated_at=?,completed_at=NULL WHERE id=?",
+        "UPDATE ai_review_batches SET status='queued',cancel_requested_at=NULL,updated_at=?,completed_at=NULL WHERE id=?",
       ).run(timestamp, batchId);
   });
   return getAiBatch(batchId);
@@ -726,15 +833,13 @@ export function resumeAiBatch(batchId: string) {
 
 export function retryAiBatch(batchId: string) {
   const batch = getBatchRow(batchId);
-  if (!batch.run_id || batch.page_id || batch.study_freeze_id)
-    throw new AppError("AI_BATCH_SCOPE_INVALID", "旧范围 AI batch 不能在本地流程中重试", 409);
-  if (!batch.provider_config_id)
-    throw new AppError(
-      "AI_BATCH_PROVIDER_REMOVED",
-      "该批次使用的模型配置已删除；请选择当前模型重新开始复核",
-      409,
-    );
-  assertRunMutable(batch.run_id);
+  assertBatchSourceAndSnapshot(batch);
+  if (batch.status === "cancelled")
+    throw new AppError("AI_BATCH_CANCELLED", "已取消的 AI 批次不能重试", 409);
+  const retryRow = getDb()
+    .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND status='failed'")
+    .get(batchId) as { count: number };
+  const retriedCount = Number(retryRow.count);
   const timestamp = now();
   transaction((db) => {
     assertNoOtherActiveBatch(db, batch.run_id, batchId);
@@ -742,12 +847,12 @@ export function retryAiBatch(batchId: string) {
     db.prepare(
       "UPDATE ai_review_items SET status='queued',verdict=NULL,reason=NULL,lease_owner=NULL,lease_until=NULL,attempt_count=0,retry_cycle=retry_cycle+1,next_retry_at=NULL,response_hash=NULL,last_error=NULL,updated_at=?,completed_at=NULL WHERE batch_id=? AND status='failed'",
     ).run(timestamp, batchId);
-    if (finishWhenNoQueuedItems(db, batchId, timestamp) > 0)
+    if (retriedCount > 0 && finishWhenNoQueuedItems(db, batchId, timestamp) > 0)
       db.prepare(
-        "UPDATE ai_review_batches SET status='queued',updated_at=?,completed_at=NULL WHERE id=? AND status IN ('failed','paused','cancelled','completed')",
+        "UPDATE ai_review_batches SET status='queued',cancel_requested_at=NULL,updated_at=?,completed_at=NULL WHERE id=? AND status IN ('failed','paused','completed')",
       ).run(timestamp, batchId);
   });
-  return { batch: getBatchRow(batch.id), stats: batchStats(batch.id) };
+  return { batch: getBatchRow(batch.id), stats: batchStats(batch.id), retriedCount };
 }
 
 function normalizeResponseContent(content: unknown) {
@@ -1440,6 +1545,10 @@ export async function processNextAiItem(workerId: string) {
   const { attempt, ...item } = claimed;
   item.attempt_id = attempt.id;
   const controller = new AbortController();
+  const batchAborters = activeAiBatchAborters.get(item.batch_id) ?? new Set<() => void>();
+  const abortAttempt = () => controller.abort();
+  batchAborters.add(abortAttempt);
+  activeAiBatchAborters.set(item.batch_id, batchAborters);
   const unregisterAborter = registerAiAttemptAborter(attempt.runId, () => controller.abort());
   let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
   let wakePoller: (() => void) | undefined;
@@ -1521,6 +1630,8 @@ export async function processNextAiItem(workerId: string) {
     wakePoller?.();
     await poller;
     unregisterAborter();
+    batchAborters.delete(abortAttempt);
+    if (batchAborters.size === 0) activeAiBatchAborters.delete(item.batch_id);
   }
   return true;
 }

@@ -688,6 +688,155 @@ textarea {
   padding: 11px 14px;
 }
 
+.login-guide {
+  display: grid;
+  gap: 18px;
+  max-width: 1050px;
+  margin: 0 auto 48px;
+}
+
+.login-guide-section {
+  padding: 34px 38px;
+  border: 1px solid var(--line);
+  border-radius: 18px 18px 18px 5px;
+  background: var(--paper);
+  box-shadow: var(--shadow-soft);
+}
+
+.login-guide-heading h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(1.55rem, 2.5vw, 2rem);
+  line-height: 1.24;
+}
+
+.login-guide-heading > p {
+  max-width: 780px;
+  margin: 9px 0 0;
+  color: var(--muted);
+}
+
+.login-process {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px;
+  margin: 29px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.login-process::before {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  left: 14px;
+  height: 1px;
+  background: var(--line-strong);
+  content: "";
+}
+
+.login-process li {
+  position: relative;
+  min-width: 0;
+}
+
+.login-process li > span {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 29px;
+  height: 29px;
+  place-items: center;
+  border: 1px solid var(--teal);
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--teal-strong);
+  font-family: "Cascadia Mono", monospace;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.login-process h3,
+.login-report-grid h3,
+.login-audience-card h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1.02rem;
+  line-height: 1.4;
+}
+
+.login-process li > div {
+  margin-top: 12px;
+  padding-right: 12px;
+}
+
+.login-process p,
+.login-report-grid p,
+.login-audience-card p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.login-report-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 25px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.login-report-grid li {
+  min-width: 0;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--paper-muted);
+}
+
+.login-guide-caveats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.login-guide-caveats p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.login-guide-caveats strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--ink);
+}
+
+.login-audiences {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 23px;
+}
+
+.login-audience-card {
+  padding: 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--paper-muted);
+}
+
+.login-audience-card-admissions {
+  border-color: var(--line-strong);
+  border-left: 3px solid var(--teal);
+  background: linear-gradient(120deg, rgba(0, 125, 145, 0.07), transparent 60%), var(--paper-muted);
+}
+
 /* Home and report library */
 .home-hero {
   display: grid;
@@ -2760,6 +2909,18 @@ th {
     max-width: 650px;
   }
 
+  .access-login {
+    order: -1;
+  }
+
+  .login-process {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .login-process::before {
+    display: none;
+  }
+
   .home-method {
     border-top: 1px solid #c7dde5;
     border-left: 0;
@@ -2825,6 +2986,56 @@ th {
 
   .access-gate-intro h2 {
     font-size: 2rem;
+  }
+
+  .login-guide {
+    gap: 12px;
+    margin: 18px auto 32px;
+  }
+
+  .login-guide-section {
+    padding: 24px 19px;
+  }
+
+  .login-process {
+    grid-template-columns: 1fr;
+    gap: 17px;
+    margin-top: 23px;
+  }
+
+  .login-process::before {
+    top: 14px;
+    right: auto;
+    bottom: 14px;
+    left: 14px;
+    display: block;
+    width: 1px;
+    height: auto;
+  }
+
+  .login-process li {
+    display: grid;
+    grid-template-columns: 29px minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .login-process li > div {
+    margin: 2px 0 0;
+    padding-right: 0;
+  }
+
+  .login-report-grid,
+  .login-guide-caveats,
+  .login-audiences {
+    grid-template-columns: 1fr;
+  }
+
+  .login-report-grid {
+    margin-top: 19px;
+  }
+
+  .login-audiences {
+    margin-top: 18px;
   }
 
   .home-hero-copy,

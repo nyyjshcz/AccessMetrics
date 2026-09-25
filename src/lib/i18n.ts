@@ -24,9 +24,9 @@ export const messages = {
     login: {
       eyebrow: "受控访问",
       title: "输入访问密钥",
-      subtitle: "管理员可管理评估流程；报告访客仅可阅读已发布报告。",
+      subtitle: "管理员和招生官体验码可进入管理流程；访客密钥仅可阅读已发布报告。",
       key: "访问密钥",
-      placeholder: "输入管理员或访客密钥",
+      placeholder: "输入管理员、招生官体验码或访客密钥",
       note: "输入的密钥不会保存在浏览器中。",
       submit: "进入系统",
       busy: "正在验证…",
@@ -34,12 +34,51 @@ export const messages = {
       introEyebrow: "EVIDENCE-LED ACCESSIBILITY ASSESSMENT",
       introTitle: "让网页无障碍评估\n有结论，也有证据。",
       introBody:
-        "AccessCheck 将浏览器渲染、自动检查、人工复核和结构化报告连成一条可追溯的评估路径，便于查看每一项结论来自哪里、还需要怎样验证。",
+        "AccessCheck 从公开网站发现同站页面，在真实浏览器中运行自动规则检查，并保留页面、规则和元素证据，供评审者核对。",
       flow: [
-        ["发现并扫描", "在同一站点范围内浏览页面，以真实浏览器状态运行检查。"],
-        ["保留规则与元素证据", "把可复核的规则、定位和页面信息保留下来，而非只给一个分数。"],
-        ["输出只读报告", "将结果按优先级、四项原则和处理状态组织给评审者阅读。"],
+        ["发现并扫描", "从起始网址发现同站页面，并在真实浏览器中运行自动检查。"],
+        ["查看页面与规则证据", "报告保留触发规则、页面和元素位置，方便回到页面核实。"],
+        ["整理评估报告", "按覆盖范围、问题优先级、四项原则和复核状态查看结果。"],
       ],
+      projectGuide: {
+        processTitle: "无障碍评估怎样完成",
+        processIntro:
+          "从一个公开网址开始，AccessCheck 发现同站页面、运行自动检查，并保留评审者核对结果所需的页面证据。",
+        processSteps: [
+          [
+            "发现同站页面",
+            "从输入的网址开始寻找站内页面。页面数设置是上限，不保证一定找到同样多的页面。",
+          ],
+          ["在浏览器中检查", "用真实浏览器加载页面，并运行 axe 自动规则。"],
+          ["查看问题证据", "查看触发规则、影响等级、页面地址和对应元素位置，逐项核对。"],
+          ["阅读评估报告", "按页面覆盖、问题优先级、WCAG 四项原则和复核状态查看结果。"],
+        ],
+        reportTitle: "报告会呈现哪些信息",
+        reportIntro:
+          "报告把扫描范围、自动检查发现和复核状态放在一起。评审者可以从概览继续查看页面证据。",
+        reportItems: [
+          [
+            "页面覆盖",
+            "查看发现、成功扫描和扫描失败的页面数量。页面数上限不代表一定能发现同样多的页面。",
+          ],
+          ["问题与证据", "查看触发规则、影响等级、页面地址和对应元素位置。"],
+          [
+            "WCAG 原则与分数",
+            "按可感知、可操作、易理解和兼容性四项原则整理结果。分数用于筛查和比较。",
+          ],
+          ["复核状态", "查看待复核项目、AI 辅助结果和人工结论。"],
+        ],
+        reviewNoteTitle: "AI 的使用范围",
+        reviewNote: "AI 只辅助待复核项目。原始自动检查结果和人工结论会保留，不会被 AI 覆盖。",
+        scoreNote: "分数用于筛查和比较，不代表人工审计结论，也不等于合规认证。",
+        audienceTitle: "谁可以使用 AccessCheck",
+        audienceIntro: "项目介绍对所有访客开放；查看报告或使用管理功能需要对应的访问密钥。",
+        visitorTitle: "报告访客",
+        visitorBody: "持有访客密钥后，可只读查看已发布报告。未发布扫描和管理功能不对访客开放。",
+        admissionsTitle: "招生官体验",
+        admissionsBody:
+          "项目方会单独提供招生官体验码。使用后可体验扫描、AI 辅助复核和报告发布流程，无需自行配置 API；项目已配置的模型服务可直接使用。体验码不会在此页面公开。",
+      },
     },
     home: {
       reportLibrary: "报告库",
@@ -287,9 +326,10 @@ export const messages = {
     login: {
       eyebrow: "Controlled access",
       title: "Enter your access key",
-      subtitle: "Admins can manage assessments; report visitors can only read published reports.",
+      subtitle:
+        "Admins and admissions preview codes can use management tools. Visitor keys can read published reports only.",
       key: "Access key",
-      placeholder: "Enter an admin or visitor key",
+      placeholder: "Enter an admin, admissions preview, or visitor key",
       note: "Your key is not stored in the browser.",
       submit: "Enter system",
       busy: "Verifying…",
@@ -297,21 +337,76 @@ export const messages = {
       introEyebrow: "EVIDENCE-LED ACCESSIBILITY ASSESSMENT",
       introTitle: "Make accessibility assessment\nconclusive and evidence-led.",
       introBody:
-        "AccessCheck connects browser rendering, automated checks, manual review, and structured reports into a traceable assessment path.",
+        "AccessCheck finds pages on a public site, runs automated checks in a real browser, and keeps page, rule, and element evidence for reviewers.",
       flow: [
         [
           "Discover and scan",
-          "Browse pages within one site and run checks in a real browser state.",
+          "Find pages on the same site and run automated checks in a real browser.",
         ],
         [
-          "Keep rule and element evidence",
-          "Preserve reviewable rules, locations, and page context—not just a score.",
+          "Review page and rule evidence",
+          "Keep the triggered rule, page, and element location so reviewers can check the finding.",
         ],
         [
-          "Produce a read-only report",
-          "Organize findings by priority, principles, and remediation status.",
+          "Read the assessment report",
+          "Review coverage, priority, the four principles, and review status.",
         ],
       ],
+      projectGuide: {
+        processTitle: "How an assessment works",
+        processIntro:
+          "Start with a public website. AccessCheck discovers pages on the same site, runs automated checks, and keeps the page evidence reviewers need.",
+        processSteps: [
+          [
+            "Find pages on the same site",
+            "Start from the URL and discover pages on that site. The page limit is a cap, not a promise that every page will be found.",
+          ],
+          ["Run browser checks", "Load pages in a real browser and run axe rules."],
+          [
+            "Inspect finding evidence",
+            "Review the triggered rule, impact level, page URL, and element location.",
+          ],
+          [
+            "Read the assessment report",
+            "Use page coverage, priority, the four WCAG principles, and review status to navigate results.",
+          ],
+        ],
+        reportTitle: "What a report includes",
+        reportIntro:
+          "Reports keep scan coverage, automated findings, and review status together. Reviewers can move from the overview to page-level evidence.",
+        reportItems: [
+          [
+            "Page coverage",
+            "See how many pages were discovered, scanned successfully, or failed. The page limit is a cap, not a promise of coverage.",
+          ],
+          [
+            "Findings and evidence",
+            "Review the triggered rule, impact level, page URL, and element location.",
+          ],
+          [
+            "WCAG principles and scores",
+            "Findings are grouped under the four principles: perceivable, operable, understandable, and robust. Scores support screening and comparison.",
+          ],
+          [
+            "Review status",
+            "See which items are pending review, AI-assisted, or have a human conclusion.",
+          ],
+        ],
+        reviewNoteTitle: "How AI is used",
+        reviewNote:
+          "AI assists with pending review items. It does not replace the original scan results or human conclusions.",
+        scoreNote:
+          "Scores support screening and comparison. They are not a human audit or a compliance certification.",
+        audienceTitle: "Who can use AccessCheck",
+        audienceIntro:
+          "This introduction is public. Reports and management tools require the corresponding access key.",
+        visitorTitle: "Report visitors",
+        visitorBody:
+          "Visitor keys provide read-only access to published reports. Unpublished scans and management tools are not available to visitors.",
+        admissionsTitle: "Admissions officer preview",
+        admissionsBody:
+          "The project team can issue a separate admissions preview code. It opens the scanning, AI-assisted review, and report publishing workflow. You do not need to configure an API. The model service configured by the project is available after sign-in. The code is not shown on this page.",
+      },
     },
     home: {
       reportLibrary: "Report library",

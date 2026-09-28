@@ -112,7 +112,7 @@ describe("AI lifecycle integration", () => {
   });
 
   it.each(["material edit", "disable", "delete"] as const)(
-    "%s cancels unresolved provider work and preserves completed and manual data",
+    "%s retains the active lease until its exact attempt settles and preserves completed and manual data",
     async (change) => {
       const { run } = fixture(2);
       const configured = provider();
@@ -124,12 +124,6 @@ describe("AI lifecycle integration", () => {
       db.prepare(
         "UPDATE ai_review_items SET status='completed',verdict='problem',completed_at=?,updated_at=? WHERE id=?",
       ).run(new Date().toISOString(), new Date().toISOString(), items[0].id);
-      db.prepare("UPDATE ai_review_batches SET status='running' WHERE id=?").run(created.batch.id);
-      db.prepare("UPDATE ai_review_items SET status='running',attempt_count=1,lease_owner='w',lease_until=? WHERE id=?")
-        .run(new Date(Date.now() + 60_000).toISOString(), items[1].id);
-      db.prepare(
-        "INSERT INTO ai_api_attempts(id,worker_id,slot,run_id,batch_id,item_id,provider_config_id,provider_label,model,retry_cycle,attempt_number,started_at,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'running')",
-      ).run(`attempt_${crypto.randomUUID()}`, "w", 0, run.id, created.batch.id, items[1].id, configured.id, configured.label, configured.model, 0, 1, new Date().toISOString());
       const manualNodeId = db
         .prepare("SELECT result_node_id FROM ai_review_items WHERE id=?")
         .get(items[0].id) as { result_node_id: string };
@@ -139,6 +133,25 @@ describe("AI lifecycle integration", () => {
       const exportId = `export_${crypto.randomUUID()}`;
       db.prepare("INSERT INTO exports(id,run_id,kind,path,manifest_hash,created_at,status) VALUES (?,?,'json','keep.json','hash',?,'completed')")
         .run(exportId, run.id, new Date().toISOString());
+
+      let resolveProvider!: (response: Response) => void;
+      let markProviderStarted!: () => void;
+      const providerStarted = new Promise<void>((resolve) => (markProviderStarted = resolve));
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+        new Promise<Response>((resolve) => {
+          resolveProvider = resolve;
+          markProviderStarted();
+        }),
+      );
+      const processing = ai.processNextAiItem("w");
+      await providerStarted;
+      const attempt = db.prepare("SELECT id FROM ai_api_attempts WHERE item_id=? AND status='running'").get(items[1].id) as { id: string };
+      expect(db.prepare("SELECT status,lease_owner,active_attempt_id,batch_revision FROM ai_review_items WHERE id=?").get(items[1].id)).toEqual({
+        status: "running",
+        lease_owner: "w",
+        active_attempt_id: attempt.id,
+        batch_revision: 0,
+      });
 
       if (change === "material edit") {
         const response = await providerRoute.PATCH(
@@ -168,6 +181,21 @@ describe("AI lifecycle integration", () => {
         expect(response.status, await response.clone().text()).toBe(200);
       }
 
+      expect(db.prepare("SELECT status,lease_owner,active_attempt_id FROM ai_review_items WHERE id=?").get(items[1].id)).toEqual({
+        status: "running",
+        lease_owner: "w",
+        active_attempt_id: attempt.id,
+      });
+      expect(db.prepare("SELECT status,cancelled_at FROM ai_api_attempts WHERE id=?").get(attempt.id)).toMatchObject({
+        status: "running",
+        cancelled_at: expect.any(String),
+      });
+      resolveProvider(new Response(
+        JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem","reason":"late response"}' } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ));
+      await expect(processing).resolves.toBe(true);
+
       expect(db.prepare("SELECT status,verdict FROM ai_review_items WHERE id=?").get(items[0].id)).toEqual({
         status: "completed",
         verdict: "problem",
@@ -187,8 +215,14 @@ describe("AI lifecycle integration", () => {
         cancelled_at: expect.any(String),
       });
       expect(db.prepare("SELECT COUNT(*) count FROM ai_api_attempts WHERE item_id=?").get(items[1].id)).toEqual({ count: 1 });
+      expect(db.prepare("SELECT status,error_code,cancelled_at FROM ai_api_attempts WHERE id=?").get(attempt.id)).toMatchObject({
+        status: "cancelled",
+        error_code: "AI_ATTEMPT_CANCELLED",
+        cancelled_at: expect.any(String),
+      });
       expect(db.prepare("SELECT note,is_current FROM manual_reviews WHERE result_node_id=?").get(manualNodeId.result_node_id)).toEqual({ note: "keep", is_current: 1 });
       expect(db.prepare("SELECT id FROM exports WHERE id=?").get(exportId)).toBeDefined();
+      fetchSpy.mockRestore();
     },
   );
 
@@ -272,6 +306,11 @@ describe("AI lifecycle integration", () => {
         enabled: true,
       });
       expect(signal?.aborted).toBe(true);
+      expect(db.prepare("SELECT status,lease_owner,active_attempt_id FROM ai_review_items WHERE batch_id=?").get(created.batch.id)).toMatchObject({
+        status: "running",
+        lease_owner: "provider-invalidation-race-worker",
+        active_attempt_id: expect.any(String),
+      });
       resolveResponse(new Response(
         JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -281,7 +320,11 @@ describe("AI lifecycle integration", () => {
       const item = db.prepare("SELECT status,last_error,verdict FROM ai_review_items WHERE batch_id=?").get(created.batch.id);
       expect(item).toEqual({ status: "failed", last_error: "AI_PROVIDER_CHANGED", verdict: null });
       expect(db.prepare("SELECT COUNT(*) count FROM ai_api_attempts WHERE batch_id=?").get(created.batch.id)).toEqual({ count: 1 });
-      expect(db.prepare("SELECT cancelled_at FROM ai_api_attempts WHERE batch_id=?").get(created.batch.id)).toMatchObject({ cancelled_at: expect.any(String) });
+      expect(db.prepare("SELECT status,cancelled_at,error_code FROM ai_api_attempts WHERE batch_id=?").get(created.batch.id)).toMatchObject({
+        status: "cancelled",
+        cancelled_at: expect.any(String),
+        error_code: "AI_ATTEMPT_CANCELLED",
+      });
       expect(await ai.processNextAiItem("provider-invalidation-race-worker")).toBe(false);
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     } finally {
@@ -485,9 +528,16 @@ describe("AI lifecycle integration", () => {
     const batchId = (await started.json()).batch.id as string;
     let requestSignal: AbortSignal | undefined;
     let rejectFetch: ((reason?: unknown) => void) | undefined;
+    let fetchCalls = 0;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
-      (_input, init) =>
-        new Promise<Response>((_resolve, reject) => {
+      (_input, init) => {
+        fetchCalls += 1;
+        if (fetchCalls > 1)
+          return Promise.resolve(new Response(
+            JSON.stringify({ choices: [{ message: { content: '{"verdict":"not_problem","reason":"resumed"}' } }] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ));
+        return new Promise<Response>((_resolve, reject) => {
           rejectFetch = reject;
           requestSignal = init?.signal as AbortSignal;
           requestSignal.addEventListener(
@@ -495,7 +545,8 @@ describe("AI lifecycle integration", () => {
             () => reject(new DOMException("The operation was aborted", "AbortError")),
             { once: true },
           );
-        }),
+        });
+      },
     );
     let processing: Promise<boolean> | undefined;
     try {
@@ -528,6 +579,8 @@ describe("AI lifecycle integration", () => {
         attempt_count: 0,
         retry_cycle: 1,
       });
+      await expect(ai.processNextAiItem("resume-after-pause-worker")).resolves.toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
     } finally {
       if (processing && requestSignal && !requestSignal.aborted)
         rejectFetch?.(new DOMException("Test cleanup", "AbortError"));
@@ -536,7 +589,9 @@ describe("AI lifecycle integration", () => {
     }
   });
 
-  it("does not issue a duplicate call when a cross-container pause is resumed before abort settles", async () => {
+  it.each(["success", "failure"] as const)(
+    "releases the exact old lease after a cross-container pause settles with %s, then resumes immediately",
+    async (settlement) => {
     const { run } = fixture(1);
     dbModule
       .getDb()
@@ -600,14 +655,17 @@ describe("AI lifecycle integration", () => {
 
       // A provider can still deliver a response after the durable cancel was
       // recorded. Discard it, release the old lease, then allow one new call.
-      resolveFetch?.(
-        new Response(
-          JSON.stringify({
-            choices: [{ message: { content: JSON.stringify({ verdict: "uncertain", reason: "late" }) } }],
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        ),
-      );
+      if (settlement === "failure")
+        rejectFetch?.(new DOMException("The operation was aborted", "AbortError"));
+      else
+        resolveFetch?.(
+          new Response(
+            JSON.stringify({
+              choices: [{ message: { content: JSON.stringify({ verdict: "uncertain", reason: "late" }) } }],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
       await expect(processing).resolves.toBe(true);
       expect(dbModule.getDb().prepare(
         "SELECT status,attempt_count,retry_cycle,lease_owner,verdict FROM ai_review_items WHERE batch_id=?",
@@ -631,7 +689,8 @@ describe("AI lifecycle integration", () => {
       await processing?.catch(() => undefined);
       fetchSpy.mockRestore();
     }
-  });
+    },
+  );
 
   it("rejects resume after its provider snapshot becomes stale", async () => {
     const { run } = fixture(1);

@@ -423,13 +423,9 @@ function cancelProviderWork(db: ReturnType<typeof getDb>, providerId: string, ti
     `UPDATE ai_api_attempts SET cancelled_at=COALESCE(cancelled_at,?)
      WHERE provider_config_id=? AND status='running'`,
   ).run(timestamp, providerId);
-  db.prepare(
-    `UPDATE ai_review_items SET status='failed',last_error='AI_PROVIDER_CHANGED',
-       lease_owner=NULL,lease_until=NULL,next_retry_at=NULL,completed_at=?,updated_at=?
-     WHERE status='running' AND batch_id IN (
-       SELECT id FROM ai_review_batches WHERE provider_config_id=? AND status NOT IN ('completed','cancelled')
-     )`,
-  ).run(timestamp, timestamp, providerId);
+  // Keep running item leases attached to their exact attempt until its Worker
+  // acknowledges the durable cancellation. The settlement path records the
+  // terminal provider-changed state without making the item claimable again.
   const affectedBatches = db
     .prepare(
       `SELECT id FROM ai_review_batches WHERE provider_config_id=?
@@ -690,11 +686,8 @@ function cancelBatchWork(db: ReturnType<typeof getDb>, batchId: string, timestam
   db.prepare(
     "UPDATE ai_api_attempts SET cancelled_at=COALESCE(cancelled_at,?) WHERE batch_id=? AND status='running'",
   ).run(timestamp, batchId);
-  db.prepare(
-    `UPDATE ai_review_items SET status='failed',last_error='AI_PROVIDER_CHANGED',
-       lease_owner=NULL,lease_until=NULL,next_retry_at=NULL,completed_at=?,updated_at=?
-     WHERE batch_id=? AND status='running'`,
-  ).run(timestamp, timestamp, batchId);
+  // Do not release worker-owned item leases here; the exact cancelled attempt
+  // releases and finalizes its item when the request settles.
   db.prepare(
     `UPDATE ai_review_batches SET batch_key=batch_key || ':cancelled:' || id,
        status='cancelled',revision=revision+1,stop_reason='provider_changed',
@@ -1415,8 +1408,10 @@ function completeItem(
       // revision. Acknowledge only this exact attempt's lease; never persist
       // its result. The batch remains paused unless resume was explicit.
       db.prepare(
-        `UPDATE ai_review_items SET status='queued',lease_owner=NULL,
-           lease_until=NULL,next_retry_at=NULL,active_attempt_id=NULL,
+        `UPDATE ai_review_items SET
+           status=CASE WHEN EXISTS (SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled' AND b.stop_reason='provider_changed') THEN 'failed' ELSE 'queued' END,
+           last_error=CASE WHEN EXISTS (SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled' AND b.stop_reason='provider_changed') THEN 'AI_PROVIDER_CHANGED' ELSE NULL END,
+           lease_owner=NULL,lease_until=NULL,next_retry_at=NULL,active_attempt_id=NULL,
            attempt_count=CASE WHEN EXISTS (
              SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
                AND b.status='queued' AND b.cancel_requested_at IS NULL
@@ -1425,16 +1420,17 @@ function completeItem(
              SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
                AND b.status='queued' AND b.cancel_requested_at IS NULL
            ) THEN 1 ELSE 0 END,
-           updated_at=?,completed_at=NULL
+           updated_at=?,completed_at=CASE WHEN EXISTS (SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled' AND b.stop_reason='provider_changed') THEN ? ELSE NULL END
          WHERE id=? AND batch_id=? AND status='running' AND lease_owner=?
            AND active_attempt_id=? AND batch_revision=?
            AND EXISTS (
              SELECT 1 FROM ai_api_attempts a JOIN ai_review_batches b ON b.id=ai_review_items.batch_id
                JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id
              WHERE a.id=? AND a.item_id=ai_review_items.id AND a.cancelled_at IS NOT NULL
-               AND b.status IN ('paused','queued') AND j.deletion_requested_at IS NULL
+               AND (b.status IN ('paused','queued') OR (b.status='cancelled' AND b.stop_reason='provider_changed'))
+               AND j.deletion_requested_at IS NULL
            )`,
-      ).run(timestamp, item.id, item.batch_id, item.lease_owner, attemptId, item.batch_revision, attemptId);
+      ).run(timestamp, timestamp, item.id, item.batch_id, item.lease_owner, attemptId, item.batch_revision, attemptId);
       return;
     }
     const changed = db
@@ -1566,8 +1562,7 @@ function failItem(item: any, error: unknown) {
         `SELECT b.cancel_requested_at FROM ai_review_items i JOIN ai_review_batches b ON b.id=i.batch_id
          JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id
          WHERE i.id=? AND b.id=? AND i.active_attempt_id=? AND i.lease_owner=?
-           AND i.batch_revision=? AND i.batch_revision=b.revision AND b.status='running'
-           AND b.cancel_requested_at IS NULL AND j.deletion_requested_at IS NULL`,
+           AND i.batch_revision=? AND j.deletion_requested_at IS NULL`,
       )
       .get(item.id, item.batch_id, item.attempt_id, item.lease_owner, item.batch_revision) as { cancel_requested_at: string | null } | undefined;
     const attemptCancelled = db
@@ -1578,7 +1573,10 @@ function failItem(item: any, error: unknown) {
       Boolean(cancellation?.cancel_requested_at || attemptCancelled?.cancelled_at);
     if (isCancelled) {
       db.prepare(
-        `UPDATE ai_review_items SET status='queued',last_error=NULL,lease_owner=NULL,lease_until=NULL,
+        `UPDATE ai_review_items SET
+           status=CASE WHEN EXISTS (SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled' AND b.stop_reason='provider_changed') THEN 'failed' ELSE 'queued' END,
+           last_error=CASE WHEN EXISTS (SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled' AND b.stop_reason='provider_changed') THEN 'AI_PROVIDER_CHANGED' ELSE NULL END,
+           lease_owner=NULL,lease_until=NULL,
            next_retry_at=NULL,active_attempt_id=NULL,
            attempt_count=CASE WHEN EXISTS (
              SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
@@ -1588,13 +1586,14 @@ function failItem(item: any, error: unknown) {
              SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
                AND b.status='queued' AND b.cancel_requested_at IS NULL
            ) THEN 1 ELSE 0 END,
-           updated_at=?,completed_at=?
+           updated_at=?,completed_at=CASE WHEN EXISTS (SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled' AND b.stop_reason='provider_changed') THEN ? ELSE NULL END
          WHERE id=? AND status='running' AND lease_owner=? AND active_attempt_id=? AND batch_revision=?
            AND EXISTS (
              SELECT 1 FROM ai_api_attempts a JOIN ai_review_batches b ON b.id=ai_review_items.batch_id
                JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id
              WHERE a.id=? AND a.item_id=ai_review_items.id AND a.cancelled_at IS NOT NULL
-               AND b.status IN ('paused','queued') AND j.deletion_requested_at IS NULL
+               AND (b.status IN ('paused','queued') OR (b.status='cancelled' AND b.stop_reason='provider_changed'))
+               AND j.deletion_requested_at IS NULL
            )`,
       ).run(timestamp, null, item.id, item.lease_owner, item.attempt_id, item.batch_revision, item.attempt_id);
       return;

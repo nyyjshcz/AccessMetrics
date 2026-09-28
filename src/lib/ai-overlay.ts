@@ -835,7 +835,7 @@ export function pauseAiBatch(batchId: string) {
     // and AI Worker are separate containers, so resume must not make the same
     // item claimable while the previous paid request is still in flight.
     db.prepare(
-      `UPDATE ai_review_batches SET status='paused',cancel_requested_at=?,completed_at=NULL,updated_at=?
+      `UPDATE ai_review_batches SET status='paused',revision=revision+1,cancel_requested_at=?,completed_at=NULL,updated_at=?
        WHERE id=? AND status IN ('queued','running')`,
     ).run(timestamp, timestamp, batchId);
   });

@@ -73,6 +73,7 @@ export function migrate() {
     migration032,
     migration033,
     migration034,
+    migration035,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -1178,13 +1179,23 @@ function migration034(db: Database.Database) {
 
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_batches_action_request
-      ON ai_review_batches(action_request_id) WHERE action_request_id IS NOT NULL;
+      ON ai_review_batches(run_id, action_request_id)
+      WHERE run_id IS NOT NULL AND action_request_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_ai_batches_source
       ON ai_review_batches(source_batch_id) WHERE source_batch_id IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_items_active_attempt
       ON ai_review_items(active_attempt_id) WHERE active_attempt_id IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_ai_items_batch_revision
       ON ai_review_items(batch_id,batch_revision);
+  `);
+}
+
+function migration035(db: Database.Database) {
+  db.exec(`
+    DROP INDEX IF EXISTS idx_ai_batches_action_request;
+    CREATE UNIQUE INDEX idx_ai_batches_action_request
+      ON ai_review_batches(run_id, action_request_id)
+      WHERE run_id IS NOT NULL AND action_request_id IS NOT NULL;
   `);
 }
 

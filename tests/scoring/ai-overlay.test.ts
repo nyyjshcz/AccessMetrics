@@ -115,7 +115,7 @@ describe("thin AI overlay", () => {
   beforeAll(() => dbModule.migrate());
   afterAll(() => dbModule.closeDb());
 
-  it("migrates lifecycle persistence through version 034 idempotently", () => {
+  it("migrates lifecycle persistence through version 035 idempotently", () => {
     const db = dbModule.getDb();
     expect(
       (
@@ -123,7 +123,7 @@ describe("thin AI overlay", () => {
           version: number;
         }
       ).version,
-    ).toBe(34);
+    ).toBe(35);
 
     // Recreate the pre-033 schema to exercise upgrading an installed 032 database.
     db.exec(`
@@ -136,7 +136,7 @@ describe("thin AI overlay", () => {
       ALTER TABLE ai_review_items DROP COLUMN next_retry_at;
       ALTER TABLE ai_review_items DROP COLUMN retry_cycle;
       ALTER TABLE ai_review_batches DROP COLUMN cancel_requested_at;
-      DELETE FROM schema_migrations WHERE version IN (33,34);
+      DELETE FROM schema_migrations WHERE version IN (33,34,35);
     `);
     expect(
       (
@@ -154,7 +154,7 @@ describe("thin AI overlay", () => {
           version: number;
         }
       ).version,
-    ).toBe(34);
+    ).toBe(35);
     const tableColumns = (table: string) =>
       (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
         (column) => column.name,
@@ -263,7 +263,7 @@ describe("thin AI overlay", () => {
     for (const column of ["active_attempt_id", "batch_revision", "exclusion_reason"])
       dropIfPresent("ai_review_items", column);
     dropIfPresent("scan_jobs", "deletion_requested_at");
-    db.prepare("DELETE FROM schema_migrations WHERE version=34").run();
+    db.prepare("DELETE FROM schema_migrations WHERE version IN (34,35)").run();
 
     expect(
       (
@@ -328,15 +328,6 @@ describe("thin AI overlay", () => {
     const timestamp = new Date().toISOString();
     const second = ai.createAiBatch({ runId: fixture(1).run.id, providerConfigId: configured.id });
     ai.pauseAiBatch(second.batch.id);
-    db.prepare("UPDATE ai_review_batches SET action_request_id=? WHERE id=?").run(
-      "same-action",
-      batchId,
-    );
-    expect(() =>
-      db
-        .prepare("UPDATE ai_review_batches SET action_request_id=? WHERE id=?")
-        .run("same-action", second.batch.id),
-    ).toThrow();
     db.prepare("UPDATE ai_review_items SET active_attempt_id=?,batch_revision=1 WHERE id=?").run(
       "same-attempt",
       itemId,
@@ -351,6 +342,22 @@ describe("thin AI overlay", () => {
         .prepare("UPDATE ai_review_items SET active_attempt_id=? WHERE id=?")
         .run("same-attempt", secondItem),
     ).toThrow();
+    const sameRunProvider = provider("http://127.0.0.1:5678/v1");
+    const sameRunOther = ai.createAiBatch({ runId: run.id, providerConfigId: sameRunProvider.id });
+    ai.pauseAiBatch(sameRunOther.batch.id);
+    db.prepare("UPDATE ai_review_batches SET action_request_id=? WHERE id=?").run(
+      "same-action",
+      batchId,
+    );
+    db.prepare("UPDATE ai_review_batches SET action_request_id=? WHERE id=?").run(
+      "same-action",
+      second.batch.id,
+    );
+    expect(() =>
+      db
+        .prepare("UPDATE ai_review_batches SET action_request_id=? WHERE id=?")
+        .run("same-action", sameRunOther.batch.id),
+    ).toThrow();
     db.prepare("UPDATE ai_review_batches SET stop_reason=?,stop_requested_at=? WHERE id=?").run(
       "paused",
       timestamp,
@@ -360,6 +367,34 @@ describe("thin AI overlay", () => {
       stop_reason: "paused",
       stop_requested_at: timestamp,
     });
+  });
+
+  it("replaces the global action key index on an already migrated 034 database", () => {
+    const db = dbModule.getDb();
+    db.prepare(
+      "UPDATE ai_review_batches SET action_request_id=NULL WHERE action_request_id='same-action'",
+    ).run();
+    db.exec(`
+      DROP INDEX idx_ai_batches_action_request;
+      CREATE UNIQUE INDEX idx_ai_batches_action_request
+        ON ai_review_batches(action_request_id) WHERE action_request_id IS NOT NULL;
+      DELETE FROM schema_migrations WHERE version=35;
+    `);
+    dbModule.migrate();
+    dbModule.migrate();
+    const index = db
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_ai_batches_action_request'",
+      )
+      .get() as { sql: string };
+    expect(index.sql).toContain("(run_id, action_request_id)");
+    expect(
+      (
+        db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version=35").get() as {
+          count: number;
+        }
+      ).count,
+    ).toBe(1);
   });
 
   it("adds evidence columns and the AI persistence tables", () => {

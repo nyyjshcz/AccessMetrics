@@ -99,6 +99,17 @@ describe("AI lifecycle integration", () => {
   beforeAll(() => dbModule.migrate());
   afterAll(() => dbModule.closeDb());
 
+  it("increments the batch revision only when pause changes an active batch", () => {
+    const { run } = fixture(1);
+    const configured = provider();
+    const created = ai.createAiBatch({ runId: run.id, providerConfigId: configured.id });
+    expect(created.batch.revision).toBe(0);
+
+    const paused = ai.pauseAiBatch(created.batch.id);
+    expect(paused.batch).toMatchObject({ status: "paused", revision: 1 });
+    expect(ai.pauseAiBatch(created.batch.id).batch.revision).toBe(1);
+  });
+
   it.each(["material edit", "disable", "delete"] as const)(
     "%s cancels unresolved provider work and preserves completed and manual data",
     async (change) => {

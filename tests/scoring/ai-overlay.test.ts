@@ -1483,11 +1483,20 @@ describe("thin AI overlay", () => {
       enabled: true,
     });
 
-    expect(await ai.processNextAiItem("stale-recovery-worker")).toBe(false);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("cancelled snapshot must not call provider"));
+    try {
+      expect(await ai.processNextAiItem("stale-recovery-worker")).toBe(false);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
     expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "cancelled" } });
     expect(
-      db.prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?").get(batch.batch.id),
-    ).toEqual({ count: 0 });
+      db.prepare("SELECT status,last_error FROM ai_review_items WHERE batch_id=? ORDER BY id").all(batch.batch.id),
+    ).toEqual([
+      { status: "failed", last_error: "模型请求失败（HTTP 429）" },
+      { status: "queued", last_error: null },
+    ]);
   });
 
   it("marks an expired in-flight attempt unknown and waits for explicit retry after restart", async () => {
@@ -1557,9 +1566,12 @@ describe("thin AI overlay", () => {
     expect(
       dbModule
         .getDb()
-        .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?")
+        .prepare("SELECT status,exclusion_reason FROM ai_review_items WHERE batch_id=?")
         .get(active.batch.id),
-    ).toEqual({ count: 0 });
+    ).toEqual({ status: "queued", exclusion_reason: null });
+    expect(() => ai.resumeAiBatch(active.batch.id)).toThrowError(
+      expect.objectContaining({ code: "AI_BATCH_CANCELLED" }),
+    );
 
     const restarted = ai.createAiBatch({ runId: item.run.id, providerConfigId: current.id });
     expect(restarted.batch.id).not.toBe(active.batch.id);
@@ -2400,45 +2412,41 @@ describe("thin AI overlay", () => {
     ).toBe(false);
   });
 
-  it("removes manually resolved items when create, resume, or retry revisits a batch", () => {
+  it("retains manually resolved items but excludes them from create, resume, retry, and worker claims", async () => {
     const config = provider();
-    for (const action of ["create", "resume", "retry"] as const) {
-      const item = fixture(1, true);
-      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
-      ai.pauseAiBatch(batch.batch.id);
-      const nodeId = (
-        dbModule
-          .getDb()
-          .prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?")
-          .get(batch.batch.id) as { result_node_id: string }
-      ).result_node_id;
-      resolution.saveLocalManualVerdict({
-        runId: item.run.id,
-        resultNodeId: nodeId,
-        verdict: "not_problem",
-      });
-      if (action === "create")
-        ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
-      if (action === "resume") ai.resumeAiBatch(batch.batch.id);
-      if (action === "retry") {
-        dbModule
-          .getDb()
-          .prepare("UPDATE ai_review_items SET status='failed' WHERE batch_id=?")
-          .run(batch.batch.id);
-        dbModule
-          .getDb()
-          .prepare("UPDATE ai_review_batches SET status='failed' WHERE id=?")
-          .run(batch.batch.id);
-        ai.retryAiBatch(batch.batch.id);
+    const db = dbModule.getDb();
+    db.prepare("UPDATE ai_review_batches SET status='cancelled' WHERE status IN ('queued','running')").run();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("human-final items must not call provider"));
+    try {
+      for (const action of ["create", "resume", "retry"] as const) {
+        const item = fixture(1, true);
+        const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+        ai.pauseAiBatch(batch.batch.id);
+        const nodeId = (
+          db.prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id) as { result_node_id: string }
+        ).result_node_id;
+        resolution.saveLocalManualVerdict({
+          runId: item.run.id,
+          resultNodeId: nodeId,
+          verdict: "not_problem",
+        });
+        if (action === "create") ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+        if (action === "resume") ai.resumeAiBatch(batch.batch.id);
+        if (action === "retry") {
+          db.prepare("UPDATE ai_review_items SET status='failed' WHERE batch_id=?").run(batch.batch.id);
+          db.prepare("UPDATE ai_review_batches SET status='failed' WHERE id=?").run(batch.batch.id);
+          ai.retryAiBatch(batch.batch.id);
+        }
+        expect(db.prepare("SELECT status,exclusion_reason FROM ai_review_items WHERE batch_id=?").get(batch.batch.id)).toEqual({
+          status: action === "retry" ? "failed" : "queued",
+          exclusion_reason: "human_final",
+        });
+        expect(db.prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?").get(batch.batch.id)).toEqual({ count: 1 });
+        expect(await ai.processNextAiItem(`human-final-${action}-worker`)).toBe(false);
+        expect(fetchSpy).not.toHaveBeenCalled();
       }
-      expect(
-        (
-          dbModule
-            .getDb()
-            .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?")
-            .get(batch.batch.id) as { count: number }
-        ).count,
-      ).toBe(0);
+    } finally {
+      fetchSpy.mockRestore();
     }
   });
 

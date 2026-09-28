@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -171,14 +172,21 @@ describe("AI lifecycle integration", () => {
         status: "completed",
         verdict: "problem",
       });
-      expect(db.prepare("SELECT id FROM ai_review_items WHERE id=?").get(items[1].id)).toBeUndefined();
-      expect(db.prepare("SELECT status,cancel_requested_at FROM ai_review_batches WHERE id=?").get(created.batch.id)).toMatchObject({
+      expect(db.prepare("SELECT status,last_error FROM ai_review_items WHERE id=?").get(items[1].id)).toEqual({
+        status: "failed",
+        last_error: "AI_PROVIDER_CHANGED",
+      });
+      expect(db.prepare("SELECT status,cancel_requested_at,revision,stop_reason,stop_requested_at FROM ai_review_batches WHERE id=?").get(created.batch.id)).toMatchObject({
         status: "cancelled",
         cancel_requested_at: expect.any(String),
+        revision: 1,
+        stop_reason: "provider_changed",
+        stop_requested_at: expect.any(String),
       });
       expect(db.prepare("SELECT cancelled_at FROM ai_api_attempts WHERE item_id=?").get(items[1].id)).toMatchObject({
         cancelled_at: expect.any(String),
       });
+      expect(db.prepare("SELECT COUNT(*) count FROM ai_api_attempts WHERE item_id=?").get(items[1].id)).toEqual({ count: 1 });
       expect(db.prepare("SELECT note,is_current FROM manual_reviews WHERE result_node_id=?").get(manualNodeId.result_node_id)).toEqual({ note: "keep", is_current: 1 });
       expect(db.prepare("SELECT id FROM exports WHERE id=?").get(exportId)).toBeDefined();
     },
@@ -206,6 +214,79 @@ describe("AI lifecycle integration", () => {
     expect((await repeated.json()).batch.id).toBe(batchId);
     expect(db.prepare("SELECT COUNT(*) count FROM ai_review_batches WHERE run_id=?").get(run.id)).toEqual({ count: 1 });
     expect(db.prepare("SELECT attempt_count,retry_cycle FROM ai_review_items WHERE batch_id=?").get(batchId)).toEqual({ attempt_count: 2, retry_cycle: 1 });
+  });
+
+  it("does not cancel work when a different provider is edited and keeps the response redacted", async () => {
+    const { run } = fixture(1);
+    const activeProvider = provider("model-active");
+    const unrelatedProvider = provider("model-unrelated");
+    const started = await postReview(run.id, activeProvider.id);
+    const batchId = (await started.json()).batch.id as string;
+
+    const response = await providerRoute.PATCH(
+      new Request(`http://localhost/api/ai/providers/${unrelatedProvider.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          label: unrelatedProvider.label,
+          baseUrl: unrelatedProvider.baseUrl,
+          model: "model-unrelated-edited",
+        }),
+      }),
+      { params: Promise.resolve({ providerId: unrelatedProvider.id }) },
+    );
+    const body = await response.text();
+    expect(response.status).toBe(200);
+    expect(body).not.toContain("local-test-key");
+    expect(dbModule.getDb().prepare("SELECT status,revision,stop_reason FROM ai_review_batches WHERE id=?").get(batchId)).toEqual({
+      status: "queued",
+      revision: 0,
+      stop_reason: null,
+    });
+  });
+
+  it("cancels a provider response racing invalidation, preserves its audit, and never calls it again", async () => {
+    const db = dbModule.getDb();
+    db.prepare("UPDATE ai_review_batches SET status='cancelled' WHERE status IN ('queued','running')").run();
+    const { run } = fixture(1);
+    const configured = provider();
+    const created = ai.createAiBatch({ runId: run.id, providerConfigId: configured.id });
+    let signal: AbortSignal | undefined;
+    let resolveResponse!: (response: Response) => void;
+    let markStarted!: () => void;
+    const requestStarted = new Promise<void>((resolve) => (markStarted = resolve));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+      signal = init?.signal as AbortSignal | undefined;
+      markStarted();
+      return new Promise<Response>((resolve) => (resolveResponse = resolve));
+    });
+    try {
+      const processing = ai.processNextAiItem("provider-invalidation-race-worker");
+      await requestStarted;
+      ai.saveAiProvider({
+        id: configured.id,
+        label: configured.label,
+        baseUrl: configured.baseUrl,
+        model: "model-after-invalidation",
+        apiKey: "rotated-local-key",
+        enabled: true,
+      });
+      expect(signal?.aborted).toBe(true);
+      resolveResponse(new Response(
+        JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ));
+      await processing;
+
+      const item = db.prepare("SELECT status,last_error,verdict FROM ai_review_items WHERE batch_id=?").get(created.batch.id);
+      expect(item).toEqual({ status: "failed", last_error: "AI_PROVIDER_CHANGED", verdict: null });
+      expect(db.prepare("SELECT COUNT(*) count FROM ai_api_attempts WHERE batch_id=?").get(created.batch.id)).toEqual({ count: 1 });
+      expect(db.prepare("SELECT cancelled_at FROM ai_api_attempts WHERE batch_id=?").get(created.batch.id)).toMatchObject({ cancelled_at: expect.any(String) });
+      expect(await ai.processNextAiItem("provider-invalidation-race-worker")).toBe(false);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it("allows a fresh explicit review after an invalidated provider is re-enabled", async () => {
@@ -270,7 +351,7 @@ describe("AI lifecycle integration", () => {
       status: "cancelled",
       cancel_requested_at: expect.any(String),
     });
-    expect(db.prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?").get(oldBatchId)).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?").get(oldBatchId)).toEqual({ count: 2 });
     expect(db.prepare("SELECT COUNT(*) count FROM ai_review_batches WHERE run_id=? AND status IN ('queued','running')").get(run.id)).toEqual({ count: 1 });
   });
 
@@ -559,7 +640,11 @@ describe("AI lifecycle integration", () => {
 
     expect(retried.status).toBe(200);
     expect(await retried.json()).toMatchObject({ retriedCount: 0, batch: { status: "completed" } });
-    expect(db.prepare("SELECT COUNT(*) count FROM ai_review_items WHERE id=?").get(item.id)).toEqual({ count: 0 });
+    expect(db.prepare("SELECT status,exclusion_reason,last_error FROM ai_review_items WHERE id=?").get(item.id)).toEqual({
+      status: "failed",
+      exclusion_reason: "human_final",
+      last_error: null,
+    });
   });
 
   it("starts a fresh bounded cycle when explicitly resuming an exhausted cycle", async () => {

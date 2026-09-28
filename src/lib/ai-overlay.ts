@@ -424,16 +424,27 @@ function cancelProviderWork(db: ReturnType<typeof getDb>, providerId: string, ti
      WHERE provider_config_id=? AND status='running'`,
   ).run(timestamp, providerId);
   db.prepare(
-    `DELETE FROM ai_review_items WHERE status IN ('queued','failed','running') AND batch_id IN (
-       SELECT id FROM ai_review_batches WHERE provider_config_id=? AND status<>'completed'
+    `UPDATE ai_review_items SET status='failed',last_error='AI_PROVIDER_CHANGED',
+       lease_owner=NULL,lease_until=NULL,next_retry_at=NULL,completed_at=?,updated_at=?
+     WHERE status='running' AND batch_id IN (
+       SELECT id FROM ai_review_batches WHERE provider_config_id=? AND status NOT IN ('completed','cancelled')
      )`,
-  ).run(providerId);
+  ).run(timestamp, timestamp, providerId);
+  const affectedBatches = db
+    .prepare(
+      `SELECT id FROM ai_review_batches WHERE provider_config_id=?
+       AND status NOT IN ('completed','cancelled')`,
+    )
+    .all(providerId) as Array<{ id: string }>;
   db.prepare(
     `UPDATE ai_review_batches SET batch_key=batch_key || ':cancelled:' || id,
-       status='cancelled',cancel_requested_at=COALESCE(cancel_requested_at,?),
-       completed_at=?,updated_at=?
+       status='cancelled',revision=revision+1,stop_reason='provider_changed',
+       stop_requested_at=COALESCE(stop_requested_at,?),
+       cancel_requested_at=COALESCE(cancel_requested_at,?),completed_at=?,updated_at=?
      WHERE provider_config_id=? AND status NOT IN ('completed','cancelled')`,
-  ).run(timestamp, timestamp, timestamp, providerId);
+  ).run(timestamp, timestamp, timestamp, timestamp, providerId);
+  for (const batch of affectedBatches)
+    for (const abort of activeAiBatchAborters.get(batch.id) ?? []) abort();
 }
 
 export async function listProviderModels(providerId: string) {
@@ -643,18 +654,17 @@ function removeHumanResolvedQueueItems(
   runId: string,
 ) {
   db.prepare(
-    `DELETE FROM ai_review_items
-     WHERE batch_id=? AND status IN ('queued','failed')
-       AND result_node_id IN (
-         SELECT mr.result_node_id
-         FROM manual_reviews mr
+    `UPDATE ai_review_items SET exclusion_reason=CASE WHEN EXISTS (
+         SELECT 1 FROM manual_reviews mr
          JOIN result_nodes n ON n.id=mr.result_node_id
          JOIN rule_results rr ON rr.id=n.rule_result_id
-         WHERE rr.run_id=? AND mr.sample_id IS NULL AND mr.review_context='ad_hoc'
+         WHERE rr.run_id=? AND n.id=ai_review_items.result_node_id
+           AND mr.sample_id IS NULL AND mr.review_context='ad_hoc'
            AND mr.reviewer='local' AND mr.is_current=1
            AND mr.verdict IN ('problem','not_problem','uncertain')
-       )`,
-  ).run(batchId, runId);
+       ) THEN 'human_final' ELSE NULL END
+     WHERE batch_id=?`,
+  ).run(runId, batchId);
 }
 
 function assertNoOtherActiveBatch(
@@ -681,21 +691,26 @@ function cancelBatchWork(db: ReturnType<typeof getDb>, batchId: string, timestam
     "UPDATE ai_api_attempts SET cancelled_at=COALESCE(cancelled_at,?) WHERE batch_id=? AND status='running'",
   ).run(timestamp, batchId);
   db.prepare(
-    "DELETE FROM ai_review_items WHERE batch_id=? AND status IN ('queued','failed','running')",
-  ).run(batchId);
+    `UPDATE ai_review_items SET status='failed',last_error='AI_PROVIDER_CHANGED',
+       lease_owner=NULL,lease_until=NULL,next_retry_at=NULL,completed_at=?,updated_at=?
+     WHERE batch_id=? AND status='running'`,
+  ).run(timestamp, timestamp, batchId);
   db.prepare(
     `UPDATE ai_review_batches SET batch_key=batch_key || ':cancelled:' || id,
-       status='cancelled',cancel_requested_at=COALESCE(cancel_requested_at,?),
-       completed_at=?,updated_at=? WHERE id=? AND status NOT IN ('completed','cancelled')`,
-  ).run(timestamp, timestamp, timestamp, batchId);
+       status='cancelled',revision=revision+1,stop_reason='provider_changed',
+       stop_requested_at=COALESCE(stop_requested_at,?),
+       cancel_requested_at=COALESCE(cancel_requested_at,?),completed_at=?,updated_at=?
+     WHERE id=? AND status NOT IN ('completed','cancelled')`,
+  ).run(timestamp, timestamp, timestamp, timestamp, batchId);
+  for (const abort of activeAiBatchAborters.get(batchId) ?? []) abort();
 }
 
 function finishWhenNoQueuedItems(db: ReturnType<typeof getDb>, batchId: string, timestamp: string) {
   const state = db
     .prepare(
       `SELECT
-         SUM(CASE WHEN status IN ('queued','running') THEN 1 ELSE 0 END) pending,
-         SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed
+         SUM(CASE WHEN status IN ('queued','running') AND exclusion_reason IS NULL THEN 1 ELSE 0 END) pending,
+         SUM(CASE WHEN status='failed' AND exclusion_reason IS NULL THEN 1 ELSE 0 END) failed
        FROM ai_review_items WHERE batch_id=?`,
     )
     .get(batchId) as { pending: number | null; failed: number | null };
@@ -891,7 +906,7 @@ export function resumeAiBatch(batchId: string) {
     db.prepare(
       `UPDATE ai_review_items SET status='queued',lease_owner=NULL,lease_until=NULL,
          attempt_count=0,retry_cycle=retry_cycle+1,next_retry_at=NULL,updated_at=?,completed_at=NULL
-       WHERE batch_id=? AND status IN ('queued','failed')`,
+       WHERE batch_id=? AND status IN ('queued','failed') AND exclusion_reason IS NULL`,
     ).run(timestamp, batchId);
     if (finishWhenNoQueuedItems(db, batchId, timestamp) > 0)
       db.prepare(
@@ -912,11 +927,11 @@ export function retryAiBatch(batchId: string) {
     assertNoOtherActiveBatch(db, batch.run_id, batchId);
     removeHumanResolvedQueueItems(db, batchId, batch.run_id);
     const retryRow = db
-      .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND status IN ('queued','failed')")
+      .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND status IN ('queued','failed') AND exclusion_reason IS NULL")
       .get(batchId) as { count: number };
     retriedCount = Number(retryRow.count);
     db.prepare(
-      "UPDATE ai_review_items SET status='queued',lease_owner=NULL,lease_until=NULL,attempt_count=0,retry_cycle=retry_cycle+1,next_retry_at=NULL,updated_at=?,completed_at=NULL WHERE batch_id=? AND status IN ('queued','failed')",
+      "UPDATE ai_review_items SET status='queued',lease_owner=NULL,lease_until=NULL,attempt_count=0,retry_cycle=retry_cycle+1,next_retry_at=NULL,updated_at=?,completed_at=NULL WHERE batch_id=? AND status IN ('queued','failed') AND exclusion_reason IS NULL",
     ).run(timestamp, batchId);
     const pending = finishWhenNoQueuedItems(db, batchId, timestamp);
     if (retriedCount > 0 && pending > 0)
@@ -1334,7 +1349,7 @@ function claimNextAiItem(workerId: string, slot: number) {
                AND active_i.lease_until IS NOT NULL AND active_i.lease_until>=?
            ) < p.max_concurrent_requests
            AND i.attempt_count<?
-           AND i.status='queued'
+            AND i.status='queued' AND i.exclusion_reason IS NULL
            AND (COALESCE(i.next_retry_at,i.lease_until) IS NULL OR COALESCE(i.next_retry_at,i.lease_until)<=?)
            ORDER BY i.created_at,i.id LIMIT 1`,
       )

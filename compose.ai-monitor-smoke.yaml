@@ -1,6 +1,6 @@
 services:
   web:
-    image: accesscheck-nas:local
+    image: ${ACCESSCHECK_MONITOR_SMOKE_APP_IMAGE:-accesscheck-nas:local}
     environment:
       APP_ENV: test
       APP_BASE_URL: http://127.0.0.1:3000
@@ -24,7 +24,7 @@ services:
     networks: [monitor-smoke]
 
   ai-worker:
-    image: accesscheck-nas:local
+    image: ${ACCESSCHECK_MONITOR_SMOKE_APP_IMAGE:-accesscheck-nas:local}
     environment:
       APP_ENV: test
       DATABASE_URL: /var/lib/accesscheck/data/accesscheck.db

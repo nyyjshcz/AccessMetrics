@@ -372,7 +372,7 @@ export function saveAiProvider(input: {
       (existing.enabled === 1 && enabled === 0));
   const timestamp = now();
   const providerId = existing?.id ?? id("aiprovider");
-  transaction((db) => {
+  immediateTransaction((db) => {
     if (existing) {
       if (materialSnapshotChanged) cancelProviderWork(db, providerId, timestamp);
       db.prepare(
@@ -412,7 +412,7 @@ export function saveAiProvider(input: {
 
 export function deleteAiProvider(providerId: string) {
   getProviderRow(providerId);
-  transaction((db) => {
+  immediateTransaction((db) => {
     const timestamp = now();
     cancelProviderWork(db, providerId, timestamp);
     db.prepare("DELETE FROM ai_provider_configs WHERE id=?").run(providerId);
@@ -688,7 +688,12 @@ function assertNoOtherActiveBatch(
     });
 }
 
-function cancelBatchWork(db: ReturnType<typeof getDb>, batchId: string, timestamp: string) {
+function cancelBatchWork(
+  db: ReturnType<typeof getDb>,
+  batchId: string,
+  timestamp: string,
+  reason: "provider_changed" | "superseded" = "provider_changed",
+) {
   db.prepare(
     "UPDATE ai_api_attempts SET cancelled_at=COALESCE(cancelled_at,?) WHERE batch_id=? AND status='running'",
   ).run(timestamp, batchId);
@@ -696,15 +701,19 @@ function cancelBatchWork(db: ReturnType<typeof getDb>, batchId: string, timestam
   // releases and finalizes its item when the request settles.
   db.prepare(
     `UPDATE ai_review_batches SET batch_key=batch_key || ':cancelled:' || id,
-       status='cancelled',revision=revision+1,stop_reason='provider_changed',
-       stop_requested_at=COALESCE(stop_requested_at,?),
-       cancel_requested_at=COALESCE(cancel_requested_at,?),completed_at=?,updated_at=?
+       status='cancelled',revision=revision+1,stop_reason=?,
+       stop_requested_at=?,cancel_requested_at=?,completed_at=?,updated_at=?
      WHERE id=? AND status NOT IN ('completed','cancelled')`,
-  ).run(timestamp, timestamp, timestamp, timestamp, batchId);
+  ).run(reason, timestamp, timestamp, timestamp, timestamp, batchId);
   for (const abort of activeAiBatchAborters.get(batchId) ?? []) abort();
 }
 
-function finishWhenNoQueuedItems(db: ReturnType<typeof getDb>, batchId: string, timestamp: string) {
+function finishWhenNoQueuedItems(
+  db: ReturnType<typeof getDb>,
+  batchId: string,
+  timestamp: string,
+  includePaused = false,
+) {
   const state = db
     .prepare(
       `SELECT
@@ -715,11 +724,15 @@ function finishWhenNoQueuedItems(db: ReturnType<typeof getDb>, batchId: string, 
     .get(batchId) as { pending: number | null; failed: number | null };
   const pending = Number(state.pending ?? 0);
   if (pending === 0)
-    db.prepare("UPDATE ai_review_batches SET status=?,updated_at=?,completed_at=? WHERE id=?").run(
+    db.prepare(
+      `UPDATE ai_review_batches SET status=?,updated_at=?,completed_at=? WHERE id=?
+       AND (status IN ('queued','running','failed') OR (?=1 AND status='paused'))`,
+    ).run(
       Number(state.failed ?? 0) > 0 ? "failed" : "completed",
       timestamp,
       timestamp,
       batchId,
+      includePaused ? 1 : 0,
     );
   return pending;
 }
@@ -757,11 +770,10 @@ export function createAiBatch(
   const snapshotJson = canonicalize(snapshot);
   const snapshotHash = sha256(snapshotJson);
   const promptHash = AI_PROMPT_HASH;
-  if ("mode" in input)
-    return createExplicitAiBatch(input, snapshotHash, promptHash);
+  if ("mode" in input) return createExplicitAiBatch(input, snapshotHash, promptHash);
   const batchKey = makeBatchKey(input.runId, snapshotHash, promptHash);
   const staleTimestamp = now();
-  transaction((db) => {
+  immediateTransaction((db) => {
     assertRunMutable(input.runId);
     const staleBatches = db
       .prepare(
@@ -795,7 +807,7 @@ export function createAiBatch(
         409,
       );
     if (existing.provider_config_id === null && existing.status !== "completed")
-      transaction((db) => {
+      immediateTransaction((db) => {
         assertRunMutable(input.runId);
         db.prepare(
           "UPDATE ai_review_batches SET provider_config_id=?,updated_at=? WHERE id=? AND provider_config_id IS NULL",
@@ -804,7 +816,7 @@ export function createAiBatch(
     // A paused/terminal batch may be revisited after a local ad_hoc review was
     // saved. Remove those queue items, but preserve the batch lifecycle status;
     // resume/retry are the only operations allowed to reactivate a batch.
-    transaction((db) => {
+    immediateTransaction((db) => {
       assertRunMutable(input.runId);
       removeHumanResolvedQueueItems(db, existing.id, input.runId);
     });
@@ -815,7 +827,7 @@ export function createAiBatch(
   const nodes = queryIncompleteNodes(input.runId).filter((node) => !manual.has(node.id));
   const timestamp = now();
   const batchId = id("aibatch");
-  transaction((db) => {
+  immediateTransaction((db) => {
     assertRunMutable(input.runId);
     assertNoOtherActiveBatch(db, input.runId);
     db.prepare(
@@ -872,103 +884,165 @@ function createExplicitAiBatch(
   if (input.mode !== "remaining" && input.mode !== "all")
     throw new AppError("INVALID_INPUT", "mode 必须是 remaining 或 all", 422);
   const db = getDb();
-  return db.transaction(() => {
-    const currentProvider = getProviderRow(input.providerConfigId, true);
-    const currentSnapshotJson = canonicalize(providerSnapshot(currentProvider));
-    const currentSnapshotHash = sha256(currentSnapshotJson);
-    if (currentSnapshotHash !== snapshotHash)
-      throw new AppError("AI_PROVIDER_CHANGED", "模型配置刚刚发生变化，请刷新后重新操作", 409);
+  return db
+    .transaction(() => {
+      const currentProvider = getProviderRow(input.providerConfigId, true);
+      const currentSnapshotJson = canonicalize(providerSnapshot(currentProvider));
+      const currentSnapshotHash = sha256(currentSnapshotJson);
+      if (currentSnapshotHash !== snapshotHash)
+        throw new AppError("AI_PROVIDER_CHANGED", "模型配置刚刚发生变化，请刷新后重新操作", 409);
 
-    const sourceBatchId = input.mode === "remaining" ? input.sourceBatchId ?? null : null;
-    const replay = db.prepare(
-      `SELECT mode,provider_config_id,provider_snapshot_hash,source_batch_id,
+      const sourceBatchId = input.mode === "remaining" ? (input.sourceBatchId ?? null) : null;
+      const replay = db
+        .prepare(
+          `SELECT mode,provider_config_id,provider_snapshot_hash,source_batch_id,
               result_batch_id,empty_result_json
        FROM ai_batch_action_requests WHERE run_id=? AND request_id=?`,
-    ).get(input.runId, input.requestId) as {
-      mode: string;
-      provider_config_id: string | null;
-      provider_snapshot_hash: string | null;
-      source_batch_id: string | null;
-      result_batch_id: string | null;
-      empty_result_json: string | null;
-    } | undefined;
-    if (replay) {
-      if (
-        replay.mode === "legacy" ||
-        replay.mode !== input.mode ||
-        replay.provider_config_id !== currentProvider.id ||
-        replay.provider_snapshot_hash !== currentSnapshotHash ||
-        replay.source_batch_id !== sourceBatchId
-      )
+        )
+        .get(input.runId, input.requestId) as
+        | {
+            mode: string;
+            provider_config_id: string | null;
+            provider_snapshot_hash: string | null;
+            source_batch_id: string | null;
+            result_batch_id: string | null;
+            empty_result_json: string | null;
+          }
+        | undefined;
+      if (replay) {
+        if (
+          replay.mode === "legacy" ||
+          replay.mode !== input.mode ||
+          replay.provider_config_id !== currentProvider.id ||
+          replay.provider_snapshot_hash !== currentSnapshotHash ||
+          replay.source_batch_id !== sourceBatchId
+        )
+          throw new AppError(
+            "AI_BATCH_REQUEST_CONFLICT",
+            "该操作编号已用于不同的复核操作，请刷新后重新开始",
+            409,
+          );
+        if (replay.result_batch_id) return getAiBatch(replay.result_batch_id);
+        if (replay.empty_result_json) {
+          try {
+            const savedResult: unknown = JSON.parse(replay.empty_result_json);
+            if (isEmptyAiBatchResult(savedResult)) return savedResult;
+          } catch {
+            // Fall through to the same integrity error for malformed JSON.
+          }
+          throw new AppError(
+            "AI_BATCH_REQUEST_CONFLICT",
+            "复核操作记录损坏，请使用新的操作重试",
+            409,
+          );
+        }
         throw new AppError(
           "AI_BATCH_REQUEST_CONFLICT",
-          "该操作编号已用于不同的复核操作，请刷新后重新开始",
+          "复核操作记录不完整，请使用新的操作重试",
           409,
         );
-      if (replay.result_batch_id) return getAiBatch(replay.result_batch_id);
-      if (replay.empty_result_json) {
-        try {
-          const savedResult: unknown = JSON.parse(replay.empty_result_json);
-          if (isEmptyAiBatchResult(savedResult)) return savedResult;
-        } catch {
-          // Fall through to the same integrity error for malformed JSON.
-        }
-        throw new AppError("AI_BATCH_REQUEST_CONFLICT", "复核操作记录损坏，请使用新的操作重试", 409);
       }
-      throw new AppError("AI_BATCH_REQUEST_CONFLICT", "复核操作记录不完整，请使用新的操作重试", 409);
-    }
-    assertRunMutable(input.runId);
+      assertRunMutable(input.runId);
 
-    if (input.mode === "remaining" && !sourceBatchId)
-      throw new AppError("AI_BATCH_SOURCE_REQUIRED", "继续未完成项目必须指定来源批次", 409);
+      if (input.mode === "remaining" && !sourceBatchId)
+        throw new AppError("AI_BATCH_SOURCE_REQUIRED", "继续未完成项目必须指定来源批次", 409);
 
-    let source: AiBatchRow | undefined;
-    if (sourceBatchId) {
-      source = db.prepare("SELECT * FROM ai_review_batches WHERE id=?").get(sourceBatchId) as AiBatchRow | undefined;
-      if (!source || source.run_id !== input.runId || source.page_id || source.study_freeze_id)
-        throw new AppError("AI_BATCH_SOURCE_INVALID", "来源批次不属于当前扫描", 409);
-      const newest = db.prepare(
-        `SELECT id FROM ai_review_batches WHERE run_id=? AND page_id IS NULL AND study_freeze_id IS NULL
+      let source: AiBatchRow | undefined;
+      if (sourceBatchId) {
+        source = db.prepare("SELECT * FROM ai_review_batches WHERE id=?").get(sourceBatchId) as
+          | AiBatchRow
+          | undefined;
+        if (!source || source.run_id !== input.runId || source.page_id || source.study_freeze_id)
+          throw new AppError("AI_BATCH_SOURCE_INVALID", "来源批次不属于当前扫描", 409);
+        const newest = db
+          .prepare(
+            `SELECT id FROM ai_review_batches WHERE run_id=? AND page_id IS NULL AND study_freeze_id IS NULL
          ORDER BY created_at DESC,id DESC LIMIT 1`,
-      ).get(input.runId) as { id: string } | undefined;
-      if (newest?.id !== source.id)
-        throw new AppError("AI_BATCH_SOURCE_STALE", "来源批次已过期，请刷新复核状态", 409);
-    }
+          )
+          .get(input.runId) as { id: string } | undefined;
+        if (newest?.id !== source.id)
+          throw new AppError("AI_BATCH_SOURCE_STALE", "来源批次已过期，请刷新复核状态", 409);
+      }
 
-    const manual = loadLocalManualVerdicts(input.runId);
-    const nodes = queryIncompleteNodes(input.runId).filter((node) => !manual.has(node.id));
-    let selected = nodes;
-    if (input.mode === "remaining" && source) {
-      const unfinished = db.prepare(
-        "SELECT result_node_id FROM ai_review_items WHERE batch_id=? AND status<>'completed' AND exclusion_reason IS NULL",
-      ).all(source.id) as Array<{ result_node_id: string }>;
-      const remainingIds = new Set(unfinished.map((item) => item.result_node_id));
-      selected = nodes.filter((node) => remainingIds.has(node.id));
-    }
+      const manual = loadLocalManualVerdicts(input.runId);
+      const nodes = queryIncompleteNodes(input.runId).filter((node) => !manual.has(node.id));
+      let selected = nodes;
+      if (input.mode === "remaining" && source) {
+        const unfinished = db
+          .prepare(
+            "SELECT result_node_id FROM ai_review_items WHERE batch_id=? AND status<>'completed' AND exclusion_reason IS NULL",
+          )
+          .all(source.id) as Array<{ result_node_id: string }>;
+        const remainingIds = new Set(unfinished.map((item) => item.result_node_id));
+        selected = nodes.filter((node) => remainingIds.has(node.id));
+      }
 
-    const timestamp = now();
-    const empty = selected.length === 0;
-    const live = db.prepare(
-      `SELECT id FROM ai_review_batches WHERE run_id=? AND page_id IS NULL AND study_freeze_id IS NULL
+      const timestamp = now();
+      const empty = selected.length === 0;
+      const live = db
+        .prepare(
+          `SELECT id FROM ai_review_batches WHERE run_id=? AND page_id IS NULL AND study_freeze_id IS NULL
        AND status IN ('queued','running','paused')`,
-    ).all(input.runId) as Array<{ id: string }>;
-    for (const batch of live) {
-      cancelBatchWork(db, batch.id, timestamp);
-      removeHumanResolvedQueueItems(db, batch.id, input.runId);
-    }
-    if (source && !live.some((batch) => batch.id === source?.id))
-      removeHumanResolvedQueueItems(db, source.id, input.runId);
-    assertNoOtherActiveBatch(db, input.runId);
-    if (empty) {
-      const emptyResult = {
-        empty: true as const,
-        scopeCount: 0 as const,
-        stats: { total: 0, completed: 0, queued: 0, running: 0, failed: 0 },
-      };
-      db.prepare(
-        `INSERT INTO ai_batch_action_requests
+        )
+        .all(input.runId) as Array<{ id: string }>;
+      for (const batch of live) {
+        cancelBatchWork(db, batch.id, timestamp, "superseded");
+        removeHumanResolvedQueueItems(db, batch.id, input.runId);
+      }
+      if (source && !live.some((batch) => batch.id === source?.id))
+        removeHumanResolvedQueueItems(db, source.id, input.runId);
+      assertNoOtherActiveBatch(db, input.runId);
+      if (empty) {
+        const emptyResult = {
+          empty: true as const,
+          scopeCount: 0 as const,
+          stats: { total: 0, completed: 0, queued: 0, running: 0, failed: 0 },
+        };
+        db.prepare(
+          `INSERT INTO ai_batch_action_requests
          (run_id,request_id,mode,provider_config_id,provider_snapshot_hash,source_batch_id,empty_result_json,created_at)
          VALUES (?,?,?,?,?,?,?,?)`,
+        ).run(
+          input.runId,
+          input.requestId,
+          input.mode,
+          currentProvider.id,
+          currentSnapshotHash,
+          sourceBatchId,
+          JSON.stringify(emptyResult),
+          timestamp,
+        );
+        return emptyResult;
+      }
+
+      const batchId = id("aibatch");
+      const batchKey = makeBatchKey(input.runId, currentSnapshotHash, promptHash, batchId);
+      db.prepare(
+        `INSERT INTO ai_review_batches(id,batch_key,run_id,page_id,study_freeze_id,provider_config_id,
+       provider_snapshot_json,provider_snapshot_hash,prompt_version,prompt_hash,evidence_version,status,
+       created_at,updated_at,completed_at,action_request_id,source_batch_id)
+       VALUES (?,?,?,NULL,NULL,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        batchId,
+        batchKey,
+        input.runId,
+        currentProvider.id,
+        currentSnapshotJson,
+        currentSnapshotHash,
+        AI_PROMPT_VERSION,
+        promptHash,
+        AI_EVIDENCE_VERSION,
+        "queued",
+        timestamp,
+        timestamp,
+        null,
+        input.requestId,
+        source?.id ?? null,
+      );
+      db.prepare(
+        `INSERT INTO ai_batch_action_requests
+       (run_id,request_id,mode,provider_config_id,provider_snapshot_hash,source_batch_id,result_batch_id,created_at)
+       VALUES (?,?,?,?,?,?,?,?)`,
       ).run(
         input.runId,
         input.requestId,
@@ -976,48 +1050,20 @@ function createExplicitAiBatch(
         currentProvider.id,
         currentSnapshotHash,
         sourceBatchId,
-        JSON.stringify(emptyResult),
+        batchId,
         timestamp,
       );
-      return emptyResult;
-    }
 
-    const batchId = id("aibatch");
-    const batchKey = makeBatchKey(input.runId, currentSnapshotHash, promptHash, batchId);
-    db.prepare(
-      `INSERT INTO ai_review_batches(id,batch_key,run_id,page_id,study_freeze_id,provider_config_id,
-       provider_snapshot_json,provider_snapshot_hash,prompt_version,prompt_hash,evidence_version,status,
-       created_at,updated_at,completed_at,action_request_id,source_batch_id)
-       VALUES (?,?,?,NULL,NULL,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    ).run(
-      batchId, batchKey, input.runId, currentProvider.id, currentSnapshotJson, currentSnapshotHash, AI_PROMPT_VERSION,
-      promptHash, AI_EVIDENCE_VERSION, "queued", timestamp, timestamp, null, input.requestId,
-      source?.id ?? null,
-    );
-    db.prepare(
-      `INSERT INTO ai_batch_action_requests
-       (run_id,request_id,mode,provider_config_id,provider_snapshot_hash,source_batch_id,result_batch_id,created_at)
-       VALUES (?,?,?,?,?,?,?,?)`,
-    ).run(
-      input.runId,
-      input.requestId,
-      input.mode,
-      currentProvider.id,
-      currentSnapshotHash,
-      sourceBatchId,
-      batchId,
-      timestamp,
-    );
-
-    const insert = db.prepare(
-      `INSERT INTO ai_review_items(id,batch_id,result_node_id,status,verdict,reason,evidence_hash,
+      const insert = db.prepare(
+        `INSERT INTO ai_review_items(id,batch_id,result_node_id,status,verdict,reason,evidence_hash,
        lease_owner,lease_until,attempt_count,response_hash,last_error,created_at,updated_at,completed_at)
        VALUES (?,?,?,'queued',NULL,NULL,?,NULL,NULL,0,NULL,NULL,?,?,NULL)`,
-    );
-    for (const node of selected)
-      insert.run(id("aiitem"), batchId, node.id, node.ai_evidence_hash, timestamp, timestamp);
-    return getAiBatch(batchId);
-  }).immediate();
+      );
+      for (const node of selected)
+        insert.run(id("aiitem"), batchId, node.id, node.ai_evidence_hash, timestamp, timestamp);
+      return getAiBatch(batchId);
+    })
+    .immediate();
 }
 
 function isEmptyAiBatchResult(value: unknown): value is EmptyAiBatchResult {
@@ -1027,11 +1073,16 @@ function isEmptyAiBatchResult(value: unknown): value is EmptyAiBatchResult {
   if (!("stats" in value) || !value.stats || typeof value.stats !== "object") return false;
   const stats = value.stats;
   return (
-    "total" in stats && typeof stats.total === "number" &&
-    "completed" in stats && typeof stats.completed === "number" &&
-    "queued" in stats && typeof stats.queued === "number" &&
-    "running" in stats && typeof stats.running === "number" &&
-    "failed" in stats && typeof stats.failed === "number"
+    "total" in stats &&
+    typeof stats.total === "number" &&
+    "completed" in stats &&
+    typeof stats.completed === "number" &&
+    "queued" in stats &&
+    typeof stats.queued === "number" &&
+    "running" in stats &&
+    typeof stats.running === "number" &&
+    "failed" in stats &&
+    typeof stats.failed === "number"
   );
 }
 
@@ -1039,7 +1090,7 @@ export function pauseAiBatch(batchId: string) {
   const batch = getBatchRow(batchId);
   if (batch.run_id) assertRunMutable(batch.run_id);
   const timestamp = now();
-  transaction((db) => {
+  immediateTransaction((db) => {
     if (batch.run_id) assertRunMutable(batch.run_id);
     db.prepare(
       `UPDATE ai_api_attempts SET cancelled_at=COALESCE(cancelled_at,?)
@@ -1054,9 +1105,10 @@ export function pauseAiBatch(batchId: string) {
     // and AI Worker are separate containers, so resume must not make the same
     // item claimable while the previous paid request is still in flight.
     db.prepare(
-      `UPDATE ai_review_batches SET status='paused',revision=revision+1,cancel_requested_at=?,completed_at=NULL,updated_at=?
+      `UPDATE ai_review_batches SET status='paused',revision=revision+1,stop_reason='paused',
+         stop_requested_at=?,cancel_requested_at=?,completed_at=NULL,updated_at=?
        WHERE id=? AND status IN ('queued','running')`,
-    ).run(timestamp, timestamp, batchId);
+    ).run(timestamp, timestamp, timestamp, batchId);
   });
   for (const abort of activeAiBatchAborters.get(batchId) ?? []) abort();
   return getAiBatch(batchId);
@@ -1074,6 +1126,11 @@ function assertBatchSourceAndSnapshot(
   assertRunMutable(batch.run_id);
   if (batch.status === "cancelled")
     throw new AppError("AI_BATCH_CANCELLED", "已取消的 AI 批次不能恢复", 409);
+  if (
+    batch.status === "failed" &&
+    (batch.stop_reason === "provider_changed" || batch.stop_reason === "superseded")
+  )
+    throw new AppError("AI_BATCH_CANCELLED", "已被替换或模型配置变更而停止的 AI 批次不能重试", 409);
   if (!batch.provider_config_id)
     throw new AppError(
       "AI_BATCH_PROVIDER_REMOVED",
@@ -1085,12 +1142,12 @@ function assertBatchSourceAndSnapshot(
     provider = getProviderRow(batch.provider_config_id, true);
   } catch {
     const timestamp = now();
-    transaction((db) => cancelBatchWork(db, batch.id, timestamp));
+    immediateTransaction((db) => cancelBatchWork(db, batch.id, timestamp));
     throw new AppError("AI_BATCH_CANCELLED", "模型配置已失效，该 AI 批次不能恢复", 409);
   }
   if (!providerSnapshotHashMatches(provider, batch.provider_snapshot_hash)) {
     const timestamp = now();
-    transaction((db) => cancelBatchWork(db, batch.id, timestamp));
+    immediateTransaction((db) => cancelBatchWork(db, batch.id, timestamp));
     throw new AppError("AI_BATCH_CANCELLED", "模型配置快照已变化，该 AI 批次不能恢复", 409);
   }
 }
@@ -1104,7 +1161,7 @@ export function resumeAiBatch(batchId: string) {
   if (batch.status !== "paused")
     throw new AppError("AI_BATCH_NOT_PAUSED", "只有已暂停的 AI 批次可以恢复", 409);
   const timestamp = now();
-  transaction((db) => {
+  immediateTransaction((db) => {
     assertRunMutable(batch.run_id);
     assertNoOtherActiveBatch(db, batch.run_id, batchId);
     removeHumanResolvedQueueItems(db, batchId, batch.run_id);
@@ -1113,9 +1170,16 @@ export function resumeAiBatch(batchId: string) {
          attempt_count=0,retry_cycle=retry_cycle+1,next_retry_at=NULL,updated_at=?,completed_at=NULL
        WHERE batch_id=? AND status IN ('queued','failed') AND exclusion_reason IS NULL`,
     ).run(timestamp, batchId);
-    if (finishWhenNoQueuedItems(db, batchId, timestamp) > 0)
+    const pending = finishWhenNoQueuedItems(db, batchId, timestamp, true);
+    if (pending > 0)
       db.prepare(
-        "UPDATE ai_review_batches SET status='queued',revision=revision+1,cancel_requested_at=NULL,updated_at=?,completed_at=NULL WHERE id=? AND status='paused'",
+        "UPDATE ai_review_batches SET status='queued',revision=revision+1,cancel_requested_at=NULL,stop_reason=NULL,stop_requested_at=NULL,updated_at=?,completed_at=NULL WHERE id=? AND status='paused'",
+      ).run(timestamp, batchId);
+    else
+      db.prepare(
+        `UPDATE ai_review_batches SET revision=revision+1,cancel_requested_at=NULL,
+           stop_reason=NULL,stop_requested_at=NULL,updated_at=?
+         WHERE id=? AND status IN ('completed','failed')`,
       ).run(timestamp, batchId);
   });
   return getAiBatch(batchId);
@@ -1132,7 +1196,7 @@ export function retryAiBatch(batchId: string) {
     );
   let retriedCount = 0;
   const timestamp = now();
-  transaction((db) => {
+  immediateTransaction((db) => {
     assertRunMutable(batch.run_id);
     assertNoOtherActiveBatch(db, batch.run_id, batchId);
     removeHumanResolvedQueueItems(db, batchId, batch.run_id);
@@ -1504,7 +1568,7 @@ function claimNextAiItem(workerId: string, slot: number) {
       const terminalized = db
         .prepare(
           `UPDATE ai_api_attempts SET ended_at=?,duration_ms=?,status='cancelled',
-             error_code=CASE WHEN send_started_at IS NULL THEN 'AI_ATTEMPT_NOT_SENT' ELSE 'AI_ATTEMPT_OUTCOME_UNKNOWN' END
+             error_code='AI_ATTEMPT_OUTCOME_UNKNOWN'
            WHERE id=? AND status='running' AND cancelled_at IS NOT NULL`,
         )
         .run(
@@ -1519,16 +1583,21 @@ function claimNextAiItem(workerId: string, slot: number) {
         .prepare(
           `UPDATE ai_review_items SET
              status=CASE WHEN EXISTS (
-               SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled'
+               SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
+                 AND b.status='cancelled' AND b.stop_reason IN ('provider_changed','superseded')
              ) THEN 'failed' ELSE 'queued' END,
              last_error=CASE WHEN EXISTS (
                SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled'
                  AND b.stop_reason='provider_changed'
-             ) THEN 'AI_PROVIDER_CHANGED' ELSE NULL END,
+             ) THEN 'AI_PROVIDER_CHANGED' WHEN EXISTS (
+               SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
+                 AND b.status='cancelled' AND b.stop_reason='superseded'
+             ) THEN 'AI_BATCH_SUPERSEDED' ELSE NULL END,
              lease_owner=NULL,lease_until=NULL,active_attempt_id=NULL,next_retry_at=NULL,
              batch_revision=(SELECT revision FROM ai_review_batches WHERE id=ai_review_items.batch_id),
              updated_at=?,completed_at=CASE WHEN EXISTS (
-               SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled'
+               SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
+                 AND b.status='cancelled' AND b.stop_reason IN ('provider_changed','superseded')
              ) THEN ? ELSE NULL END
            WHERE id=? AND batch_id=? AND status='running' AND active_attempt_id=?
              AND EXISTS (
@@ -1684,30 +1753,42 @@ function claimNextAiItem(workerId: string, slot: number) {
 function completeItem(
   item: any,
   result: { verdict: AiVerdict; reason: string; responseHash: string },
-  attemptId: string,
+  attempt: { id: string; startedAt: number },
+  providerResult: { httpStatus?: number; usage?: ProviderUsage },
 ) {
   const timestamp = now();
-  transaction((db) => {
+  immediateTransaction((db) => {
     const valid = db
       .prepare(
         `SELECT 1 FROM ai_api_attempts a
          JOIN ai_review_items i ON i.id=? AND i.batch_id=?
          JOIN ai_review_batches b ON b.id=i.batch_id AND b.run_id=?
          JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id
-         WHERE a.id=? AND a.cancelled_at IS NULL AND b.status='running'
+         WHERE a.id=? AND a.status='running' AND a.ended_at IS NULL
+           AND a.cancelled_at IS NULL AND b.status='running'
            AND b.cancel_requested_at IS NULL AND i.status='running' AND i.lease_owner=?
            AND i.active_attempt_id=a.id AND i.batch_revision=? AND i.batch_revision=b.revision
            AND j.deletion_requested_at IS NULL`,
       )
-      .get(item.id, item.batch_id, item.run_id, attemptId, item.lease_owner, item.batch_revision);
+      .get(item.id, item.batch_id, item.run_id, attempt.id, item.lease_owner, item.batch_revision);
     if (!valid) {
+      finishAttempt(db, attempt, providerResult);
       // A cancelled request may settle after pause/resume advanced the batch
       // revision. Acknowledge only this exact attempt's lease; never persist
       // its result. The batch remains paused unless resume was explicit.
       db.prepare(
         `UPDATE ai_review_items SET
-           status=CASE WHEN EXISTS (SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled' AND b.stop_reason='provider_changed') THEN 'failed' ELSE 'queued' END,
-           last_error=CASE WHEN EXISTS (SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled' AND b.stop_reason='provider_changed') THEN 'AI_PROVIDER_CHANGED' ELSE NULL END,
+           status=CASE WHEN EXISTS (
+             SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
+               AND b.status='cancelled' AND b.stop_reason IN ('provider_changed','superseded')
+           ) THEN 'failed' ELSE 'queued' END,
+           last_error=CASE WHEN EXISTS (
+             SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
+               AND b.status='cancelled' AND b.stop_reason='provider_changed'
+           ) THEN 'AI_PROVIDER_CHANGED' WHEN EXISTS (
+             SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
+               AND b.status='cancelled' AND b.stop_reason='superseded'
+           ) THEN 'AI_BATCH_SUPERSEDED' ELSE NULL END,
            lease_owner=NULL,lease_until=NULL,next_retry_at=NULL,active_attempt_id=NULL,
            attempt_count=CASE WHEN EXISTS (
              SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
@@ -1717,14 +1798,19 @@ function completeItem(
              SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
                AND b.status='queued' AND b.cancel_requested_at IS NULL
            ) THEN 1 ELSE 0 END,
-           updated_at=?,completed_at=CASE WHEN EXISTS (SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled' AND b.stop_reason='provider_changed') THEN ? ELSE NULL END
+           updated_at=?,completed_at=CASE WHEN EXISTS (
+             SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
+               AND b.status='cancelled' AND b.stop_reason IN ('provider_changed','superseded')
+           ) THEN ? ELSE NULL END
          WHERE id=? AND batch_id=? AND status='running' AND lease_owner=?
            AND active_attempt_id=? AND batch_revision=?
            AND EXISTS (
              SELECT 1 FROM ai_api_attempts a JOIN ai_review_batches b ON b.id=ai_review_items.batch_id
                JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id
              WHERE a.id=? AND a.item_id=ai_review_items.id AND a.cancelled_at IS NOT NULL
-               AND (b.status IN ('paused','queued') OR (b.status='cancelled' AND b.stop_reason='provider_changed'))
+               AND (b.status IN ('paused','queued') OR (
+                 b.status='cancelled' AND b.stop_reason IN ('provider_changed','superseded')
+               ))
                AND j.deletion_requested_at IS NULL
            )`,
       ).run(
@@ -1733,9 +1819,9 @@ function completeItem(
         item.id,
         item.batch_id,
         item.lease_owner,
-        attemptId,
+        attempt.id,
         item.batch_revision,
-        attemptId,
+        attempt.id,
       );
       return;
     }
@@ -1751,10 +1837,14 @@ function completeItem(
         timestamp,
         item.id,
         item.lease_owner,
-        attemptId,
+        attempt.id,
         item.batch_revision,
       );
-    if (changed.changes !== 1) return;
+    if (changed.changes !== 1)
+      throw new Error("AI response could not be committed to its leased review item");
+    const finalized = finishAttempt(db, attempt, providerResult);
+    if (finalized.changes !== 1)
+      throw new Error("AI response and review item could not be committed together");
     const currentBatch = db
       .prepare("SELECT status FROM ai_review_batches WHERE id=?")
       .get(item.batch_id) as { status: AiBatchStatus } | undefined;
@@ -1765,11 +1855,10 @@ function completeItem(
         timestamp,
         item.batch_id,
       );
-    else
-      db.prepare("UPDATE ai_review_batches SET status='running',updated_at=? WHERE id=?").run(
-        timestamp,
-        item.batch_id,
-      );
+    else if (currentBatch?.status === "queued" || currentBatch?.status === "running")
+      db.prepare(
+        "UPDATE ai_review_batches SET status='running',updated_at=? WHERE id=? AND status IN ('queued','running')",
+      ).run(timestamp, item.batch_id);
   });
 }
 
@@ -1823,6 +1912,7 @@ function startAttempt(
 }
 
 function finishAttempt(
+  db: ReturnType<typeof getDb>,
   attempt: { id: string; startedAt: number },
   result: { httpStatus?: number; usage?: ProviderUsage } | null,
   error?: unknown,
@@ -1834,12 +1924,14 @@ function finishAttempt(
     error instanceof AppError && error.details && typeof error.details === "object"
       ? (error.details as { httpStatus?: unknown })
       : null;
-  getDb()
+  return db
     .prepare(
       `UPDATE ai_api_attempts SET ended_at=?,duration_ms=?,
        status=CASE WHEN cancelled_at IS NOT NULL OR ?=1 THEN 'cancelled' WHEN ?=1 THEN 'failed' ELSE 'completed' END,
        http_status=?,
-       error_code=CASE WHEN cancelled_at IS NOT NULL OR ?=1 THEN 'AI_ATTEMPT_CANCELLED' WHEN ?=1 THEN ? ELSE NULL END,
+       error_code=CASE WHEN cancelled_at IS NOT NULL OR ?=1
+         THEN CASE WHEN send_started_at IS NULL THEN 'AI_ATTEMPT_NOT_SENT' ELSE 'AI_ATTEMPT_CANCELLED' END
+         WHEN ?=1 THEN ? ELSE NULL END,
        input_tokens=?,output_tokens=?,total_tokens=?,reported_cost=?,currency=?,
        cancelled_at=CASE WHEN ?=1 THEN COALESCE(cancelled_at,?) ELSE cancelled_at END
        WHERE id=? AND ended_at IS NULL AND status IN ('running','cancelled')`,
@@ -1865,10 +1957,14 @@ function finishAttempt(
     );
 }
 
-function failItem(item: any, error: unknown) {
+function failItem(item: any, attempt: { id: string; startedAt: number }, error: unknown) {
   const errorCode = safeAttemptErrorCode(error);
   const timestamp = now();
-  transaction((db) => {
+  immediateTransaction((db) => {
+    const attemptState = db
+      .prepare("SELECT cancelled_at,ended_at FROM ai_api_attempts WHERE id=?")
+      .get(attempt.id) as { cancelled_at: string | null; ended_at: string | null } | undefined;
+    if (!attemptState || attemptState.ended_at) return;
     const cancellation = db
       .prepare(
         `SELECT b.cancel_requested_at FROM ai_review_items i JOIN ai_review_batches b ON b.id=i.batch_id
@@ -1876,20 +1972,27 @@ function failItem(item: any, error: unknown) {
          WHERE i.id=? AND b.id=? AND i.active_attempt_id=? AND i.lease_owner=?
            AND i.batch_revision=? AND j.deletion_requested_at IS NULL`,
       )
-      .get(item.id, item.batch_id, item.attempt_id, item.lease_owner, item.batch_revision) as
+      .get(item.id, item.batch_id, attempt.id, item.lease_owner, item.batch_revision) as
       | { cancel_requested_at: string | null }
       | undefined;
-    const attemptCancelled = db
-      .prepare("SELECT cancelled_at FROM ai_api_attempts WHERE id=?")
-      .get(item.attempt_id) as { cancelled_at: string | null } | undefined;
     const isCancelled =
       (error instanceof Error && error.name === "AbortError") ||
-      Boolean(cancellation?.cancel_requested_at || attemptCancelled?.cancelled_at);
+      Boolean(cancellation?.cancel_requested_at || attemptState.cancelled_at);
     if (isCancelled) {
+      finishAttempt(db, attempt, null, error);
       db.prepare(
         `UPDATE ai_review_items SET
-           status=CASE WHEN EXISTS (SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled' AND b.stop_reason='provider_changed') THEN 'failed' ELSE 'queued' END,
-           last_error=CASE WHEN EXISTS (SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled' AND b.stop_reason='provider_changed') THEN 'AI_PROVIDER_CHANGED' ELSE NULL END,
+           status=CASE WHEN EXISTS (
+             SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
+               AND b.status='cancelled' AND b.stop_reason IN ('provider_changed','superseded')
+           ) THEN 'failed' ELSE 'queued' END,
+           last_error=CASE WHEN EXISTS (
+             SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
+               AND b.status='cancelled' AND b.stop_reason='provider_changed'
+           ) THEN 'AI_PROVIDER_CHANGED' WHEN EXISTS (
+             SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
+               AND b.status='cancelled' AND b.stop_reason='superseded'
+           ) THEN 'AI_BATCH_SUPERSEDED' ELSE NULL END,
            lease_owner=NULL,lease_until=NULL,
            next_retry_at=NULL,active_attempt_id=NULL,
            attempt_count=CASE WHEN EXISTS (
@@ -1900,13 +2003,18 @@ function failItem(item: any, error: unknown) {
              SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
                AND b.status='queued' AND b.cancel_requested_at IS NULL
            ) THEN 1 ELSE 0 END,
-           updated_at=?,completed_at=CASE WHEN EXISTS (SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled' AND b.stop_reason='provider_changed') THEN ? ELSE NULL END
+           updated_at=?,completed_at=CASE WHEN EXISTS (
+             SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
+               AND b.status='cancelled' AND b.stop_reason IN ('provider_changed','superseded')
+           ) THEN ? ELSE NULL END
          WHERE id=? AND status='running' AND lease_owner=? AND active_attempt_id=? AND batch_revision=?
            AND EXISTS (
              SELECT 1 FROM ai_api_attempts a JOIN ai_review_batches b ON b.id=ai_review_items.batch_id
                JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id
              WHERE a.id=? AND a.item_id=ai_review_items.id AND a.cancelled_at IS NOT NULL
-               AND (b.status IN ('paused','queued') OR (b.status='cancelled' AND b.stop_reason='provider_changed'))
+               AND (b.status IN ('paused','queued') OR (
+                 b.status='cancelled' AND b.stop_reason IN ('provider_changed','superseded')
+               ))
                AND j.deletion_requested_at IS NULL
            )`,
       ).run(
@@ -1914,9 +2022,9 @@ function failItem(item: any, error: unknown) {
         null,
         item.id,
         item.lease_owner,
-        item.attempt_id,
+        attempt.id,
         item.batch_revision,
-        item.attempt_id,
+        attempt.id,
       );
       return;
     }
@@ -1949,7 +2057,15 @@ function failItem(item: any, error: unknown) {
         item.attempt_id,
         item.batch_revision,
       );
-    if (changed.changes !== 1) return;
+    if (changed.changes !== 1) {
+      // This request may have lost its lease to a newer attempt or a deleted
+      // scan. Settle only its own audit row; never change the replacement item.
+      finishAttempt(db, attempt, null, error);
+      return;
+    }
+    const finalized = finishAttempt(db, attempt, null, error);
+    if (finalized.changes !== 1)
+      throw new Error("AI failure and review item could not be committed together");
     const currentBatch = db
       .prepare("SELECT status FROM ai_review_batches WHERE id=?")
       .get(item.batch_id) as { status: AiBatchStatus } | undefined;
@@ -1960,7 +2076,7 @@ function failItem(item: any, error: unknown) {
         timestamp,
         item.batch_id,
       );
-    else
+    else if (currentBatch?.status === "queued" || currentBatch?.status === "running")
       db.prepare("UPDATE ai_review_batches SET status='queued',updated_at=? WHERE id=?").run(
         timestamp,
         item.batch_id,
@@ -2057,11 +2173,9 @@ export async function processNextAiItem(workerId: string, slot = 0) {
       };
     });
     const response = await responsePromise;
-    finishAttempt(attempt, response);
-    completeItem(item, response.result, attempt.id);
+    completeItem(item, response.result, attempt, response);
   } catch (error) {
-    finishAttempt(attempt, null, error);
-    failItem(item, error);
+    failItem(item, attempt, error);
   } finally {
     polling = false;
     if (heartbeatTimer) clearTimeout(heartbeatTimer);
@@ -2129,7 +2243,9 @@ export function summarizeAiRun(runId: string, _providerConfigId?: string) {
   const aiOverlay = loadAiOverlayForRun(runId);
   const overlay = loadEffectiveOverlayForRun(runId);
   const manual = loadLocalManualVerdicts(runId);
-  const aiCandidateCount = queryIncompleteNodes(runId).filter((node) => !manual.has(node.id)).length;
+  const aiCandidateCount = queryIncompleteNodes(runId).filter(
+    (node) => !manual.has(node.id),
+  ).length;
   return {
     batch: runBatch ? { ...runBatch, stats: batchStats(runBatch.id) } : null,
     latestBatchId: runBatch?.id ?? null,

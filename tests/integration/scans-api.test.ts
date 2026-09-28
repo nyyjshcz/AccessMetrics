@@ -308,7 +308,7 @@ describe("scans list route", () => {
       batch_id: null,
       item_id: null,
       provider_config_id: null,
-      error_code: "AI_ATTEMPT_NOT_SENT",
+      error_code: "AI_ATTEMPT_OUTCOME_UNKNOWN",
     });
   });
 

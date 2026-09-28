@@ -20,17 +20,26 @@ type BatchRow = {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  stop_reason: string | null;
+  stop_requested_at: string | null;
   scan_host: string | null;
   queued: number;
   running: number;
   completed: number;
   failed: number;
+  excluded_items: number;
 };
 
 type AttemptRow = {
   id: string;
   worker_id: string;
   slot: number;
+  item_id: string | null;
+  attempt_number: number;
+  retry_cycle: number;
+  send_started_at: string | null;
+  item_active_attempt_id?: string | null;
+  item_lease_until?: string | null;
   run_id: string | null;
   batch_id: string | null;
   provider_label: string;
@@ -47,8 +56,11 @@ type AttemptRow = {
   reported_cost: number | null;
   currency: string | null;
   cancelled_at: string | null;
+  batch_status?: string | null;
   scan_host: string | null;
 };
+
+type AttemptSendState = "response_received" | "possibly_sent" | "not_sent" | "unknown";
 
 function safeHost(origin: string | null | undefined) {
   if (!origin) return null;
@@ -73,6 +85,26 @@ function providerSnapshot(value: string) {
 
 function safeErrorCode(value: string | null) {
   return value && /^[A-Z0-9_]{1,80}$/.test(value) ? value : null;
+}
+
+function attemptSendState(attempt: AttemptRow): AttemptSendState {
+  if (attempt.http_status !== null) return "response_received";
+  if (attempt.send_started_at) return "possibly_sent";
+  if (attempt.error_code === "AI_ATTEMPT_NOT_SENT") return "not_sent";
+  return "unknown";
+}
+
+const SAFE_STOP_REASONS = new Set([
+  "provider_changed",
+  "paused",
+  "scan_deleted",
+  "queue_exhausted",
+  "superseded",
+]);
+
+function safeStopReason(value: string | null) {
+  if (!value) return null;
+  return SAFE_STOP_REASONS.has(value) ? value : "unknown";
 }
 
 export async function GET(request: Request) {
@@ -102,11 +134,13 @@ export async function GET(request: Request) {
       db
         .prepare(
           `SELECT b.id,b.run_id,b.status,b.provider_snapshot_json,b.created_at,b.updated_at,b.completed_at,
+           b.stop_reason,b.stop_requested_at,
            s.origin AS scan_origin,
            SUM(CASE WHEN i.status='queued' THEN 1 ELSE 0 END) AS queued,
            SUM(CASE WHEN i.status='running' THEN 1 ELSE 0 END) AS running,
            SUM(CASE WHEN i.status='completed' THEN 1 ELSE 0 END) AS completed,
-           SUM(CASE WHEN i.status='failed' THEN 1 ELSE 0 END) AS failed
+           SUM(CASE WHEN i.status='failed' THEN 1 ELSE 0 END) AS failed,
+           SUM(CASE WHEN i.exclusion_reason IS NOT NULL THEN 1 ELSE 0 END) AS excluded_items
          FROM ai_review_batches b
          LEFT JOIN scan_runs r ON r.id=b.run_id
          LEFT JOIN sites s ON s.id=r.site_id
@@ -122,6 +156,7 @@ export async function GET(request: Request) {
         running: Number(batch.running ?? 0),
         completed: Number(batch.completed ?? 0),
         failed: Number(batch.failed ?? 0),
+        excludedItems: Number(batch.excluded_items ?? 0),
       };
       return {
         batchId: batch.id,
@@ -131,18 +166,25 @@ export async function GET(request: Request) {
         model: provider.model,
         status: batch.status,
         itemCounts: {
-          ...itemCounts,
-          total: Object.values(itemCounts).reduce((sum, count) => sum + count, 0),
+          queued: itemCounts.queued,
+          running: itemCounts.running,
+          completed: itemCounts.completed,
+          failed: itemCounts.failed,
+          excludedItems: itemCounts.excludedItems,
+          total: itemCounts.queued + itemCounts.running + itemCounts.completed + itemCounts.failed,
         },
         createdAt: batch.created_at,
         updatedAt: batch.updated_at,
         completedAt: batch.completed_at,
+        stopReason: safeStopReason(batch.stop_reason),
+        stopRequestedAt: batch.stop_requested_at,
       };
     });
 
     const recentAttemptRows = db
       .prepare(
-        `SELECT a.id,a.worker_id,a.slot,a.run_id,a.batch_id,a.provider_label,a.model,
+        `SELECT a.id,a.worker_id,a.slot,a.item_id,a.attempt_number,a.retry_cycle,a.send_started_at,
+           a.run_id,a.batch_id,a.provider_label,a.model,
            a.started_at,a.ended_at,a.duration_ms,a.status,a.http_status,a.error_code,
            a.input_tokens,a.output_tokens,a.total_tokens,a.reported_cost,a.currency,a.cancelled_at,
            s.origin AS scan_origin
@@ -155,11 +197,15 @@ export async function GET(request: Request) {
 
     const activeAttemptRows = db
       .prepare(
-        `SELECT a.id,a.worker_id,a.slot,a.run_id,a.batch_id,a.provider_label,a.model,
+        `SELECT a.id,a.worker_id,a.slot,a.item_id,a.attempt_number,a.retry_cycle,a.send_started_at,
+           i.active_attempt_id AS item_active_attempt_id,i.lease_until AS item_lease_until,
+           b.status AS batch_status,a.run_id,a.batch_id,a.provider_label,a.model,
            a.started_at,a.ended_at,a.duration_ms,a.status,a.http_status,a.error_code,
            a.input_tokens,a.output_tokens,a.total_tokens,a.reported_cost,a.currency,a.cancelled_at,
            s.origin AS scan_origin
          FROM ai_api_attempts a
+         LEFT JOIN ai_review_items i ON i.id=a.item_id
+         LEFT JOIN ai_review_batches b ON b.id=a.batch_id
          LEFT JOIN scan_runs r ON r.id=a.run_id
          LEFT JOIN sites s ON s.id=r.site_id
          WHERE a.status='running'
@@ -171,12 +217,16 @@ export async function GET(request: Request) {
       attemptId: attempt.id,
       workerId: attempt.worker_id,
       slot: Number(attempt.slot),
+      itemId: attempt.item_id?.slice(0, 12) ?? null,
+      attemptNumber: Number(attempt.attempt_number ?? 0),
+      retryCycle: Number(attempt.retry_cycle ?? 0),
       scanId: attempt.run_id,
       scanHost: safeHost(attempt.scan_origin),
       batchId: attempt.batch_id,
       provider: attempt.provider_label,
       model: attempt.model,
       startedAt: attempt.started_at,
+      sendState: attemptSendState(attempt),
       endedAt: attempt.ended_at,
       durationMs: attempt.duration_ms,
       elapsedMs:
@@ -189,16 +239,32 @@ export async function GET(request: Request) {
       totalTokens: attempt.total_tokens,
       reportedCost: attempt.reported_cost,
       currency: attempt.currency,
-      cancellationPending: Boolean(attempt.cancelled_at) && attempt.status === "running",
+      cancellationPending:
+        Boolean(attempt.cancelled_at) &&
+        Boolean(attempt.send_started_at) &&
+        attempt.status === "running",
     });
     const recentAttempts = recentAttemptRows.map(formatAttempt);
     const onlineWorkerIds = new Set(
       workers.filter((worker) => worker.online).map((worker) => worker.workerId),
     );
-    const activeCalls = activeAttemptRows.map((attempt) => ({
-      ...formatAttempt(attempt),
-      workerOnline: onlineWorkerIds.has(attempt.worker_id),
-    }));
+    const activeCalls = [] as Array<ReturnType<typeof formatAttempt> & { workerOnline: boolean }>;
+    const uncertainCalls = [] as Array<
+      ReturnType<typeof formatAttempt> & { workerOnline: boolean }
+    >;
+    for (const attempt of activeAttemptRows) {
+      const workerOnline = onlineWorkerIds.has(attempt.worker_id);
+      const leaseUntil = Date.parse(attempt.item_lease_until ?? "");
+      const stateConfirmed =
+        workerOnline &&
+        Boolean(attempt.send_started_at) &&
+        attempt.item_active_attempt_id === attempt.id &&
+        Number.isFinite(leaseUntil) &&
+        leaseUntil > now;
+      const formatted = { ...formatAttempt(attempt), workerOnline };
+      if (stateConfirmed) activeCalls.push(formatted);
+      else uncertainCalls.push(formatted);
+    }
 
     const usageTotals = db
       .prepare(
@@ -235,7 +301,7 @@ export async function GET(request: Request) {
     const statusCounts = db
       .prepare("SELECT status,COUNT(*) AS count FROM ai_review_batches GROUP BY status")
       .all() as Array<{ status: string; count: number }>;
-    const batchSummary = Object.fromEntries(
+    const historyBatchStatusCounts = Object.fromEntries(
       ["queued", "running", "paused", "completed", "failed", "cancelled"].map((status) => [
         status,
         Number(statusCounts.find((item) => item.status === status)?.count ?? 0),
@@ -244,12 +310,44 @@ export async function GET(request: Request) {
     const itemStatusCounts = db
       .prepare("SELECT status,COUNT(*) AS count FROM ai_review_items GROUP BY status")
       .all() as Array<{ status: string; count: number }>;
-    const itemSummary = Object.fromEntries(
+    const historyItemStatusCounts = Object.fromEntries(
       ["queued", "running", "completed", "failed"].map((status) => [
         status,
         Number(itemStatusCounts.find((item) => item.status === status)?.count ?? 0),
       ]),
     );
+    const excludedItemCount = db
+      .prepare("SELECT COUNT(*) AS count FROM ai_review_items WHERE exclusion_reason IS NOT NULL")
+      .get() as { count: number };
+    const queueBatchCounts = db
+      .prepare(
+        "SELECT status,COUNT(*) AS count FROM ai_review_batches WHERE status IN ('queued','running') GROUP BY status",
+      )
+      .all() as Array<{ status: string; count: number }>;
+    const queueItemCounts = db
+      .prepare(
+        `SELECT i.status,COUNT(*) AS count FROM ai_review_items i
+         JOIN ai_review_batches b ON b.id=i.batch_id
+         WHERE b.status IN ('queued','running') AND i.exclusion_reason IS NULL
+         GROUP BY i.status`,
+      )
+      .all() as Array<{ status: string; count: number }>;
+    const queueSummary = {
+      queuedBatches: Number(queueBatchCounts.find((item) => item.status === "queued")?.count ?? 0),
+      runningBatches: Number(
+        queueBatchCounts.find((item) => item.status === "running")?.count ?? 0,
+      ),
+      queuedItems: Number(queueItemCounts.find((item) => item.status === "queued")?.count ?? 0),
+      runningItems: Number(queueItemCounts.find((item) => item.status === "running")?.count ?? 0),
+      failedItems: Number(queueItemCounts.find((item) => item.status === "failed")?.count ?? 0),
+    };
+    const historySummary = {
+      batchStatusCounts: historyBatchStatusCounts,
+      itemStatusCounts: historyItemStatusCounts,
+      excludedItems: Number(excludedItemCount.count),
+      totalBatches: Object.values(historyBatchStatusCounts).reduce((sum, count) => sum + count, 0),
+      totalItems: Object.values(historyItemStatusCounts).reduce((sum, count) => sum + count, 0),
+    };
 
     return NextResponse.json(
       {
@@ -263,8 +361,9 @@ export async function GET(request: Request) {
           })),
         },
         activeCalls,
-        batchSummary,
-        itemSummary,
+        uncertainCalls,
+        queueSummary,
+        historySummary,
         batches,
         usageSummary,
         recentAttempts,

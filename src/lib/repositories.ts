@@ -232,8 +232,7 @@ function finalizeScanDeletion(jobId: string) {
         `UPDATE ai_api_attempts SET
            cancelled_at=CASE WHEN status='running' THEN COALESCE(cancelled_at,?) ELSE cancelled_at END,
            status=CASE WHEN status='running' THEN 'cancelled' ELSE status END,
-           error_code=CASE WHEN status='running' AND send_started_at IS NULL THEN 'AI_ATTEMPT_NOT_SENT'
-                           WHEN status='running' THEN 'AI_ATTEMPT_OUTCOME_UNKNOWN' ELSE error_code END,
+           error_code=CASE WHEN status='running' THEN 'AI_ATTEMPT_OUTCOME_UNKNOWN' ELSE error_code END,
            ended_at=CASE WHEN status='running' AND send_started_at IS NULL THEN ? ELSE ended_at END,
            duration_ms=CASE WHEN status='running' AND send_started_at IS NULL THEN 0 ELSE duration_ms END,
            run_id=NULL,batch_id=NULL,item_id=NULL,provider_config_id=NULL

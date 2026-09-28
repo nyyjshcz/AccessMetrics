@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { getMessages, type Locale } from "@/lib/i18n";
+import { formatAiStopReason, getMessages, type Locale } from "@/lib/i18n";
 
 type Worker = {
   workerId: string;
@@ -11,16 +11,21 @@ type Worker = {
   online: boolean;
   activeSlots: number;
 };
+type SendState = "response_received" | "possibly_sent" | "not_sent" | "unknown";
 type Call = {
   attemptId: string;
   workerId: string;
   slot: number;
+  itemId: string | null;
+  attemptNumber: number;
+  retryCycle: number;
   scanId: string | null;
   scanHost: string | null;
   batchId: string | null;
   provider: string;
   model: string;
   startedAt: string;
+  sendState: SendState;
   elapsedMs: number | null;
   status: string;
   workerOnline: boolean;
@@ -33,6 +38,7 @@ type ItemCounts = {
   running: number;
   completed: number;
   failed: number;
+  excludedItems: number;
   total: number;
 };
 type Batch = {
@@ -45,9 +51,15 @@ type Batch = {
   itemCounts: ItemCounts;
   createdAt: string;
   updatedAt: string;
+  stopReason: string | null;
+  stopRequestedAt: string | null;
 };
 type Attempt = {
   attemptId: string;
+  itemId: string | null;
+  sendState: SendState;
+  attemptNumber: number;
+  retryCycle: number;
   scanHost: string | null;
   provider: string;
   model: string;
@@ -62,13 +74,27 @@ type Attempt = {
   totalTokens: number | null;
   reportedCost: number | null;
   currency: string | null;
+  cancellationPending: boolean;
 };
 type MonitorData = {
   observedAt: string;
   workerStatus: { onlineWorkers: number; workers: Worker[] };
   activeCalls: Call[];
-  batchSummary: Record<string, number>;
-  itemSummary: Record<string, number>;
+  uncertainCalls: Call[];
+  queueSummary: {
+    queuedBatches: number;
+    runningBatches: number;
+    queuedItems: number;
+    runningItems: number;
+    failedItems: number;
+  };
+  historySummary: {
+    batchStatusCounts: Record<string, number>;
+    itemStatusCounts: Record<string, number>;
+    excludedItems: number;
+    totalBatches: number;
+    totalItems: number;
+  };
   batches: Batch[];
   usageSummary: {
     attempts: number;
@@ -162,6 +188,13 @@ export default function AiWorkerMonitorClient({ locale }: { locale: Locale }) {
     cancelled: copy.cancelled,
   };
   const statusLabel = (status: string) => statusLabels[status] ?? status;
+  const sendStateLabel = (state: SendState) =>
+    ({
+      response_received: copy.providerResponseReceived,
+      possibly_sent: copy.requestMayHaveBeenSent,
+      not_sent: copy.requestNotSent,
+      unknown: copy.sendStatusUnknown,
+    })[state];
   const statusClass = (status: string) =>
     status === "running"
       ? "status-badge-active"
@@ -187,7 +220,11 @@ export default function AiWorkerMonitorClient({ locale }: { locale: Locale }) {
           </span>
         </div>
         {loading && !data ? <p className="muted">{copy.loading}</p> : null}
-        {error ? (
+        {error && data ? (
+          <p className="notice" role="status">
+            {copy.staleData.replace("{time}", formatDate(data.observedAt, locale))}
+          </p>
+        ) : error ? (
           <p className="error notice" role="alert">
             {error}
           </p>
@@ -233,7 +270,7 @@ export default function AiWorkerMonitorClient({ locale }: { locale: Locale }) {
                     <span
                       className={`status-badge ${call.workerOnline ? "status-badge-active" : "status-badge-warning"}`}
                     >
-                      {call.workerOnline ? statusLabel(call.status) : copy.staleRequest}
+                      {statusLabel(call.status)}
                     </span>
                   </div>
                   <p className="muted">
@@ -243,6 +280,10 @@ export default function AiWorkerMonitorClient({ locale }: { locale: Locale }) {
                   <p className="muted">
                     Worker {call.workerId}
                     {call.batchId ? ` · Batch ${call.batchId.slice(0, 12)}` : ""}
+                    {call.itemId
+                      ? ` · ${copy.itemAttempt.replace("{item}", call.itemId).replace("{attempt}", String(call.attemptNumber))}`
+                      : ""}
+                    {` · ${copy.retryCycle.replace("{cycle}", String(call.retryCycle + 1))}`}
                   </p>
                   {call.cancellationPending ? <p className="notice">{copy.cancelPending}</p> : null}
                 </div>
@@ -254,11 +295,53 @@ export default function AiWorkerMonitorClient({ locale }: { locale: Locale }) {
         )}
       </section>
 
+      {data?.uncertainCalls.length ? (
+        <section className="card ai-worker-section">
+          <div className="ai-worker-section-heading">
+            <div>
+              <p className="eyebrow">REQUEST STATE</p>
+              <h2>{copy.uncertainCalls}</h2>
+              <p className="muted">{copy.uncertainCallsLede}</p>
+            </div>
+            <span className="pill">{countText(data.uncertainCalls.length, copy.total)}</span>
+          </div>
+          <div className="ai-worker-active-list">
+            {data.uncertainCalls.map((call) => (
+              <article className="ai-worker-active-call" key={call.attemptId}>
+                <div className="ai-worker-active-marker" aria-hidden="true" />
+                <div className="ai-worker-call-main">
+                  <div className="ai-worker-call-title">
+                    <strong>{call.provider}</strong>
+                    <span className="muted">{call.model}</span>
+                    <span className="status-badge status-badge-warning">{copy.staleRequest}</span>
+                  </div>
+                  <p className="muted">
+                    {copy.scan}: {call.scanHost ?? "—"} · Worker {call.workerId} · {copy.elapsed}:{" "}
+                    {formatDuration(call.elapsedMs, locale)}
+                  </p>
+                  <p className="muted">{sendStateLabel(call.sendState)}</p>
+                  {call.itemId ? (
+                    <p className="muted">
+                      {copy.itemAttempt
+                        .replace("{item}", call.itemId)
+                        .replace("{attempt}", String(call.attemptNumber))}
+                      {` · ${copy.retryCycle.replace("{cycle}", String(call.retryCycle + 1))}`}
+                    </p>
+                  ) : null}
+                  {call.cancellationPending ? <p className="notice">{copy.cancelPending}</p> : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <section className="card ai-worker-section">
         <div className="ai-worker-section-heading">
           <div>
             <p className="eyebrow">QUEUE SNAPSHOT</p>
-            <h2>{copy.lifecycle}</h2>
+            <h2>{copy.currentQueue}</h2>
+            <p className="muted">{copy.currentQueueScope}</p>
           </div>
           {data ? (
             <span className="muted">
@@ -266,25 +349,62 @@ export default function AiWorkerMonitorClient({ locale }: { locale: Locale }) {
             </span>
           ) : null}
         </div>
-        <div className="ai-worker-count-strip" aria-label={copy.lifecycle}>
+        <div className="ai-worker-count-strip" aria-label={copy.currentQueue}>
+          {(
+            [
+              [copy.queued, data?.queueSummary.queuedBatches, locale === "en" ? "batches" : "批次"],
+              [
+                copy.running,
+                data?.queueSummary.runningBatches,
+                locale === "en" ? "batches" : "批次",
+              ],
+              [copy.queued, data?.queueSummary.queuedItems, copy.items],
+              [copy.running, data?.queueSummary.runningItems, copy.items],
+              [copy.failed, data?.queueSummary.failedItems, copy.items],
+            ] as const
+          ).map(([label, count, unit], index) => (
+            <div className="ai-worker-count" key={`queue-${index}`}>
+              <span>{label}</span>
+              <strong>{count ?? 0}</strong>
+              <small>{unit}</small>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="card ai-worker-section">
+        <div className="ai-worker-section-heading">
+          <div>
+            <p className="eyebrow">HISTORY</p>
+            <h2>{copy.history}</h2>
+            <p className="muted">{copy.historyScope}</p>
+          </div>
+          <span className="muted">
+            {copy.batches}: {data?.historySummary.totalBatches ?? 0} · {copy.items}:{" "}
+            {data?.historySummary.totalItems ?? 0}
+          </span>
+        </div>
+        <div className="ai-worker-item-summary">
+          <strong>{copy.lifecycle}</strong>
           {(["queued", "running", "paused", "completed", "failed", "cancelled"] as const).map(
             (status) => (
-              <div className="ai-worker-count" key={`batch-${status}`}>
-                <span>{statusLabel(status)}</span>
-                <strong>{data?.batchSummary[status] ?? 0}</strong>
-                <small>{locale === "en" ? "batches" : "批次"}</small>
-              </div>
+              <span key={`history-batch-${status}`}>
+                {statusLabel(status)} <b>{data?.historySummary.batchStatusCounts[status] ?? 0}</b>
+              </span>
             ),
           )}
         </div>
         <div className="ai-worker-item-summary">
           <strong>{copy.itemCounts}</strong>
           {(["queued", "running", "completed", "failed"] as const).map((status) => (
-            <span key={`item-${status}`}>
-              {statusLabel(status)} <b>{data?.itemSummary[status] ?? 0}</b>
+            <span key={`history-item-${status}`}>
+              {statusLabel(status)} <b>{data?.historySummary.itemStatusCounts[status] ?? 0}</b>
             </span>
           ))}
         </div>
+        <p className="muted">
+          {copy.excludedItems.replace("{count}", String(data?.historySummary.excludedItems ?? 0))}
+        </p>
       </section>
 
       <section className="card ai-worker-section">
@@ -314,6 +434,17 @@ export default function AiWorkerMonitorClient({ locale }: { locale: Locale }) {
                     {copy.scan}: {batch.scanId?.slice(0, 12) ?? "—"} · Batch:{" "}
                     {batch.batchId.slice(0, 12)}
                   </p>
+                  {batch.stopReason ? (
+                    <p className="muted">
+                      {copy.stoppedWithReason.replace(
+                        "{reason}",
+                        formatAiStopReason(locale, batch.stopReason),
+                      )}
+                      {batch.stopRequestedAt
+                        ? ` · ${copy.stoppedAt}: ${formatDate(batch.stopRequestedAt, locale)}`
+                        : ""}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="ai-worker-batch-counts" aria-label={copy.itemCounts}>
                   {(["queued", "running", "completed", "failed"] as const).map((status) => (
@@ -321,6 +452,11 @@ export default function AiWorkerMonitorClient({ locale }: { locale: Locale }) {
                       {statusLabel(status)} <b>{batch.itemCounts[status]}</b>
                     </span>
                   ))}
+                  {batch.itemCounts.excludedItems ? (
+                    <span>
+                      {copy.excludedCount} <b>{batch.itemCounts.excludedItems}</b>
+                    </span>
+                  ) : null}
                   <span>
                     {copy.items} <b>{batch.itemCounts.total}</b>
                   </span>
@@ -405,7 +541,23 @@ export default function AiWorkerMonitorClient({ locale }: { locale: Locale }) {
                       <strong>{attempt.provider}</strong>
                       <small>{attempt.model}</small>
                     </td>
-                    <td>{attempt.scanHost ?? "—"}</td>
+                    <td>
+                      {attempt.scanHost ?? "—"}
+                      {attempt.itemId ? (
+                        <small>
+                          {copy.itemAttempt
+                            .replace("{item}", attempt.itemId)
+                            .replace("{attempt}", String(attempt.attemptNumber))}
+                        </small>
+                      ) : null}
+                      {attempt.itemId ? (
+                        <small>
+                          {copy.retryCycle.replace("{cycle}", String(attempt.retryCycle + 1))}
+                        </small>
+                      ) : null}
+                      <small>{sendStateLabel(attempt.sendState)}</small>
+                      {attempt.cancellationPending ? <small>{copy.cancelPending}</small> : null}
+                    </td>
                     <td>
                       {statusLabel(attempt.status)}
                       {attempt.httpStatus ? ` · ${copy.httpStatus} ${attempt.httpStatus}` : ""}

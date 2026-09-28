@@ -16,6 +16,16 @@ export const messages = {
     aiRunAllAgain: "按当前模型全部重跑 {count} 项",
     aiRunAllConfirm: "将重跑全部 {count} 项，包括之前成功的项目，可能产生额外费用。是否继续？",
     aiOldFailures: "旧批次失败 {count} 项；停止原因：{reason}",
+    aiReviewQueued: "AI 复核已排队，后台会逐项处理。",
+    aiReviewRunning: "AI 复核正在运行，后台会继续处理剩余项目。",
+    aiStopReasons: {
+      provider_changed: "模型配置已变化，旧批次已停止。",
+      paused: "任务已暂停，不会自动继续。",
+      scan_deleted: "所属扫描已删除。",
+      queue_exhausted: "没有待处理项目。",
+      superseded: "该批次已被后续明确发起的批次替代。",
+      unknown: "复核已停止。",
+    },
     teamNav: "团队",
     admin: "管理员",
     visitor: "访客",
@@ -322,6 +332,16 @@ export const messages = {
     aiRunAllAgain: "Rerun all {count} items with the current model",
     aiRunAllConfirm: "This reruns all {count} items, including previously successful items, and may incur additional cost. Continue?",
     aiOldFailures: "Previous batch failures: {count}; stop reason: {reason}",
+    aiReviewQueued: "AI review is queued and will process items in the background.",
+    aiReviewRunning: "AI review is running and will continue processing remaining items.",
+    aiStopReasons: {
+      provider_changed: "The model service settings changed; the previous batch was stopped.",
+      paused: "The task is paused and will not resume automatically.",
+      scan_deleted: "The associated scan was deleted.",
+      queue_exhausted: "There are no items left to process.",
+      superseded: "A later explicitly started batch replaced this batch.",
+      unknown: "The review stopped.",
+    },
     teamNav: "Team",
     admin: "Admin",
     visitor: "Visitor",
@@ -697,6 +717,13 @@ export function resolveLocale(urlLocale: unknown, cookieLocale?: unknown): Local
 
 export function getMessages(locale: Locale = DEFAULT_LOCALE) {
   return { ...messages[locale], homeDimensions: homeDimensions[locale] };
+}
+
+export function formatAiStopReason(locale: Locale, reason: unknown): string {
+  const localized = messages[locale].aiStopReasons;
+  return typeof reason === "string" && Object.hasOwn(localized, reason)
+    ? localized[reason as keyof typeof localized]
+    : localized.unknown;
 }
 
 export function t(locale: Locale, key: MessageKey): string {

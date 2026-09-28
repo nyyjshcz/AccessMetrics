@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { messages, type Locale } from "@/lib/i18n";
+import { formatAiStopReason, messages, type Locale } from "@/lib/i18n";
 
 type Provider = {
   id: string;
@@ -13,6 +13,27 @@ type Provider = {
   keyFingerprint: string;
   enabled: boolean;
 };
+
+export function isRunAiBatchSource(
+  batch: {
+    id?: unknown;
+    run_id?: unknown;
+    page_id?: unknown;
+    study_freeze_id?: unknown;
+  } | null | undefined,
+  runId: string,
+  latestBatchId: string | null | undefined,
+) {
+  return Boolean(
+    batch &&
+      typeof batch.id === "string" &&
+      batch.id.length > 0 &&
+      batch.id === latestBatchId &&
+      batch.run_id === runId &&
+      batch.page_id == null &&
+      batch.study_freeze_id == null,
+  );
+}
 
 function formatTimestamp(value: unknown, locale: Locale) {
   if (typeof value !== "string") return null;
@@ -108,6 +129,7 @@ export default function AiOverlayCard({
   const running = Number(stats?.running ?? 0);
   const delayed = Number(stats?.delayed ?? 0);
   const failed = Number(stats?.failed ?? 0);
+  const aiCandidateCount = Math.max(0, Number(data?.aiCandidateCount ?? 0));
   const providerRateLimitRpm = Number(stats?.providerRateLimitRpm ?? 0);
   const failedBatchHasPending = status === "failed" && queued + running > 0;
   const nextRetryAt = formatTimestamp(stats?.nextRetryAt, locale);
@@ -258,7 +280,7 @@ export default function AiOverlayCard({
     if (
       mode === "all" &&
       !window.confirm(
-        copy.aiRunAllConfirm.replace("{count}", String(data?.totalIncomplete ?? 0)),
+        copy.aiRunAllConfirm.replace("{count}", String(aiCandidateCount)),
       )
     ) {
       actionLock.current = false;
@@ -274,7 +296,10 @@ export default function AiOverlayCard({
           providerConfigId: providerId,
           mode,
           requestId: crypto.randomUUID(),
-          ...(batch?.id ? { sourceBatchId: batch.id } : {}),
+          ...(mode === "remaining" &&
+          isRunAiBatchSource(batch, runId, data?.latestBatchId)
+            ? { sourceBatchId: batch?.id }
+            : {}),
         }),
       });
       const value = await response.json();
@@ -296,9 +321,7 @@ export default function AiOverlayCard({
         Number(returnedStats?.queued ?? 0) + Number(returnedStats?.running ?? 0);
       setMessage(
         returnedStatus === "queued" || returnedStatus === "running"
-          ? en
-            ? "An AI review is already active for this scan; it was not stopped or duplicated."
-            : "当前扫描已有正在运行的 AI 复核；任务没有停止，也没有重复创建。"
+          ? returnedStatus === "queued" ? copy.aiReviewQueued : copy.aiReviewRunning
           : returnedStatus === "failed"
             ? returnedPending > 0
               ? en
@@ -553,7 +576,9 @@ export default function AiOverlayCard({
           ) : null}{" "}
           {canCreateWithCurrentConfig && hasBatch && status !== "queued" && status !== "running" ? (
             <>
-              {status !== "completed" ? (
+              {status !== "completed" &&
+              isRunAiBatchSource(batch, runId, data?.latestBatchId) &&
+              !(status === "paused" && !providerRemoved && currentProviderMatchesBatch) ? (
                 <button
                   type="button"
                   className="secondary"
@@ -570,7 +595,7 @@ export default function AiOverlayCard({
                   : "启动中…"
                 : copy.aiRunAllAgain.replace(
                     "{count}",
-                    String(Math.max(0, Number(data?.totalIncomplete ?? 0) - Number(data?.manualResolved ?? 0))),
+                    String(aiCandidateCount),
                   )}
               </button>
             </>
@@ -599,7 +624,7 @@ export default function AiOverlayCard({
             <p className="muted">
               {copy.aiOldFailures
                 .replace("{count}", String(failed))
-                .replace("{reason}", String(batch.stop_reason))}
+                .replace("{reason}", formatAiStopReason(locale, batch.stop_reason))}
             </p>
           ) : null}
           {status === "completed" ? (

@@ -724,13 +724,30 @@ function finishWhenNoQueuedItems(db: ReturnType<typeof getDb>, batchId: string, 
   return pending;
 }
 
-export function createAiBatch(input: {
+type LegacyAiBatchInput = {
   runId: string;
   providerConfigId: string;
-  mode?: "remaining" | "all";
-  requestId?: string;
+};
+
+type ExplicitAiBatchInput = LegacyAiBatchInput & {
+  mode: "remaining" | "all";
+  requestId: string;
   sourceBatchId?: string;
-}) {
+};
+
+type AiBatchCreationResult = ReturnType<typeof getAiBatch>;
+type EmptyAiBatchResult = {
+  empty: true;
+  scopeCount: 0;
+  stats: Pick<AiBatchSummary, "total" | "completed" | "queued" | "running" | "failed">;
+};
+type ExplicitAiBatchResult = AiBatchCreationResult | EmptyAiBatchResult;
+
+export function createAiBatch(input: LegacyAiBatchInput): AiBatchCreationResult;
+export function createAiBatch(input: ExplicitAiBatchInput): ExplicitAiBatchResult;
+export function createAiBatch(
+  input: LegacyAiBatchInput | ExplicitAiBatchInput,
+): ExplicitAiBatchResult {
   if (!input.runId) throw new AppError("AI_BATCH_SCOPE_INVALID", "AI batch 必须绑定扫描", 422);
   assertRunMutable(input.runId);
   const run = getDb().prepare("SELECT id FROM scan_runs WHERE id=?").get(input.runId);
@@ -740,14 +757,8 @@ export function createAiBatch(input: {
   const snapshotJson = canonicalize(snapshot);
   const snapshotHash = sha256(snapshotJson);
   const promptHash = AI_PROMPT_HASH;
-  if (input.mode && input.requestId)
-    return createExplicitAiBatch(input as {
-      runId: string;
-      providerConfigId: string;
-      mode: "remaining" | "all";
-      requestId: string;
-      sourceBatchId?: string;
-    }, provider, snapshotJson, snapshotHash, promptHash);
+  if ("mode" in input)
+    return createExplicitAiBatch(input, snapshotHash, promptHash);
   const batchKey = makeBatchKey(input.runId, snapshotHash, promptHash);
   const staleTimestamp = now();
   transaction((db) => {
@@ -852,94 +863,176 @@ export function createAiBatch(input: {
 }
 
 function createExplicitAiBatch(
-  input: {
-    runId: string;
-    providerConfigId: string;
-    mode: "remaining" | "all";
-    requestId: string;
-    sourceBatchId?: string;
-  },
-  provider: AiProviderRow,
-  snapshotJson: string,
+  input: ExplicitAiBatchInput,
   snapshotHash: string,
   promptHash: string,
-) {
+): ExplicitAiBatchResult {
   if (!input.requestId.trim() || input.requestId.length > 128)
     throw new AppError("INVALID_INPUT", "requestId 格式无效", 422);
   if (input.mode !== "remaining" && input.mode !== "all")
     throw new AppError("INVALID_INPUT", "mode 必须是 remaining 或 all", 422);
   const db = getDb();
-  const replay = db.prepare(
-    "SELECT id FROM ai_review_batches WHERE run_id=? AND action_request_id=?",
-  ).get(input.runId, input.requestId) as { id: string } | undefined;
-  if (replay) return getAiBatch(replay.id);
+  return db.transaction(() => {
+    const currentProvider = getProviderRow(input.providerConfigId, true);
+    const currentSnapshotJson = canonicalize(providerSnapshot(currentProvider));
+    const currentSnapshotHash = sha256(currentSnapshotJson);
+    if (currentSnapshotHash !== snapshotHash)
+      throw new AppError("AI_PROVIDER_CHANGED", "模型配置刚刚发生变化，请刷新后重新操作", 409);
 
-  let source: AiBatchRow | undefined;
-  if (input.sourceBatchId) {
-    source = db.prepare("SELECT * FROM ai_review_batches WHERE id=?").get(input.sourceBatchId) as AiBatchRow | undefined;
-    if (!source || source.run_id !== input.runId || source.page_id || source.study_freeze_id)
-      throw new AppError("AI_BATCH_SOURCE_INVALID", "来源批次不属于当前扫描", 409);
-    const newest = db.prepare(
-      `SELECT id FROM ai_review_batches WHERE run_id=? AND page_id IS NULL AND study_freeze_id IS NULL
-       ORDER BY created_at DESC,id DESC LIMIT 1`,
-    ).get(input.runId) as { id: string } | undefined;
-    if (newest?.id !== source.id)
-      throw new AppError("AI_BATCH_SOURCE_STALE", "来源批次已过期，请刷新复核状态", 409);
-  }
-
-  const manual = loadLocalManualVerdicts(input.runId);
-  const nodes = queryIncompleteNodes(input.runId).filter((node) => !manual.has(node.id));
-  let selected = nodes;
-  if (input.mode === "remaining" && source) {
-    const unfinished = db.prepare(
-      "SELECT result_node_id FROM ai_review_items WHERE batch_id=? AND status<>'completed' AND exclusion_reason IS NULL",
-    ).all(source.id) as Array<{ result_node_id: string }>;
-    const remainingIds = new Set(unfinished.map((item) => item.result_node_id));
-    selected = nodes.filter((node) => remainingIds.has(node.id));
-  }
-  if (selected.length === 0)
-    return { empty: true as const, scopeCount: 0, stats: { total: 0, completed: 0, queued: 0, running: 0, failed: 0 } };
-
-  const timestamp = now();
-  const batchId = id("aibatch");
-  const batchKey = makeBatchKey(input.runId, snapshotHash, promptHash, batchId);
-  transaction((tx) => {
+    const sourceBatchId = input.mode === "remaining" ? input.sourceBatchId ?? null : null;
+    const replay = db.prepare(
+      `SELECT mode,provider_config_id,provider_snapshot_hash,source_batch_id,
+              result_batch_id,empty_result_json
+       FROM ai_batch_action_requests WHERE run_id=? AND request_id=?`,
+    ).get(input.runId, input.requestId) as {
+      mode: string;
+      provider_config_id: string | null;
+      provider_snapshot_hash: string | null;
+      source_batch_id: string | null;
+      result_batch_id: string | null;
+      empty_result_json: string | null;
+    } | undefined;
+    if (replay) {
+      if (
+        replay.mode === "legacy" ||
+        replay.mode !== input.mode ||
+        replay.provider_config_id !== currentProvider.id ||
+        replay.provider_snapshot_hash !== currentSnapshotHash ||
+        replay.source_batch_id !== sourceBatchId
+      )
+        throw new AppError(
+          "AI_BATCH_REQUEST_CONFLICT",
+          "该操作编号已用于不同的复核操作，请刷新后重新开始",
+          409,
+        );
+      if (replay.result_batch_id) return getAiBatch(replay.result_batch_id);
+      if (replay.empty_result_json) {
+        try {
+          const savedResult: unknown = JSON.parse(replay.empty_result_json);
+          if (isEmptyAiBatchResult(savedResult)) return savedResult;
+        } catch {
+          // Fall through to the same integrity error for malformed JSON.
+        }
+        throw new AppError("AI_BATCH_REQUEST_CONFLICT", "复核操作记录损坏，请使用新的操作重试", 409);
+      }
+      throw new AppError("AI_BATCH_REQUEST_CONFLICT", "复核操作记录不完整，请使用新的操作重试", 409);
+    }
     assertRunMutable(input.runId);
-    const duplicate = tx.prepare(
-      "SELECT id FROM ai_review_batches WHERE run_id=? AND action_request_id=?",
-    ).get(input.runId, input.requestId) as { id: string } | undefined;
-    if (duplicate) return;
-    const live = tx.prepare(
+
+    if (input.mode === "remaining" && !sourceBatchId)
+      throw new AppError("AI_BATCH_SOURCE_REQUIRED", "继续未完成项目必须指定来源批次", 409);
+
+    let source: AiBatchRow | undefined;
+    if (sourceBatchId) {
+      source = db.prepare("SELECT * FROM ai_review_batches WHERE id=?").get(sourceBatchId) as AiBatchRow | undefined;
+      if (!source || source.run_id !== input.runId || source.page_id || source.study_freeze_id)
+        throw new AppError("AI_BATCH_SOURCE_INVALID", "来源批次不属于当前扫描", 409);
+      const newest = db.prepare(
+        `SELECT id FROM ai_review_batches WHERE run_id=? AND page_id IS NULL AND study_freeze_id IS NULL
+         ORDER BY created_at DESC,id DESC LIMIT 1`,
+      ).get(input.runId) as { id: string } | undefined;
+      if (newest?.id !== source.id)
+        throw new AppError("AI_BATCH_SOURCE_STALE", "来源批次已过期，请刷新复核状态", 409);
+    }
+
+    const manual = loadLocalManualVerdicts(input.runId);
+    const nodes = queryIncompleteNodes(input.runId).filter((node) => !manual.has(node.id));
+    let selected = nodes;
+    if (input.mode === "remaining" && source) {
+      const unfinished = db.prepare(
+        "SELECT result_node_id FROM ai_review_items WHERE batch_id=? AND status<>'completed' AND exclusion_reason IS NULL",
+      ).all(source.id) as Array<{ result_node_id: string }>;
+      const remainingIds = new Set(unfinished.map((item) => item.result_node_id));
+      selected = nodes.filter((node) => remainingIds.has(node.id));
+    }
+
+    const timestamp = now();
+    const empty = selected.length === 0;
+    const live = db.prepare(
       `SELECT id FROM ai_review_batches WHERE run_id=? AND page_id IS NULL AND study_freeze_id IS NULL
        AND status IN ('queued','running','paused')`,
     ).all(input.runId) as Array<{ id: string }>;
-    for (const batch of live) cancelBatchWork(tx, batch.id, timestamp);
-    assertNoOtherActiveBatch(tx, input.runId);
-    tx.prepare(
+    for (const batch of live) {
+      cancelBatchWork(db, batch.id, timestamp);
+      removeHumanResolvedQueueItems(db, batch.id, input.runId);
+    }
+    if (source && !live.some((batch) => batch.id === source?.id))
+      removeHumanResolvedQueueItems(db, source.id, input.runId);
+    assertNoOtherActiveBatch(db, input.runId);
+    if (empty) {
+      const emptyResult = {
+        empty: true as const,
+        scopeCount: 0 as const,
+        stats: { total: 0, completed: 0, queued: 0, running: 0, failed: 0 },
+      };
+      db.prepare(
+        `INSERT INTO ai_batch_action_requests
+         (run_id,request_id,mode,provider_config_id,provider_snapshot_hash,source_batch_id,empty_result_json,created_at)
+         VALUES (?,?,?,?,?,?,?,?)`,
+      ).run(
+        input.runId,
+        input.requestId,
+        input.mode,
+        currentProvider.id,
+        currentSnapshotHash,
+        sourceBatchId,
+        JSON.stringify(emptyResult),
+        timestamp,
+      );
+      return emptyResult;
+    }
+
+    const batchId = id("aibatch");
+    const batchKey = makeBatchKey(input.runId, currentSnapshotHash, promptHash, batchId);
+    db.prepare(
       `INSERT INTO ai_review_batches(id,batch_key,run_id,page_id,study_freeze_id,provider_config_id,
        provider_snapshot_json,provider_snapshot_hash,prompt_version,prompt_hash,evidence_version,status,
        created_at,updated_at,completed_at,action_request_id,source_batch_id)
        VALUES (?,?,?,NULL,NULL,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
-      batchId, batchKey, input.runId, provider.id, snapshotJson, snapshotHash, AI_PROMPT_VERSION,
+      batchId, batchKey, input.runId, currentProvider.id, currentSnapshotJson, currentSnapshotHash, AI_PROMPT_VERSION,
       promptHash, AI_EVIDENCE_VERSION, "queued", timestamp, timestamp, null, input.requestId,
       source?.id ?? null,
     );
-    const insert = tx.prepare(
+    db.prepare(
+      `INSERT INTO ai_batch_action_requests
+       (run_id,request_id,mode,provider_config_id,provider_snapshot_hash,source_batch_id,result_batch_id,created_at)
+       VALUES (?,?,?,?,?,?,?,?)`,
+    ).run(
+      input.runId,
+      input.requestId,
+      input.mode,
+      currentProvider.id,
+      currentSnapshotHash,
+      sourceBatchId,
+      batchId,
+      timestamp,
+    );
+
+    const insert = db.prepare(
       `INSERT INTO ai_review_items(id,batch_id,result_node_id,status,verdict,reason,evidence_hash,
        lease_owner,lease_until,attempt_count,response_hash,last_error,created_at,updated_at,completed_at)
        VALUES (?,?,?,'queued',NULL,NULL,?,NULL,NULL,0,NULL,NULL,?,?,NULL)`,
     );
     for (const node of selected)
       insert.run(id("aiitem"), batchId, node.id, node.ai_evidence_hash, timestamp, timestamp);
-    // Preserve cancelled or paused source history while ensuring human-final
-    // verdicts are never copied into a new executable batch.
-    if (source) removeHumanResolvedQueueItems(tx, source.id, input.runId);
-  });
-  const existing = db.prepare(
-    "SELECT id FROM ai_review_batches WHERE run_id=? AND action_request_id=?",
-  ).get(input.runId, input.requestId) as { id: string } | undefined;
-  return getAiBatch(existing?.id ?? batchId);
+    return getAiBatch(batchId);
+  }).immediate();
+}
+
+function isEmptyAiBatchResult(value: unknown): value is EmptyAiBatchResult {
+  if (!value || typeof value !== "object") return false;
+  if (!("empty" in value) || value.empty !== true) return false;
+  if (!("scopeCount" in value) || value.scopeCount !== 0) return false;
+  if (!("stats" in value) || !value.stats || typeof value.stats !== "object") return false;
+  const stats = value.stats;
+  return (
+    "total" in stats && typeof stats.total === "number" &&
+    "completed" in stats && typeof stats.completed === "number" &&
+    "queued" in stats && typeof stats.queued === "number" &&
+    "running" in stats && typeof stats.running === "number" &&
+    "failed" in stats && typeof stats.failed === "number"
+  );
 }
 
 export function pauseAiBatch(batchId: string) {
@@ -2019,60 +2112,32 @@ export function loadAiOverlayForBatch(batchId: string): AiOverlay {
   return resultNodeOverlay(rows);
 }
 
-export function summarizeAiRun(runId: string, providerConfigId?: string) {
+export function summarizeAiRun(runId: string, _providerConfigId?: string) {
   const db = getDb();
+  const runBatch = db
+    .prepare(
+      `SELECT b.* FROM ai_review_batches b
+       WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL
+       ORDER BY b.created_at DESC,b.id DESC LIMIT 1`,
+    )
+    .get(runId) as AiBatchRow | undefined;
   const totalRow = db
     .prepare(
       "SELECT COUNT(*) count FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id WHERE rr.run_id=? AND rr.result_type='incomplete'",
     )
     .get(runId) as { count: number };
-  let runBatch: any;
-  const activeBatch = db
-    .prepare(
-      `SELECT b.* FROM ai_review_batches b
-       WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL
-         AND b.status IN ('queued','running')
-       ORDER BY b.created_at DESC,b.id DESC LIMIT 1`,
-    )
-    .get(runId) as any;
-  if (activeBatch) {
-    // A run has one active review regardless of which provider the user has
-    // currently selected. Its provider snapshot is immutable for the batch.
-    runBatch = activeBatch;
-  } else {
-    if (providerConfigId) {
-      const provider = getProviderRow(providerConfigId);
-      const candidates = db
-        .prepare(
-          `SELECT b.* FROM ai_review_batches b
-           WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL
-             AND b.provider_config_id=?
-           ORDER BY b.created_at DESC,b.id DESC`,
-        )
-        .all(runId, providerConfigId) as any[];
-      runBatch = candidates.find((batch) =>
-        providerSnapshotHashMatches(provider, batch.provider_snapshot_hash),
-      );
-    }
-    // If the selected provider was edited or replaced, keep the last batch
-    // visible so the user can see its frozen settings and explicitly restart.
-    if (!runBatch)
-      runBatch = db
-        .prepare(
-          `SELECT b.* FROM ai_review_batches b
-           WHERE b.study_freeze_id IS NULL AND b.run_id=? AND b.page_id IS NULL
-           ORDER BY b.created_at DESC,b.id DESC LIMIT 1`,
-        )
-        .get(runId) as any;
-  }
   const aiOverlay = loadAiOverlayForRun(runId);
   const overlay = loadEffectiveOverlayForRun(runId);
+  const manual = loadLocalManualVerdicts(runId);
+  const aiCandidateCount = queryIncompleteNodes(runId).filter((node) => !manual.has(node.id)).length;
   return {
     batch: runBatch ? { ...runBatch, stats: batchStats(runBatch.id) } : null,
+    latestBatchId: runBatch?.id ?? null,
     totalIncomplete: Number(totalRow.count),
     aiOverlay,
     overlay,
     manualResolved: loadLocalManualVerdicts(runId).size,
+    aiCandidateCount,
   };
 }
 

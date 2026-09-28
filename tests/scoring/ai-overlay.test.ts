@@ -6,6 +6,8 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { canonicalize, sha256 } from "@/lib/canonical";
+import { messages } from "@/lib/i18n";
+import * as i18n from "@/lib/i18n";
 
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "accessmetrics-ai-test-"));
 process.env.DATABASE_URL = path.join(testRoot, "test.db");
@@ -116,15 +118,15 @@ describe("thin AI overlay", () => {
   beforeAll(() => dbModule.migrate());
   afterAll(() => dbModule.closeDb());
 
-  it("migrates lifecycle persistence through version 036 idempotently", () => {
+  it("migrates lifecycle persistence through version 037 idempotently", () => {
     const db = dbModule.getDb();
     expect(
       (
         db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
           version: number;
         }
-      ).version,
-    ).toBe(36);
+    ).version,
+    ).toBe(37);
 
     // Recreate the pre-033 schema to exercise upgrading an installed 032 database.
     db.exec(`
@@ -134,10 +136,11 @@ describe("thin AI overlay", () => {
       DROP INDEX IF EXISTS idx_ai_items_due_queue;
       DROP TABLE ai_api_attempts;
       DROP TABLE ai_worker_instances;
+      DROP TABLE ai_batch_action_requests;
       ALTER TABLE ai_review_items DROP COLUMN next_retry_at;
       ALTER TABLE ai_review_items DROP COLUMN retry_cycle;
       ALTER TABLE ai_review_batches DROP COLUMN cancel_requested_at;
-      DELETE FROM schema_migrations WHERE version IN (33,34,35,36);
+      DELETE FROM schema_migrations WHERE version IN (33,34,35,36,37);
     `);
     expect(
       (
@@ -155,7 +158,7 @@ describe("thin AI overlay", () => {
           version: number;
         }
       ).version,
-    ).toBe(36);
+    ).toBe(37);
     const tableColumns = (table: string) =>
       (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
         (column) => column.name,
@@ -250,6 +253,7 @@ describe("thin AI overlay", () => {
       DROP INDEX IF EXISTS idx_ai_items_batch_revision;
       DROP INDEX IF EXISTS idx_ai_batches_source;
       DROP INDEX IF EXISTS idx_ai_attempts_run_send_active;
+      DROP TABLE IF EXISTS ai_batch_action_requests;
     `);
     const dropIfPresent = (table: string, column: string) => {
       const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -268,7 +272,7 @@ describe("thin AI overlay", () => {
       dropIfPresent("ai_review_items", column);
     dropIfPresent("scan_jobs", "deletion_requested_at");
     dropIfPresent("ai_api_attempts", "send_started_at");
-    db.prepare("DELETE FROM schema_migrations WHERE version IN (34,35,36)").run();
+    db.prepare("DELETE FROM schema_migrations WHERE version IN (34,35,36,37)").run();
 
     expect(
       (
@@ -289,6 +293,13 @@ describe("thin AI overlay", () => {
     expect(
       (
         db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version=36").get() as {
+          count: number;
+        }
+      ).count,
+    ).toBe(1);
+    expect(
+      (
+        db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version=37").get() as {
           count: number;
         }
       ).count,
@@ -409,6 +420,34 @@ describe("thin AI overlay", () => {
     ).toBe(1);
   });
 
+  it("creates the action idempotency ledger and safely backfills legacy action IDs", () => {
+    const db = dbModule.getDb();
+    const { run } = fixture(1);
+    const configured = provider();
+    const batch = ai.createAiBatch({ runId: run.id, providerConfigId: configured.id });
+    db.prepare("UPDATE ai_review_batches SET action_request_id=? WHERE id=?").run(
+      "legacy-action-id",
+      batch.batch.id,
+    );
+    db.exec("DROP TABLE ai_batch_action_requests");
+    db.prepare("DELETE FROM schema_migrations WHERE version=37").run();
+
+    dbModule.migrate();
+    dbModule.migrate();
+
+    expect(
+      db
+        .prepare("SELECT mode,request_id,result_batch_id FROM ai_batch_action_requests WHERE run_id=?")
+        .get(run.id),
+    ).toEqual({ mode: "legacy", request_id: "legacy-action-id", result_batch_id: batch.batch.id });
+    expect(
+      (db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version=37").get() as {
+        count: number;
+      }).count,
+    ).toBe(1);
+    ai.pauseAiBatch(batch.batch.id);
+  });
+
   it("adds evidence columns and the AI persistence tables", () => {
     const tables = (
       dbModule
@@ -418,6 +457,7 @@ describe("thin AI overlay", () => {
     ).map((row) => row.name);
     expect(tables.sort()).toEqual([
       "ai_api_attempts",
+      "ai_batch_action_requests",
       "ai_provider_configs",
       "ai_review_batches",
       "ai_review_items",
@@ -520,8 +560,12 @@ describe("thin AI overlay", () => {
     const item = fixture(3, true);
     const config = provider();
     const requestId = crypto.randomUUID();
-    const first = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id, mode: "all", requestId });
-    const replay = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id, mode: "all", requestId });
+    const firstResult = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id, mode: "all", requestId });
+    if (!("batch" in firstResult)) throw new Error("expected first all action to create a batch");
+    const first = firstResult;
+    const replayResult = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id, mode: "all", requestId });
+    if (!("batch" in replayResult)) throw new Error("expected replay to return its batch");
+    const replay = replayResult;
     expect(replay.batch.id).toBe(first.batch.id);
     const firstItem = dbModule.getDb().prepare(
       "SELECT id,result_node_id FROM ai_review_items WHERE batch_id=? ORDER BY id LIMIT 1",
@@ -529,19 +573,45 @@ describe("thin AI overlay", () => {
     dbModule.getDb().prepare(
       "UPDATE ai_review_items SET status='completed',verdict='problem',completed_at=? WHERE id=?",
     ).run(new Date().toISOString(), firstItem.id);
-    const second = ai.createAiBatch({
+    const secondResult = ai.createAiBatch({
       runId: item.run.id,
       providerConfigId: config.id,
       mode: "all",
       requestId: crypto.randomUUID(),
       sourceBatchId: first.batch.id,
     });
+    if (!("batch" in secondResult)) throw new Error("expected second all action to create a batch");
+    const second = secondResult;
     expect(second.batch.id).not.toBe(first.batch.id);
     expect(second.stats.total).toBe(3);
     expect(dbModule.getDb().prepare(
       "SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND result_node_id=?",
     ).get(second.batch.id, firstItem.result_node_id)).toEqual({ count: 1 });
     ai.pauseAiBatch(second.batch.id);
+  });
+
+  it("uses accurate queued and running feedback in both locales", () => {
+    const zh = messages["zh-CN"];
+    const en = messages.en;
+    expect(zh.aiReviewQueued).toContain("已排队");
+    expect(zh.aiReviewRunning).toContain("正在运行");
+    expect(en.aiReviewQueued).toMatch(/queued/i);
+    expect(en.aiReviewRunning).toMatch(/running/i);
+    expect(`${zh.aiReviewQueued}${zh.aiReviewRunning}`).not.toMatch(/没有重复创建/);
+    expect(`${en.aiReviewQueued}${en.aiReviewRunning}`).not.toMatch(/not stopped or duplicated/i);
+  });
+
+  it("localizes known stop reasons and hides unknown internal values", () => {
+    const format = (i18n as Record<string, unknown>).formatAiStopReason as
+      | ((locale: "zh-CN" | "en", reason: unknown) => string)
+      | undefined;
+    expect(format).toBeTypeOf("function");
+    expect(format!("zh-CN", "provider_changed")).toContain("模型配置");
+    expect(format!("en", "paused")).toMatch(/paused/i);
+    expect(format!("en", "scan_deleted")).toMatch(/scan was deleted/i);
+    expect(format!("zh-CN", "queue_exhausted")).toContain("没有待处理");
+    expect(format!("en", "secret_internal_reason")).toBe("The review stopped.");
+    expect(format!("en", "secret_internal_reason")).not.toContain("secret_internal_reason");
   });
 
   it("keeps the raw incomplete count while AI verdicts change the effective score", () => {

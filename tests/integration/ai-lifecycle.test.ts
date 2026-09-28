@@ -17,6 +17,7 @@ const ai = await import("@/lib/ai-overlay");
 const providerRoute = await import("@/app/api/ai/providers/[providerId]/route");
 const batchRoute = await import("@/app/api/ai/batches/[batchId]/route");
 const reviewRoute = await import("@/app/api/runs/[runId]/ai-review/route");
+const aiOverlayComponent = await import("@/components/ai-overlay-card");
 
 function fixture(nodeCount = 2) {
   const origin = `https://ai-lifecycle-${crypto.randomUUID()}.example`;
@@ -124,13 +125,16 @@ describe("AI lifecycle integration", () => {
     const { run } = fixture(2);
     const configured = provider();
     const requestId = crypto.randomUUID();
-    const firstResponse = await postReview(run.id, configured.id, { mode: "all", requestId });
-    const first = await firstResponse.json();
-    expect(firstResponse.status, JSON.stringify(first)).toBe(201);
-
-    const replayResponse = await postReview(run.id, configured.id, { mode: "all", requestId });
-    const replay = await replayResponse.json();
-    expect(replay.batch.id).toBe(first.batch.id);
+    const concurrentResponses = await Promise.all([
+      postReview(run.id, configured.id, { mode: "all", requestId }),
+      postReview(run.id, configured.id, { mode: "all", requestId }),
+    ]);
+    const concurrentResults = await Promise.all(concurrentResponses.map((response) => response.json()));
+    expect(concurrentResponses.map((response) => response.status)).toEqual([201, 201]);
+    expect(concurrentResults[0].batch.id).toBe(concurrentResults[1].batch.id);
+    expect(dbModule.getDb().prepare("SELECT COUNT(*) count FROM ai_review_batches WHERE run_id=?").get(run.id))
+      .toEqual({ count: 1 });
+    const first = concurrentResults[0];
 
     ai.pauseAiBatch(first.batch.id);
     const secondResponse = await postReview(run.id, configured.id, {
@@ -142,6 +146,192 @@ describe("AI lifecycle integration", () => {
     expect(second.stats.total).toBe(2);
     expect(dbModule.getDb().prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?").get(first.batch.id)).toEqual({ count: 2 });
     ai.pauseAiBatch(second.batch.id);
+  });
+
+  it("rejects reusing an action request ID for a different operation", async () => {
+    const { run } = fixture(2);
+    const configured = provider("model-a");
+    const alternate = provider("model-b");
+    const requestId = crypto.randomUUID();
+    const original = await postReview(run.id, configured.id, { mode: "all", requestId });
+    expect(original.status).toBe(201);
+
+    const changedMode = await postReview(run.id, configured.id, {
+      mode: "remaining",
+      requestId,
+    });
+    expect(changedMode.status).toBe(409);
+    expect(await changedMode.json()).toMatchObject({
+      error: { code: "AI_BATCH_REQUEST_CONFLICT" },
+    });
+
+    const changedProvider = await postReview(run.id, alternate.id, {
+      mode: "all",
+      requestId,
+    });
+    expect(changedProvider.status).toBe(409);
+    expect(await changedProvider.json()).toMatchObject({
+      error: { code: "AI_BATCH_REQUEST_CONFLICT" },
+    });
+    expect(
+      dbModule
+        .getDb()
+        .prepare("SELECT COUNT(*) count FROM ai_review_batches WHERE run_id=?")
+        .get(run.id),
+    ).toEqual({ count: 1 });
+    const originalBatch = (await original.json()).batch;
+    ai.pauseAiBatch(originalBatch.id);
+  });
+
+  it("rejects remaining requests without a source batch instead of treating them as all", async () => {
+    const { run } = fixture(2);
+    const configured = provider();
+    const response = await postReview(run.id, configured.id, {
+      mode: "remaining",
+      requestId: crypto.randomUUID(),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "AI_BATCH_SOURCE_REQUIRED" } });
+    expect(dbModule.getDb().prepare("SELECT COUNT(*) count FROM ai_review_batches WHERE run_id=?").get(run.id))
+      .toEqual({ count: 0 });
+  });
+
+  it("only treats a local scan batch as a remaining-action source", () => {
+    expect(aiOverlayComponent.isRunAiBatchSource({ id: "batch", run_id: "run", page_id: null, study_freeze_id: null }, "run", "batch"))
+      .toBe(true);
+    expect(aiOverlayComponent.isRunAiBatchSource({ id: "batch", run_id: "run", page_id: null, study_freeze_id: null }, "run", "stale"))
+      .toBe(false);
+    expect(aiOverlayComponent.isRunAiBatchSource({ id: "batch", run_id: "other", page_id: null, study_freeze_id: null }, "run", "batch"))
+      .toBe(false);
+    expect(aiOverlayComponent.isRunAiBatchSource({ id: "batch", run_id: "run", page_id: "page", study_freeze_id: null }, "run", "batch"))
+      .toBe(false);
+    expect(aiOverlayComponent.isRunAiBatchSource(null, "run", null)).toBe(false);
+  });
+
+  it("uses the latest batch as remaining source after switching back to an older provider", async () => {
+    const { run } = fixture(1);
+    const firstProvider = provider("model-a");
+    const first = ai.createAiBatch({ runId: run.id, providerConfigId: firstProvider.id });
+    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='completed' WHERE id=?").run(first.batch.id);
+    const secondProvider = provider("model-b");
+    const second = ai.createAiBatch({ runId: run.id, providerConfigId: secondProvider.id });
+    dbModule.getDb().prepare(
+      "UPDATE ai_review_batches SET status='paused',created_at='2099-01-01T00:00:00.000Z' WHERE id=?",
+    ).run(second.batch.id);
+
+    const summary = ai.summarizeAiRun(run.id, firstProvider.id);
+    expect(summary.batch?.id).toBe(second.batch.id);
+    expect(summary.latestBatchId).toBe(second.batch.id);
+    expect(aiOverlayComponent.isRunAiBatchSource(summary.batch, run.id, summary.latestBatchId)).toBe(true);
+
+    const continuedResponse = await postReview(run.id, firstProvider.id, {
+      mode: "remaining",
+      requestId: crypto.randomUUID(),
+      sourceBatchId: summary.batch!.id,
+    });
+    expect(continuedResponse.status).toBe(201);
+    const continued = await continuedResponse.json();
+    expect(continued.batch.source_batch_id).toBe(second.batch.id);
+    expect(continued.stats.total).toBe(1);
+    ai.pauseAiBatch(continued.batch.id);
+  });
+
+  it("rejects a source batch owned by another scan", async () => {
+    const firstRun = fixture(1).run;
+    const secondRun = fixture(1).run;
+    const configured = provider();
+    const sourceResponse = await postReview(firstRun.id, configured.id);
+    const source = (await sourceResponse.json()).batch;
+    const response = await postReview(secondRun.id, configured.id, {
+      mode: "remaining",
+      requestId: crypto.randomUUID(),
+      sourceBatchId: source.id,
+    });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe("AI_BATCH_SOURCE_INVALID");
+    ai.pauseAiBatch(source.id);
+  });
+
+  it("rejects a stale remaining source when concurrent successor actions race", async () => {
+    const { run } = fixture(2);
+    const configured = provider();
+    const originalResponse = await postReview(run.id, configured.id);
+    const original = (await originalResponse.json()).batch;
+    ai.pauseAiBatch(original.id);
+
+    const responses = await Promise.all([
+      postReview(run.id, configured.id, {
+        mode: "remaining",
+        requestId: crypto.randomUUID(),
+        sourceBatchId: original.id,
+      }),
+      postReview(run.id, configured.id, {
+        mode: "remaining",
+        requestId: crypto.randomUUID(),
+        sourceBatchId: original.id,
+      }),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
+    const rejected = await responses.find((response) => response.status === 409)!.json();
+    expect(rejected.error.code).toBe("AI_BATCH_SOURCE_STALE");
+    const accepted = await responses.find((response) => response.status === 201)!.json();
+    ai.pauseAiBatch(accepted.batch.id);
+  });
+
+  it("replays an empty-range request unchanged after manual verdicts change", async () => {
+    const { run } = fixture(1);
+    const configured = provider();
+    const node = dbModule.getDb().prepare(
+      `SELECT n.id FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id
+       WHERE rr.run_id=? AND rr.result_type='incomplete'`,
+    ).get(run.id) as { id: string };
+    const sourceResponse = await postReview(run.id, configured.id, { mode: "all" });
+    const source = (await sourceResponse.json()).batch;
+    dbModule.getDb().prepare(
+      "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,is_current,reviewed_at) VALUES (?,?,NULL,'ad_hoc','local','not_problem','final',1,1,?)",
+    ).run(`manual_${crypto.randomUUID()}`, node.id, new Date().toISOString());
+    const requestId = crypto.randomUUID();
+    const firstResponse = await postReview(run.id, configured.id, {
+      mode: "remaining",
+      sourceBatchId: source.id,
+      requestId,
+    });
+    expect(firstResponse.status).toBe(200);
+    const first = await firstResponse.json();
+    expect(first).toMatchObject({ empty: true, scopeCount: 0 });
+    expect(dbModule.getDb().prepare(
+      "SELECT status,exclusion_reason FROM ai_review_items WHERE batch_id=? AND result_node_id=?",
+    ).get(source.id, node.id)).toEqual({ status: "queued", exclusion_reason: "human_final" });
+    expect(dbModule.getDb().prepare("SELECT status FROM ai_review_batches WHERE id=?").get(source.id))
+      .toEqual({ status: "cancelled" });
+
+    dbModule.getDb().prepare("UPDATE manual_reviews SET is_current=0 WHERE result_node_id=?").run(node.id);
+    dbModule.getDb().prepare(
+      "UPDATE ai_review_items SET exclusion_reason=NULL WHERE batch_id=? AND result_node_id=?",
+    ).run(source.id, node.id);
+    const replayResponse = await postReview(run.id, configured.id, {
+      mode: "remaining",
+      sourceBatchId: source.id,
+      requestId,
+    });
+    expect(replayResponse.status).toBe(200);
+    expect(await replayResponse.json()).toEqual(first);
+    expect(dbModule.getDb().prepare("SELECT COUNT(*) count FROM ai_review_batches WHERE run_id=?").get(run.id))
+      .toEqual({ count: 1 });
+    expect(dbModule.getDb().prepare("SELECT status FROM ai_review_batches WHERE id=?").get(source.id))
+      .toEqual({ status: "cancelled" });
+  });
+
+  it("reports the exact non-manual all-candidate count", () => {
+    const { run } = fixture(3);
+    const node = dbModule.getDb().prepare(
+      `SELECT n.id FROM result_nodes n JOIN rule_results rr ON rr.id=n.rule_result_id
+       WHERE rr.run_id=? AND rr.result_type='incomplete' ORDER BY n.id LIMIT 1`,
+    ).get(run.id) as { id: string };
+    dbModule.getDb().prepare(
+      "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,is_current,reviewed_at) VALUES (?,?,NULL,'ad_hoc','local','uncertain','final',1,1,?)",
+    ).run(`manual_${crypto.randomUUID()}`, node.id, new Date().toISOString());
+    expect(ai.summarizeAiRun(run.id)).toMatchObject({ totalIncomplete: 3, aiCandidateCount: 2, manualResolved: 1 });
   });
 
   it("builds remaining from unfinished items and all from the full non-manual scope", async () => {

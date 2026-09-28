@@ -75,6 +75,7 @@ export function migrate() {
     migration034,
     migration035,
     migration036,
+    migration037,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -1208,6 +1209,30 @@ function migration036(db: Database.Database) {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_ai_attempts_run_send_active
       ON ai_api_attempts(run_id,send_started_at) WHERE status='running';
+  `);
+}
+
+function migration037(db: Database.Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_batch_action_requests (
+      run_id TEXT NOT NULL REFERENCES scan_runs(id) ON DELETE CASCADE,
+      request_id TEXT NOT NULL,
+      mode TEXT NOT NULL CHECK(mode IN ('all','remaining','legacy')),
+      provider_config_id TEXT,
+      provider_snapshot_hash TEXT,
+      source_batch_id TEXT,
+      result_batch_id TEXT,
+      empty_result_json TEXT,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(run_id,request_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_batch_action_result
+      ON ai_batch_action_requests(result_batch_id) WHERE result_batch_id IS NOT NULL;
+    INSERT OR IGNORE INTO ai_batch_action_requests
+      (run_id,request_id,mode,provider_config_id,provider_snapshot_hash,source_batch_id,result_batch_id,created_at)
+    SELECT run_id,action_request_id,'legacy',provider_config_id,provider_snapshot_hash,source_batch_id,id,created_at
+    FROM ai_review_batches
+    WHERE run_id IS NOT NULL AND action_request_id IS NOT NULL;
   `);
 }
 

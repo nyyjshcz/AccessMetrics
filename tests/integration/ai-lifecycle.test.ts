@@ -274,7 +274,7 @@ describe("AI lifecycle integration", () => {
     expect(db.prepare("SELECT COUNT(*) count FROM ai_review_batches WHERE run_id=? AND status IN ('queued','running')").get(run.id)).toEqual({ count: 1 });
   });
 
-  it("pauses, then explicitly resumes an unchanged snapshot without resetting consumed attempts", async () => {
+  it("pauses, then explicitly resumes an unchanged snapshot in a new bounded attempt cycle", async () => {
     const { run } = fixture(1);
     const configured = provider();
     const started = await postReview(run.id, configured.id);
@@ -289,10 +289,29 @@ describe("AI lifecycle integration", () => {
     const resumed = await postBatchAction(batchId, "resume");
     expect(resumed.status).toBe(200);
     expect((await resumed.json()).batch.status).toBe("queued");
-    expect(db.prepare("SELECT attempt_count,retry_cycle FROM ai_review_items WHERE batch_id=?").get(batchId)).toEqual({ attempt_count: 2, retry_cycle: 1 });
+    expect(db.prepare("SELECT attempt_count,retry_cycle FROM ai_review_items WHERE batch_id=?").get(batchId)).toEqual({ attempt_count: 0, retry_cycle: 2 });
   });
 
-  it("aborts an in-flight request on pause and resumes the queued item in the same attempt cycle", async () => {
+  it("rejects retry while paused with 409 and makes no provider call", async () => {
+    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')").run();
+    const { run } = fixture(1);
+    const configured = provider();
+    const started = await postReview(run.id, configured.id);
+    const batchId = (await started.json()).batch.id as string;
+    expect((await postBatchAction(batchId, "pause")).status).toBe(200);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not call provider"));
+    try {
+      const retried = await postBatchAction(batchId, "retry");
+      expect(retried.status).toBe(409);
+      expect((await retried.json()).error.code).toBe("AI_BATCH_NOT_RETRYABLE");
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(dbModule.getDb().prepare("SELECT status FROM ai_review_batches WHERE id=?").get(batchId)).toEqual({ status: "paused" });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("aborts an in-flight request on pause and explicitly resumes it in a fresh attempt cycle", async () => {
     const { run } = fixture(1);
     const db = dbModule.getDb();
     db.prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running','failed')").run();
@@ -341,8 +360,8 @@ describe("AI lifecycle integration", () => {
       expect(resumed.status).toBe(200);
       await resumed.json();
       expect(db.prepare("SELECT attempt_count,retry_cycle FROM ai_review_items WHERE batch_id=?").get(batchId)).toEqual({
-        attempt_count: 1,
-        retry_cycle: 0,
+        attempt_count: 0,
+        retry_cycle: 1,
       });
     } finally {
       if (processing && requestSignal && !requestSignal.aborted)
@@ -426,18 +445,18 @@ describe("AI lifecycle integration", () => {
       );
       await expect(processing).resolves.toBe(true);
       expect(dbModule.getDb().prepare(
-        "SELECT status,attempt_count,lease_owner,verdict FROM ai_review_items WHERE batch_id=?",
+        "SELECT status,attempt_count,retry_cycle,lease_owner,verdict FROM ai_review_items WHERE batch_id=?",
       ).get(batchId)).toMatchObject({
         status: "queued",
-        attempt_count: 1,
+        attempt_count: 0,
         lease_owner: null,
         verdict: null,
       });
       await expect(ai.processNextAiItem("after-cancel-settled-worker")).resolves.toBe(true);
       expect(fetchCalls).toBe(2);
       expect(dbModule.getDb().prepare(
-        "SELECT status,attempt_count,verdict FROM ai_review_items WHERE batch_id=?",
-      ).get(batchId)).toMatchObject({ status: "completed", attempt_count: 2, verdict: "uncertain" });
+        "SELECT status,attempt_count,retry_cycle,verdict FROM ai_review_items WHERE batch_id=?",
+      ).get(batchId)).toMatchObject({ status: "completed", attempt_count: 1, retry_cycle: 1, verdict: "uncertain" });
     } finally {
       abortSpy.mockRestore();
       if (processing && requestSignal && !requestSignal.aborted) {
@@ -497,8 +516,8 @@ describe("AI lifecycle integration", () => {
     expect((await immutable.json()).error.code).toBe("RUN_PUBLISHED_READ_ONLY");
   });
 
-  it("reports explicit retry count and advances only failed item cycles", async () => {
-    const { run } = fixture(2);
+  it("reports explicit retry count and advances only unfinished item cycles", async () => {
+    const { run } = fixture(3);
     const configured = provider();
     const started = await postReview(run.id, configured.id);
     const batchId = (await started.json()).batch.id as string;
@@ -506,13 +525,16 @@ describe("AI lifecycle integration", () => {
     const rows = db.prepare("SELECT id FROM ai_review_items WHERE batch_id=? ORDER BY id").all(batchId) as Array<{ id: string }>;
     db.prepare("UPDATE ai_review_items SET status='failed',attempt_count=3,retry_cycle=0,completed_at=? WHERE id=?").run(new Date().toISOString(), rows[0].id);
     db.prepare("UPDATE ai_review_items SET status='completed',verdict='problem' WHERE id=?").run(rows[1].id);
+    db.prepare("UPDATE ai_review_items SET lease_until=?,next_retry_at=? WHERE id=?")
+      .run(new Date(Date.now() + 60_000).toISOString(), new Date(Date.now() + 60_000).toISOString(), rows[2].id);
     db.prepare("UPDATE ai_review_batches SET status='failed' WHERE id=?").run(batchId);
 
     const retried = await postBatchAction(batchId, "retry");
     expect(retried.status).toBe(200);
-    expect(await retried.json()).toMatchObject({ retriedCount: 1, batch: { status: "queued" } });
+    expect(await retried.json()).toMatchObject({ retriedCount: 2, batch: { status: "queued" } });
     expect(db.prepare("SELECT status,attempt_count,retry_cycle FROM ai_review_items WHERE id=?").get(rows[0].id)).toEqual({ status: "queued", attempt_count: 0, retry_cycle: 1 });
     expect(db.prepare("SELECT status,attempt_count,retry_cycle,verdict FROM ai_review_items WHERE id=?").get(rows[1].id)).toEqual({ status: "completed", attempt_count: 0, retry_cycle: 0, verdict: "problem" });
+    expect(db.prepare("SELECT status,attempt_count,retry_cycle,next_retry_at FROM ai_review_items WHERE id=?").get(rows[2].id)).toEqual({ status: "queued", attempt_count: 0, retry_cycle: 1, next_retry_at: null });
   });
 
   it("does not count a failed item that a human review resolves before retry", async () => {
@@ -540,7 +562,7 @@ describe("AI lifecycle integration", () => {
     expect(db.prepare("SELECT COUNT(*) count FROM ai_review_items WHERE id=?").get(item.id)).toEqual({ count: 0 });
   });
 
-  it("does not make a provider call when explicit resume finds an exhausted cycle", async () => {
+  it("starts a fresh bounded cycle when explicitly resuming an exhausted cycle", async () => {
     const { run } = fixture(1);
     const db = dbModule.getDb();
     db.prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running','failed')").run();
@@ -549,21 +571,27 @@ describe("AI lifecycle integration", () => {
     const batchId = (await started.json()).batch.id as string;
     db.prepare("UPDATE ai_review_items SET attempt_count=3,retry_cycle=2 WHERE batch_id=?").run(batchId);
     expect((await postBatchAction(batchId, "pause")).status).toBe(200);
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(
-      new Error("unexpected fake provider request in exhausted-cycle test"),
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: '{"verdict":"uncertain"}' } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
     );
     try {
       const resumed = await postBatchAction(batchId, "resume");
       expect(resumed.status).toBe(200);
-      expect((await resumed.json()).batch.status).toBe("failed");
+      expect((await resumed.json()).batch.status).toBe("queued");
       expect(db.prepare("SELECT status,attempt_count,retry_cycle,last_error FROM ai_review_items WHERE batch_id=?").get(batchId)).toEqual({
-        status: "failed",
-        attempt_count: 3,
-        retry_cycle: 2,
-        last_error: "AI_ATTEMPTS_EXHAUSTED",
+        status: "queued",
+        attempt_count: 0,
+        retry_cycle: 3,
+        last_error: null,
       });
-      await expect(ai.processNextAiItem("exhausted-cycle-worker")).resolves.toBe(false);
-      expect(fetchSpy).not.toHaveBeenCalled();
+      await expect(ai.processNextAiItem("exhausted-cycle-worker")).resolves.toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(db.prepare("SELECT status,attempt_count,retry_cycle FROM ai_review_items WHERE batch_id=?").get(batchId)).toEqual({
+        status: "completed", attempt_count: 1, retry_cycle: 3,
+      });
     } finally {
       fetchSpy.mockRestore();
     }

@@ -1217,7 +1217,7 @@ describe("thin AI overlay", () => {
     }
   });
 
-  it("keeps processing queued items after a non-retryable item exhausts its retries", async () => {
+  it("fails permanent 4xx immediately while continuing to other queued items", async () => {
     let requests = 0;
     const server = http.createServer((request, response) => {
       if (request.url === "/v1/chat/completions" && request.method === "POST") {
@@ -1238,27 +1238,17 @@ describe("thin AI overlay", () => {
       const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
 
       await ai.processNextAiItem("terminal-error-worker");
-      dbModule
-        .getDb()
-        .prepare(
-          "UPDATE ai_review_items SET lease_until=NULL,next_retry_at=? WHERE batch_id=? AND status='queued'",
-        )
-        .run(new Date(Date.now() - 1_000).toISOString(), batch.batch.id);
-      await ai.processNextAiItem("terminal-error-worker");
-      dbModule
-        .getDb()
-        .prepare(
-          "UPDATE ai_review_items SET lease_until=NULL,next_retry_at=? WHERE batch_id=? AND status='queued'",
-        )
-        .run(new Date(Date.now() - 1_000).toISOString(), batch.batch.id);
-      await ai.processNextAiItem("terminal-error-worker");
       expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
         batch: { status: "queued" },
         stats: { queued: 1, failed: 1 },
       });
 
       expect(await ai.processNextAiItem("terminal-error-worker")).toBe(true);
-      expect(requests).toBe(4);
+      expect(requests).toBe(2);
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+        batch: { status: "failed" },
+        stats: { queued: 0, failed: 2 },
+      });
       ai.pauseAiBatch(batch.batch.id);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -1286,7 +1276,7 @@ describe("thin AI overlay", () => {
       expect(await ai.processNextAiItem("temporary-error-worker")).toBe(true);
       expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
         batch: { status: "queued" },
-        stats: { queued: 1, delayed: 1, failed: 0 },
+        stats: { queued: 1, failed: 0 },
       });
       const row = dbModule
         .getDb()
@@ -1320,7 +1310,7 @@ describe("thin AI overlay", () => {
       expect(await ai.processNextAiItem("network-error-worker")).toBe(true);
       expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
         batch: { status: "queued" },
-        stats: { queued: 1, delayed: 1, failed: 0 },
+        stats: { queued: 1, failed: 0 },
       });
       const queued = dbModule
         .getDb()
@@ -1347,7 +1337,30 @@ describe("thin AI overlay", () => {
     }
   });
 
-  it("automatically recovers a legacy failed batch that still has queued work", async () => {
+  it("does not fire a scheduled retry after the batch is paused", async () => {
+    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')").run();
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new TypeError("temporary network failure"));
+    try {
+      const item = fixture(1, true);
+      const config = provider();
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      await ai.processNextAiItem("pause-backoff-worker");
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(ai.getAiBatch(batch.batch.id).stats.queued).toBe(1);
+
+      ai.pauseAiBatch(batch.batch.id);
+      dbModule.getDb().prepare("UPDATE ai_review_items SET next_retry_at=?,lease_until=? WHERE batch_id=?")
+        .run(new Date(Date.now() - 1_000).toISOString(), new Date(Date.now() - 1_000).toISOString(), batch.batch.id);
+      await ai.processNextAiItem("pause-backoff-worker");
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "paused" }, stats: { queued: 1 } });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("does not recover a failed batch or reset its failed-item attempt history during worker polling", async () => {
+    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')").run();
     const item = fixture(2, true);
     const config = provider();
     const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
@@ -1372,13 +1385,17 @@ describe("thin AI overlay", () => {
 
     expect(await ai.processNextAiItem("legacy-recovery-worker")).toBe(false);
     expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
-      batch: { status: "queued" },
-      stats: { queued: 2, delayed: 2, failed: 0 },
+      batch: { status: "failed" },
+      stats: { queued: 1, delayed: 1, failed: 1 },
     });
+    expect(db.prepare("SELECT status,attempt_count,last_error FROM ai_review_items WHERE id=?").get(first.id)).toMatchObject({
+      status: "failed", attempt_count: 3, last_error: "模型请求失败（HTTP 429）",
+    });
+    expect(db.prepare("SELECT status FROM ai_review_batches WHERE id=?").get(batch.batch.id)).toEqual({ status: "failed" });
     ai.pauseAiBatch(batch.batch.id);
   });
 
-  it("automatically requeues a retryable failed item while its batch is still active", async () => {
+  it("keeps exhausted transient items failed while other work remains active", async () => {
     const item = fixture(2, true);
     const config = provider();
     const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
@@ -1404,16 +1421,16 @@ describe("thin AI overlay", () => {
       .prepare("SELECT status,attempt_count,last_error,lease_until FROM ai_review_items WHERE id=?")
       .get(rows[0].id) as any;
     expect(recovered).toMatchObject({
-      status: "queued",
-      attempt_count: 0,
-      last_error: "历史可重试失败已重新排队，等待后自动重试",
+      status: "failed",
+      attempt_count: 3,
+      last_error: "模型返回内容为空",
     });
-    expect(new Date(recovered.lease_until).getTime()).toBeGreaterThan(Date.now());
-    expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ stats: { queued: 2, failed: 0 } });
+    expect(recovered.lease_until).toBeNull();
+    expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "running" }, stats: { queued: 1, failed: 1 } });
     ai.pauseAiBatch(batch.batch.id);
   });
 
-  it("automatically resumes queued work from a legacy failed batch", async () => {
+  it("does not automatically resume queued work from a failed batch after worker restart", async () => {
     const item = fixture(2, true);
     const config = provider();
     const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
@@ -1436,13 +1453,13 @@ describe("thin AI overlay", () => {
 
     expect(await ai.processNextAiItem("legacy-queued-worker")).toBe(false);
     expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
-      batch: { status: "queued" },
+      batch: { status: "failed" },
       stats: { queued: 1, failed: 1 },
     });
     ai.pauseAiBatch(batch.batch.id);
   });
 
-  it("does not revive a stale provider snapshot during legacy recovery", async () => {
+  it("does not revive a stale provider snapshot during worker polling", async () => {
     const item = fixture(2, true);
     const config = provider();
     const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
@@ -1471,6 +1488,35 @@ describe("thin AI overlay", () => {
     expect(
       db.prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?").get(batch.batch.id),
     ).toEqual({ count: 0 });
+  });
+
+  it("marks an expired in-flight attempt unknown and waits for explicit retry after restart", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not resend uncertain request"));
+    try {
+      const item = fixture(1, true);
+      const config = provider();
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      const db = dbModule.getDb();
+      const itemRow = db.prepare("SELECT id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id) as { id: string };
+      const timestamp = new Date().toISOString();
+      db.prepare("UPDATE ai_review_items SET status='running',attempt_count=1,lease_owner='dead-worker',lease_until=? WHERE id=?")
+        .run(new Date(Date.now() - 1_000).toISOString(), itemRow.id);
+      db.prepare("UPDATE ai_review_batches SET status='running' WHERE id=?").run(batch.batch.id);
+      db.prepare("INSERT INTO ai_api_attempts(id,worker_id,slot,run_id,batch_id,item_id,provider_config_id,provider_label,model,retry_cycle,attempt_number,started_at,status) SELECT 'attempt_unknown','dead-worker',0,run_id,id,?,provider_config_id,'test','model-a',0,1,?,'running' FROM ai_review_batches WHERE id=?")
+        .run(itemRow.id, timestamp, batch.batch.id);
+
+      await expect(ai.processNextAiItem("replacement-worker")).resolves.toBe(false);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(db.prepare("SELECT status,attempt_count,last_error,lease_owner FROM ai_review_items WHERE id=?").get(itemRow.id)).toEqual({
+        status: "failed", attempt_count: 1, last_error: "AI_ATTEMPT_INTERRUPTED", lease_owner: null,
+      });
+      expect(db.prepare("SELECT status,error_code FROM ai_api_attempts WHERE id='attempt_unknown'").get()).toEqual({
+        status: "failed", error_code: "AI_ATTEMPT_INTERRUPTED",
+      });
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "failed" }, stats: { failed: 1 } });
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it("returns the batch for the selected current provider snapshot", () => {
@@ -1535,10 +1581,14 @@ describe("thin AI overlay", () => {
       batch.batch.id,
     );
 
-    expect(ai.resumeAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "failed" } });
+    expect(ai.resumeAiBatch(batch.batch.id)).toMatchObject({
+      batch: { status: "queued" },
+      stats: { queued: 1, failed: 0 },
+    });
   });
 
   it("does not claim page-scoped batches", async () => {
+    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')").run();
     const server = http.createServer((request, response) => {
       if (request.url === "/v1/chat/completions" && request.method === "POST") {
         response.setHeader("content-type", "application/json");
@@ -1586,6 +1636,7 @@ describe("thin AI overlay", () => {
   });
 
   it("keeps one in-flight request per provider by default", async () => {
+    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')").run();
     let requests = 0;
     const server = http.createServer((request, response) => {
       if (request.url === "/v1/chat/completions" && request.method === "POST") {
@@ -1809,7 +1860,7 @@ describe("thin AI overlay", () => {
     }
   });
 
-  it("terminalizes an expired third-attempt lease without issuing a fourth provider call", async () => {
+  it("marks an expired third-attempt request result unknown without issuing a fourth provider call", async () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(async () => new Response("unavailable", { status: 503 }));
@@ -1849,7 +1900,7 @@ describe("thin AI overlay", () => {
       ).toEqual({
         status: "failed",
         attempt_count: 3,
-        last_error: "AI_ATTEMPTS_EXHAUSTED",
+        last_error: "AI_ATTEMPT_INTERRUPTED",
         lease_owner: null,
         lease_until: null,
       });
@@ -2010,11 +2061,11 @@ describe("thin AI overlay", () => {
     }
   });
 
-  it("retries every provider error class within the same three-call cycle", async () => {
+  it("retries transient provider errors at most three times and does not retry permanent 4xx", async () => {
     for (const [name, responseOrError] of [
-      ["transient-http", new Response("provider secret detail", { status: 503 })],
-      ["client-http", new Response("provider secret detail", { status: 400 })],
-      ["network", new TypeError("private network detail")],
+      ["transient-http", new Response("provider secret detail", { status: 503 }), 3],
+      ["client-http", new Response("provider secret detail", { status: 400 }), 1],
+      ["network", new TypeError("private network detail"), 3],
     ] as const) {
       const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
         if (responseOrError instanceof Error) throw responseOrError;
@@ -2025,9 +2076,10 @@ describe("thin AI overlay", () => {
         const config = provider();
         const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
         const db = dbModule.getDb();
-        for (let call = 0; call < 3; call += 1) {
+        const maxCalls = responseOrError instanceof Response && responseOrError.status === 400 ? 1 : 3;
+        for (let call = 0; call < maxCalls; call += 1) {
           await ai.processNextAiItem(`${name}-worker`);
-          if (call < 2) {
+          if (call < maxCalls - 1) {
             const scheduled = db
               .prepare("SELECT next_retry_at FROM ai_review_items WHERE batch_id=?")
               .get(batch.batch.id) as { next_retry_at: string };
@@ -2039,7 +2091,7 @@ describe("thin AI overlay", () => {
             "UPDATE ai_review_items SET next_retry_at=?,lease_until=NULL WHERE batch_id=?",
           ).run(new Date(Date.now() - 1_000).toISOString(), batch.batch.id);
         }
-        expect(fetchSpy).toHaveBeenCalledTimes(3);
+        expect(fetchSpy).toHaveBeenCalledTimes(maxCalls);
         expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
           batch: { status: "failed" },
           stats: { failed: 1 },
@@ -2049,7 +2101,7 @@ describe("thin AI overlay", () => {
             "SELECT error_code FROM ai_api_attempts WHERE batch_id=? ORDER BY attempt_number",
           )
           .all(batch.batch.id) as Array<{ error_code: string | null }>;
-        expect(codes).toHaveLength(3);
+        expect(codes).toHaveLength(maxCalls);
         expect(
           codes.every(
             (row) => typeof row.error_code === "string" && /^[A-Z0-9_]+$/.test(row.error_code),
@@ -2164,7 +2216,7 @@ describe("thin AI overlay", () => {
     expect(row).toEqual({
       status: "queued",
       attempt_count: 0,
-      last_error: null,
+      last_error: "temporary",
       response_hash: null,
     });
     db.prepare("UPDATE ai_review_batches SET status='paused' WHERE id=?").run(batch.batch.id);

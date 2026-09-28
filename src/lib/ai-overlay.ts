@@ -1334,10 +1334,12 @@ function claimNextAiItem(workerId: string, slot: number) {
     }
     const item = db
       .prepare(
-        `SELECT i.*,b.status AS batch_status,b.run_id,b.provider_config_id,b.provider_snapshot_json,b.provider_snapshot_hash,b.prompt_hash,b.prompt_version,b.evidence_version,p.key_fingerprint AS provider_key_fingerprint
+        `SELECT i.*,b.status AS batch_status,b.revision AS current_batch_revision,b.run_id,b.provider_config_id,b.provider_snapshot_json,b.provider_snapshot_hash,b.prompt_hash,b.prompt_version,b.evidence_version,p.key_fingerprint AS provider_key_fingerprint
          FROM ai_review_items i JOIN ai_review_batches b ON b.id=i.batch_id
          JOIN ai_provider_configs p ON p.id=b.provider_config_id
+         JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id
          WHERE b.run_id IS NOT NULL AND b.page_id IS NULL AND b.study_freeze_id IS NULL
+           AND j.deletion_requested_at IS NULL
            AND b.status IN ('queued','running') AND b.cancel_requested_at IS NULL
            AND (
              SELECT COUNT(*)
@@ -1366,11 +1368,12 @@ function claimNextAiItem(workerId: string, slot: number) {
     }
     const isRateLimited = providerRateLimitRpm === OPENROUTER_FREE_REQUESTS_PER_MINUTE;
     if (isRateLimited && !canStartOpenRouterFreeRequest(db, item, timestampMs)) return null;
+    const attemptId = id("ai_attempt");
     const changed = db
       .prepare(
-        "UPDATE ai_review_items SET status='running',lease_owner=?,lease_until=?,attempt_count=attempt_count+1,updated_at=? WHERE id=? AND attempt_count<? AND (status='queued' OR (status='running' AND lease_until IS NOT NULL AND lease_until<?))",
+        "UPDATE ai_review_items SET status='running',lease_owner=?,lease_until=?,attempt_count=attempt_count+1,active_attempt_id=?,batch_revision=?,updated_at=? WHERE id=? AND attempt_count<? AND (status='queued' OR (status='running' AND lease_until IS NOT NULL AND lease_until<?)) AND EXISTS (SELECT 1 FROM ai_review_batches b JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id WHERE b.id=ai_review_items.batch_id AND b.status IN ('queued','running') AND b.cancel_requested_at IS NULL AND j.deletion_requested_at IS NULL)",
       )
-      .run(workerId, leaseUntil, timestamp, item.id, MAX_ATTEMPTS, timestamp);
+      .run(workerId, leaseUntil, attemptId, item.current_batch_revision, timestamp, item.id, MAX_ATTEMPTS, timestamp);
     if (changed.changes !== 1) return null;
     if (isRateLimited) noteOpenRouterFreeRequestStart(item, timestampMs);
     db.prepare(
@@ -1381,8 +1384,10 @@ function claimNextAiItem(workerId: string, slot: number) {
       lease_owner: workerId,
       lease_until: leaseUntil,
       attempt_count: Number(item.attempt_count ?? 0) + 1,
+      batch_revision: Number(item.current_batch_revision),
+      active_attempt_id: attemptId,
     };
-    return { ...claimedItem, attempt: startAttempt(claimedItem, workerId, slot, db) };
+    return { ...claimedItem, attempt: startAttempt(claimedItem, workerId, slot, db, attemptId) };
   });
 }
 
@@ -1400,16 +1405,18 @@ function completeItem(
          JOIN ai_review_batches b ON b.id=i.batch_id AND b.run_id=?
          JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id
          WHERE a.id=? AND a.cancelled_at IS NULL AND b.status='running'
-           AND b.cancel_requested_at IS NULL AND i.status='running' AND i.lease_owner=?`,
+           AND b.cancel_requested_at IS NULL AND i.status='running' AND i.lease_owner=?
+           AND i.active_attempt_id=a.id AND i.batch_revision=? AND i.batch_revision=b.revision
+           AND j.deletion_requested_at IS NULL`,
       )
-      .get(item.id, item.batch_id, item.run_id, attemptId, item.lease_owner);
+      .get(item.id, item.batch_id, item.run_id, attemptId, item.lease_owner, item.batch_revision);
     if (!valid) {
-      // A provider may resolve at the same time the cross-container cancel is
-      // observed. Discard that response, but release the lease only now that
-      // the request has settled so an immediate resume cannot duplicate it.
+      // A cancelled request may settle after pause/resume advanced the batch
+      // revision. Acknowledge only this exact attempt's lease; never persist
+      // its result. The batch remains paused unless resume was explicit.
       db.prepare(
         `UPDATE ai_review_items SET status='queued',lease_owner=NULL,
-           lease_until=NULL,next_retry_at=NULL,
+           lease_until=NULL,next_retry_at=NULL,active_attempt_id=NULL,
            attempt_count=CASE WHEN EXISTS (
              SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
                AND b.status='queued' AND b.cancel_requested_at IS NULL
@@ -1420,17 +1427,19 @@ function completeItem(
            ) THEN 1 ELSE 0 END,
            updated_at=?,completed_at=NULL
          WHERE id=? AND batch_id=? AND status='running' AND lease_owner=?
+           AND active_attempt_id=? AND batch_revision=?
            AND EXISTS (
              SELECT 1 FROM ai_api_attempts a JOIN ai_review_batches b ON b.id=ai_review_items.batch_id
+               JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id
              WHERE a.id=? AND a.item_id=ai_review_items.id AND a.cancelled_at IS NOT NULL
-               AND b.status IN ('paused','queued','running')
+               AND b.status IN ('paused','queued') AND j.deletion_requested_at IS NULL
            )`,
-      ).run(timestamp, item.id, item.batch_id, item.lease_owner, attemptId);
+      ).run(timestamp, item.id, item.batch_id, item.lease_owner, attemptId, item.batch_revision, attemptId);
       return;
     }
     const changed = db
       .prepare(
-        "UPDATE ai_review_items SET status='completed',verdict=?,reason=?,response_hash=?,last_error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=?,completed_at=? WHERE id=? AND status='running' AND lease_owner=?",
+        "UPDATE ai_review_items SET status='completed',verdict=?,reason=?,response_hash=?,last_error=NULL,lease_owner=NULL,lease_until=NULL,active_attempt_id=NULL,updated_at=?,completed_at=? WHERE id=? AND status='running' AND lease_owner=? AND active_attempt_id=? AND batch_revision=? AND EXISTS (SELECT 1 FROM ai_review_batches b JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id WHERE b.id=ai_review_items.batch_id AND b.revision=ai_review_items.batch_revision AND b.status='running' AND b.cancel_requested_at IS NULL AND j.deletion_requested_at IS NULL)",
       )
       .run(
         result.verdict,
@@ -1440,6 +1449,8 @@ function completeItem(
         timestamp,
         item.id,
         item.lease_owner,
+        attemptId,
+        item.batch_revision,
       );
     if (changed.changes !== 1) return;
     const currentBatch = db
@@ -1474,7 +1485,7 @@ function safeAttemptErrorCode(error: unknown) {
   return /^[A-Z0-9_]{1,80}$/.test(candidate) ? candidate : "AI_PROVIDER_ERROR";
 }
 
-function startAttempt(item: any, workerId: string, slot: number, db: ReturnType<typeof getDb>) {
+function startAttempt(item: any, workerId: string, slot: number, db: ReturnType<typeof getDb>, attemptId: string) {
   const timestamp = now();
   let snapshot: Partial<ProviderSnapshot> = {};
   try {
@@ -1482,7 +1493,6 @@ function startAttempt(item: any, workerId: string, slot: number, db: ReturnType<
   } catch {
     // Keep the durable row even when a legacy provider snapshot is corrupt.
   }
-  const attemptId = id("ai_attempt");
   db.prepare(
     `INSERT INTO ai_api_attempts
        (id,worker_id,slot,run_id,batch_id,item_id,provider_config_id,provider_label,model,retry_cycle,attempt_number,started_at,status)
@@ -1553,9 +1563,13 @@ function failItem(item: any, error: unknown) {
   transaction((db) => {
     const cancellation = db
       .prepare(
-        `SELECT b.cancel_requested_at FROM ai_review_items i JOIN ai_review_batches b ON b.id=i.batch_id WHERE i.id=? AND b.id=?`,
+        `SELECT b.cancel_requested_at FROM ai_review_items i JOIN ai_review_batches b ON b.id=i.batch_id
+         JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id
+         WHERE i.id=? AND b.id=? AND i.active_attempt_id=? AND i.lease_owner=?
+           AND i.batch_revision=? AND i.batch_revision=b.revision AND b.status='running'
+           AND b.cancel_requested_at IS NULL AND j.deletion_requested_at IS NULL`,
       )
-      .get(item.id, item.batch_id) as { cancel_requested_at: string | null } | undefined;
+      .get(item.id, item.batch_id, item.attempt_id, item.lease_owner, item.batch_revision) as { cancel_requested_at: string | null } | undefined;
     const attemptCancelled = db
       .prepare("SELECT cancelled_at FROM ai_api_attempts WHERE id=?")
       .get(item.attempt_id) as { cancelled_at: string | null } | undefined;
@@ -1563,12 +1577,9 @@ function failItem(item: any, error: unknown) {
       (error instanceof Error && error.name === "AbortError") ||
       Boolean(cancellation?.cancel_requested_at || attemptCancelled?.cancelled_at);
     if (isCancelled) {
-      const retryAfterCancellation = Boolean(
-        cancellation?.cancel_requested_at || attemptCancelled?.cancelled_at,
-      );
       db.prepare(
-        `UPDATE ai_review_items SET status=?,last_error=?,lease_owner=NULL,lease_until=NULL,
-           next_retry_at=NULL,
+        `UPDATE ai_review_items SET status='queued',last_error=NULL,lease_owner=NULL,lease_until=NULL,
+           next_retry_at=NULL,active_attempt_id=NULL,
            attempt_count=CASE WHEN EXISTS (
              SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id
                AND b.status='queued' AND b.cancel_requested_at IS NULL
@@ -1578,15 +1589,14 @@ function failItem(item: any, error: unknown) {
                AND b.status='queued' AND b.cancel_requested_at IS NULL
            ) THEN 1 ELSE 0 END,
            updated_at=?,completed_at=?
-         WHERE id=? AND status='running' AND lease_owner=?`,
-      ).run(
-        retryAfterCancellation ? "queued" : "cancelled",
-        retryAfterCancellation ? null : "AI_ATTEMPT_CANCELLED",
-        timestamp,
-        retryAfterCancellation ? null : timestamp,
-        item.id,
-        item.lease_owner,
-      );
+         WHERE id=? AND status='running' AND lease_owner=? AND active_attempt_id=? AND batch_revision=?
+           AND EXISTS (
+             SELECT 1 FROM ai_api_attempts a JOIN ai_review_batches b ON b.id=ai_review_items.batch_id
+               JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id
+             WHERE a.id=? AND a.item_id=ai_review_items.id AND a.cancelled_at IS NOT NULL
+               AND b.status IN ('paused','queued') AND j.deletion_requested_at IS NULL
+           )`,
+      ).run(timestamp, null, item.id, item.lease_owner, item.attempt_id, item.batch_revision, item.attempt_id);
       return;
     }
     const current = db
@@ -1600,7 +1610,7 @@ function failItem(item: any, error: unknown) {
     const nextRetryAt = terminal ? null : backoffAt;
     const changed = db
       .prepare(
-        "UPDATE ai_review_items SET status=?,last_error=?,lease_owner=NULL,lease_until=?,next_retry_at=?,updated_at=?,completed_at=? WHERE id=? AND status='running' AND lease_owner=?",
+        "UPDATE ai_review_items SET status=?,last_error=?,lease_owner=NULL,lease_until=?,next_retry_at=?,active_attempt_id=NULL,updated_at=?,completed_at=? WHERE id=? AND status='running' AND lease_owner=? AND active_attempt_id=? AND batch_revision=? AND EXISTS (SELECT 1 FROM ai_review_batches b JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id WHERE b.id=ai_review_items.batch_id AND b.revision=ai_review_items.batch_revision AND b.status='running' AND b.cancel_requested_at IS NULL AND j.deletion_requested_at IS NULL)",
       )
       .run(
         terminal ? "failed" : "queued",
@@ -1611,6 +1621,8 @@ function failItem(item: any, error: unknown) {
         terminal ? timestamp : null,
         item.id,
         item.lease_owner,
+        item.attempt_id,
+        item.batch_revision,
       );
     if (changed.changes !== 1) return;
     const currentBatch = db
@@ -1684,9 +1696,10 @@ export async function processNextAiItem(workerId: string, slot = 0) {
            JOIN ai_review_items i ON i.batch_id=b.id JOIN ai_provider_configs p ON p.id=b.provider_config_id
            JOIN scan_jobs j ON j.id=r.job_id
            WHERE r.id=? AND b.id=? AND i.id=? AND b.status='running' AND i.status='running'
-             AND i.lease_owner=? AND p.enabled=1 AND b.cancel_requested_at IS NULL`,
+             AND i.lease_owner=? AND i.active_attempt_id=? AND i.batch_revision=b.revision
+             AND p.enabled=1 AND b.cancel_requested_at IS NULL AND j.deletion_requested_at IS NULL`,
         )
-        .get(item.run_id, item.batch_id, item.id, item.lease_owner);
+        .get(item.run_id, item.batch_id, item.id, item.lease_owner, attempt.id);
       const attemptState = db
         .prepare("SELECT cancelled_at FROM ai_api_attempts WHERE id=?")
         .get(attempt.id) as { cancelled_at: string | null } | undefined;

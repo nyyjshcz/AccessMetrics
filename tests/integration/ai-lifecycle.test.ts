@@ -289,6 +289,90 @@ describe("AI lifecycle integration", () => {
     }
   });
 
+  it.each(["success", "failure"] as const)(
+    "does not let a late %s from an expired same-worker attempt overwrite the explicitly retried result",
+    async (lateOutcome) => {
+    const { run } = fixture(1);
+    const configured = provider();
+    const created = ai.createAiBatch({ runId: run.id, providerConfigId: configured.id });
+    const db = dbModule.getDb();
+    const itemId = (db.prepare("SELECT id FROM ai_review_items WHERE batch_id=?").get(created.batch.id) as { id: string }).id;
+    const pendingResponses: Array<{
+      resolve: (response: Response) => void;
+      reject: (error: unknown) => void;
+    }> = [];
+    let requestNumber = 0;
+    const secondRequestStarted = new Promise<void>((resolve) => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+        requestNumber += 1;
+        if (requestNumber === 2) resolve();
+        return new Promise<Response>((resolve, reject) => pendingResponses.push({ resolve, reject }));
+      });
+    });
+
+    try {
+      const oldProcessing = ai.processNextAiItem("reused-worker", 0);
+      for (let wait = 0; wait < 100 && pendingResponses.length === 0; wait += 1)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(pendingResponses).toHaveLength(1);
+      const oldAttempt = db.prepare("SELECT id FROM ai_api_attempts WHERE item_id=? ORDER BY started_at,id LIMIT 1").get(itemId) as { id: string };
+
+      // Model a lease that elapsed while the request was still unresolved. The
+      // operator explicitly opens a new attempt cycle; the worker name/slot is reused.
+      db.prepare("UPDATE ai_review_items SET status='failed',lease_owner=NULL,lease_until=NULL,last_error='AI_ATTEMPT_INTERRUPTED' WHERE id=?").run(itemId);
+      db.prepare("UPDATE ai_review_batches SET status='failed' WHERE id=?").run(created.batch.id);
+      expect(ai.retryAiBatch(created.batch.id).batch.status).toBe("queued");
+
+      const newProcessing = ai.processNextAiItem("reused-worker", 0);
+      await secondRequestStarted;
+      expect(pendingResponses).toHaveLength(2);
+      const newAttempt = db.prepare("SELECT id FROM ai_api_attempts WHERE item_id=? ORDER BY started_at DESC,id DESC LIMIT 1").get(itemId) as { id: string };
+      expect(newAttempt.id).not.toBe(oldAttempt.id);
+      expect(db.prepare("SELECT active_attempt_id,batch_revision FROM ai_review_items WHERE id=?").get(itemId)).toEqual({
+        active_attempt_id: newAttempt.id,
+        batch_revision: 1,
+      });
+      // Simulate recovery having finalized the expired request's own audit row.
+      // Its eventual network result may not rewrite that terminal audit status.
+      db.prepare("UPDATE ai_api_attempts SET status='failed',error_code='AI_ATTEMPT_INTERRUPTED',ended_at='expired' WHERE id=?").run(oldAttempt.id);
+
+      const response = (verdict: "problem" | "not_problem") => new Response(
+        JSON.stringify({ choices: [{ message: { content: JSON.stringify({ verdict, reason: verdict }) } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+      pendingResponses[1].resolve(response("not_problem"));
+      await expect(newProcessing).resolves.toBe(true);
+      if (lateOutcome === "failure") pendingResponses[0].reject(new TypeError("late network failure"));
+      else pendingResponses[0].resolve(response("problem"));
+      await expect(oldProcessing).resolves.toBe(true);
+
+      expect(db.prepare("SELECT status,verdict,reason,active_attempt_id FROM ai_review_items WHERE id=?").get(itemId)).toMatchObject({
+        status: "completed",
+        verdict: "not_problem",
+        reason: "not_problem",
+        active_attempt_id: null,
+      });
+      expect(db.prepare("SELECT status,error_code FROM ai_api_attempts WHERE id=?").get(newAttempt.id)).toMatchObject({ status: "completed", error_code: null });
+      expect(db.prepare("SELECT status,error_code,ended_at FROM ai_api_attempts WHERE id=?").get(oldAttempt.id)).toMatchObject({
+        status: "failed",
+        error_code: "AI_ATTEMPT_INTERRUPTED",
+        ended_at: "expired",
+      });
+      expect(db.prepare("SELECT attempt_count,retry_cycle,next_retry_at,last_error FROM ai_review_items WHERE id=?").get(itemId)).toMatchObject({
+        attempt_count: 1,
+        retry_cycle: 1,
+        next_retry_at: null,
+        last_error: null,
+      });
+      expect(db.prepare("SELECT COUNT(*) count FROM ai_api_attempts WHERE item_id=?").get(itemId)).toEqual({ count: 2 });
+      expect(db.prepare("SELECT status FROM ai_review_batches WHERE id=?").get(created.batch.id)).toEqual({ status: "completed" });
+      expect(await ai.processNextAiItem("reused-worker", 0)).toBe(false);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    },
+  );
+
   it("allows a fresh explicit review after an invalidated provider is re-enabled", async () => {
     const { run } = fixture(1);
     const configured = provider();

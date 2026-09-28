@@ -11,10 +11,17 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
     requireRequestRole(request, "admin");
     migrate();
     const { runId } = await context.params;
-    const run = getDb().prepare("SELECT status,published FROM scan_runs WHERE id=?").get(runId) as
-      | { status: string; published: number }
+    const run = getDb()
+      .prepare(
+        `SELECT r.status,r.published,j.deletion_requested_at
+         FROM scan_runs r JOIN scan_jobs j ON j.id=r.job_id WHERE r.id=?`,
+      )
+      .get(runId) as
+      | { status: string; published: number; deletion_requested_at: string | null }
       | undefined;
     if (!run) throw new AppError("NOT_FOUND", "扫描不存在", 404);
+    if (run.deletion_requested_at)
+      throw new AppError("SCAN_DELETION_IN_PROGRESS", "扫描正在删除，不能发布报告", 409);
     if (run.published) throw new AppError("RUN_PUBLISHED_READ_ONLY", "该扫描已经发布并归档", 409);
     if (!["completed", "completed_with_errors"].includes(run.status))
       throw new AppError("RUN_NOT_COMPLETE", "扫描未完成，不能发布", 409);
@@ -29,13 +36,44 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
       });
     const report = await renderRunReport(runId);
     const publishedAt = new Date().toISOString();
-    transaction((db) => {
+    const db = getDb();
+    db.transaction(() => {
+      const current = db
+        .prepare(
+          `SELECT r.status,r.published,j.deletion_requested_at
+             FROM scan_runs r JOIN scan_jobs j ON j.id=r.job_id WHERE r.id=?`,
+        )
+        .get(runId) as
+        | { status: string; published: number; deletion_requested_at: string | null }
+        | undefined;
+      if (!current) throw new AppError("NOT_FOUND", "扫描不存在", 404);
+      if (current.deletion_requested_at)
+        throw new AppError("SCAN_DELETION_IN_PROGRESS", "扫描正在删除，不能发布报告", 409);
+      if (current.published)
+        throw new AppError("RUN_PUBLISHED_READ_ONLY", "该扫描已经发布并归档", 409);
+      if (!["completed", "completed_with_errors"].includes(current.status))
+        throw new AppError("RUN_NOT_COMPLETE", "扫描未完成，不能发布", 409);
+      const active = db
+        .prepare(
+          "SELECT id FROM ai_review_batches WHERE run_id=? AND page_id IS NULL AND study_freeze_id IS NULL AND status IN ('queued','running') LIMIT 1",
+        )
+        .get(runId) as { id: string } | undefined;
+      if (active)
+        throw new AppError("AI_REVIEW_ACTIVE", "AI 批处理仍在运行，暂停或完成后才能发布", 409, {
+          batchId: active.id,
+        });
       const result = db
-        .prepare("UPDATE scan_runs SET published=1,published_at=? WHERE id=? AND published=0")
+        .prepare(
+          `UPDATE scan_runs SET published=1,published_at=?
+             WHERE id=? AND published=0 AND EXISTS (
+               SELECT 1 FROM scan_jobs j
+               WHERE j.id=scan_runs.job_id AND j.deletion_requested_at IS NULL
+             )`,
+        )
         .run(publishedAt, runId);
       if (result.changes !== 1)
         throw new AppError("RUN_PUBLISH_CONFLICT", "扫描发布状态已改变，请刷新后重试", 409);
-    });
+    }).immediate();
     return NextResponse.json({ runId, published: true, publishedAt, report: report.file });
   } catch (error) {
     return NextResponse.json(errorEnvelope(error, request), {

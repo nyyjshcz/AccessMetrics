@@ -107,90 +107,147 @@ export function getJob(jobId: string) {
 }
 
 const DELETABLE_JOB_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const AI_ATTEMPT_DRAIN_TIMEOUT_MS = 10_000;
 
-/**
- * Permanently removes one local, terminal scan and its runtime artifacts.
- *
- * Published and study-linked runs deliberately remain immutable.  The caller
- * only needs a job id because a discovery failure can leave a terminal job
- * without ever creating a run.
- */
-export function deleteTerminalScanJob(jobId: string) {
-  return immediateTransaction((db) => {
-    const job = db.prepare("SELECT id,status FROM scan_jobs WHERE id=?").get(jobId) as
-      | { id: string; status: string }
-      | undefined;
-    if (!job) throw new AppError("NOT_FOUND", "任务不存在", 404);
-    if (!DELETABLE_JOB_STATUSES.has(job.status))
-      throw new AppError("SCAN_JOB_NOT_TERMINAL", "仅已结束的任务可以删除", 409);
+type ScanDeletionContext = {
+  job: { id: string; status: string; deletion_requested_at: string | null };
+  runs: Array<{ id: string; published: number }>;
+  pageIds: Array<{ id: string }>;
+};
 
-    const runs = db
-      .prepare("SELECT id,published FROM scan_runs WHERE job_id=? ORDER BY started_at DESC")
-      .all(jobId) as Array<{ id: string; published: number }>;
-    if (runs.some((run) => run.published))
-      throw new AppError("RUN_PUBLISHED_READ_ONLY", "已发布报告不能删除", 409);
+function scanDeletionContext(db: ReturnType<typeof getDb>, jobId: string): ScanDeletionContext {
+  const job = db
+    .prepare("SELECT id,status,deletion_requested_at FROM scan_jobs WHERE id=?")
+    .get(jobId) as ScanDeletionContext["job"] | undefined;
+  if (!job) throw new AppError("NOT_FOUND", "任务不存在", 404);
+  if (!DELETABLE_JOB_STATUSES.has(job.status))
+    throw new AppError("SCAN_JOB_NOT_TERMINAL", "仅已结束的任务可以删除", 409);
 
-    for (const run of runs) {
-      const studyReference = db
-        .prepare(
-          `SELECT 'study_run_attempts' AS source FROM study_run_attempts WHERE run_id=?
-           UNION ALL
-           SELECT 'study_export_runs' AS source FROM study_export_runs WHERE run_id=?
-           LIMIT 1`,
-        )
-        .all(run.id, run.id) as Array<{ source: string }>;
-      const manualSampleReference = db
-        .prepare(
-          `SELECT ms.id
-           FROM manual_review_samples ms
-           JOIN result_nodes n ON n.id=ms.result_node_id
-           JOIN rule_results rr ON rr.id=n.rule_result_id
-           WHERE rr.run_id=?
-           LIMIT 1`,
-        )
-        .get(run.id) as { id: string } | undefined;
-      if (studyReference.length > 0 || manualSampleReference)
-        throw new AppError("SCAN_STUDY_REFERENCED", "研究记录引用了该扫描，不能删除", 409);
-    }
+  const runs = db
+    .prepare("SELECT id,published FROM scan_runs WHERE job_id=? ORDER BY started_at DESC")
+    .all(jobId) as ScanDeletionContext["runs"];
+  if (runs.some((run) => run.published))
+    throw new AppError("RUN_PUBLISHED_READ_ONLY", "已发布报告不能删除", 409);
 
-    const pageIds = db
+  for (const run of runs) {
+    const studyReference = db
       .prepare(
-        `SELECT page_id AS id FROM job_pages WHERE job_id=?
-         UNION
-         SELECT id FROM pages WHERE run_id IN (${runs.length ? runs.map(() => "?").join(",") : "NULL"})`,
-      )
-      .all(jobId, ...runs.map((run) => run.id)) as Array<{ id: string }>;
-    const sharedPage = db
-      .prepare(
-        `SELECT jp.page_id
-         FROM job_pages jp
-         WHERE jp.job_id=?
-           AND EXISTS (
-             SELECT 1 FROM job_pages other
-             WHERE other.page_id=jp.page_id AND other.job_id<>?
-           )
+        `SELECT 'study_run_attempts' AS source FROM study_run_attempts WHERE run_id=?
+         UNION ALL
+         SELECT 'study_export_runs' AS source FROM study_export_runs WHERE run_id=?
          LIMIT 1`,
       )
-      .get(jobId, jobId) as { page_id: string } | undefined;
-    if (sharedPage)
-      throw new AppError("SCAN_SHARED_PAGE_REFERENCED", "任务页面仍被其他任务引用，不能删除", 409);
+      .get(run.id, run.id);
+    const manualSampleReference = db
+      .prepare(
+        `SELECT ms.id
+         FROM manual_review_samples ms
+         JOIN result_nodes n ON n.id=ms.result_node_id
+         JOIN rule_results rr ON rr.id=n.rule_result_id
+         WHERE rr.run_id=?
+         LIMIT 1`,
+      )
+      .get(run.id);
+    if (studyReference || manualSampleReference)
+      throw new AppError("SCAN_STUDY_REFERENCED", "研究记录引用了该扫描，不能删除", 409);
+  }
 
-    if (runs.length > 0) {
-      const timestamp = now();
-      const runIds = runs.map((run) => run.id);
+  const pageIds = db
+    .prepare(
+      `SELECT page_id AS id FROM job_pages WHERE job_id=?
+       UNION
+       SELECT id FROM pages WHERE run_id IN (${runs.length ? runs.map(() => "?").join(",") : "NULL"})`,
+    )
+    .all(jobId, ...runs.map((run) => run.id)) as ScanDeletionContext["pageIds"];
+  const sharedPage = db
+    .prepare(
+      `SELECT jp.page_id
+       FROM job_pages jp
+       WHERE jp.job_id=?
+         AND EXISTS (
+           SELECT 1 FROM job_pages other
+           WHERE other.page_id=jp.page_id AND other.job_id<>?
+         )
+       LIMIT 1`,
+    )
+    .get(jobId, jobId);
+  if (sharedPage)
+    throw new AppError("SCAN_SHARED_PAGE_REFERENCED", "任务页面仍被其他任务引用，不能删除", 409);
+
+  return { job, runs, pageIds };
+}
+
+function requestScanDeletion(jobId: string) {
+  return immediateTransaction((db) => {
+    const context = scanDeletionContext(db, jobId);
+    const timestamp = now();
+    db.prepare(
+      "UPDATE scan_jobs SET deletion_requested_at=COALESCE(deletion_requested_at,?) WHERE id=?",
+    ).run(timestamp, jobId);
+    const runIds = context.runs.map((run) => run.id);
+    if (runIds.length > 0) {
+      const placeholders = runIds.map(() => "?").join(",");
+      db.prepare(
+        `UPDATE ai_api_attempts SET cancelled_at=COALESCE(cancelled_at,?)
+         WHERE run_id IN (${placeholders}) AND status='running'`,
+      ).run(timestamp, ...runIds);
+      db.prepare(
+        `UPDATE ai_review_batches SET
+           status='cancelled',revision=revision+CASE WHEN status='cancelled' THEN 0 ELSE 1 END,
+           stop_reason='scan_deleted',stop_requested_at=COALESCE(stop_requested_at,?),
+           cancel_requested_at=COALESCE(cancel_requested_at,?),completed_at=COALESCE(completed_at,?),updated_at=?
+         WHERE run_id IN (${placeholders}) AND status NOT IN ('completed','cancelled')`,
+      ).run(timestamp, timestamp, timestamp, timestamp, ...runIds);
+    }
+    return { runIds, runId: context.runs[0]?.id ?? null };
+  });
+}
+
+async function waitForScanAiAttempts(runIds: string[], timeoutMs: number) {
+  if (runIds.length === 0) return;
+  const placeholders = runIds.map(() => "?").join(",");
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (true) {
+    const active = getDb()
+      .prepare(
+        `SELECT COUNT(*) AS count FROM ai_api_attempts
+         WHERE run_id IN (${placeholders}) AND status='running' AND send_started_at IS NOT NULL`,
+      )
+      .get(...runIds) as { count: number };
+    if (Number(active.count) === 0 || Date.now() >= deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+function finalizeScanDeletion(jobId: string) {
+  return immediateTransaction((db) => {
+    const context = scanDeletionContext(db, jobId);
+    if (!context.job.deletion_requested_at)
+      throw new AppError("SCAN_DELETION_NOT_REQUESTED", "扫描尚未进入删除流程", 409);
+    const timestamp = now();
+    const runIds = context.runs.map((run) => run.id);
+    if (runIds.length > 0) {
       const placeholders = runIds.map(() => "?").join(",");
       db.prepare(
         `UPDATE ai_api_attempts SET
            cancelled_at=CASE WHEN status='running' THEN COALESCE(cancelled_at,?) ELSE cancelled_at END,
+           status=CASE WHEN status='running' THEN 'cancelled' ELSE status END,
+           error_code=CASE WHEN status='running' AND send_started_at IS NULL THEN 'AI_ATTEMPT_NOT_SENT'
+                           WHEN status='running' THEN 'AI_ATTEMPT_OUTCOME_UNKNOWN' ELSE error_code END,
+           ended_at=CASE WHEN status='running' AND send_started_at IS NULL THEN ? ELSE ended_at END,
+           duration_ms=CASE WHEN status='running' AND send_started_at IS NULL THEN 0 ELSE duration_ms END,
            run_id=NULL,batch_id=NULL,item_id=NULL,provider_config_id=NULL
          WHERE run_id IN (${placeholders})`,
-      ).run(timestamp, ...runIds);
-      for (const runId of runIds) for (const abort of aiAttemptAborters.get(runId) ?? []) abort();
-      db.prepare(
-        `UPDATE ai_review_batches SET status='cancelled',updated_at=?,completed_at=COALESCE(completed_at,?) WHERE run_id IN (${placeholders})`,
       ).run(timestamp, timestamp, ...runIds);
       db.prepare(
-        `DELETE FROM ai_review_items WHERE batch_id IN (SELECT id FROM ai_review_batches WHERE run_id IN (${placeholders}))`,
+        `UPDATE ai_review_batches SET status='cancelled',stop_reason='scan_deleted',
+           stop_requested_at=COALESCE(stop_requested_at,?),cancel_requested_at=COALESCE(cancel_requested_at,?),
+           completed_at=COALESCE(completed_at,?),updated_at=? WHERE run_id IN (${placeholders})`,
+      ).run(timestamp, timestamp, timestamp, timestamp, ...runIds);
+      db.prepare(
+        `DELETE FROM ai_review_items WHERE batch_id IN (
+           SELECT id FROM ai_review_batches WHERE run_id IN (${placeholders})
+         )`,
       ).run(...runIds);
       db.prepare(
         `DELETE FROM manual_reviews WHERE result_node_id IN (
@@ -199,7 +256,9 @@ export function deleteTerminalScanJob(jobId: string) {
       ).run(...runIds);
       db.prepare(`DELETE FROM ai_review_batches WHERE run_id IN (${placeholders})`).run(...runIds);
       db.prepare(
-        `DELETE FROM result_nodes WHERE rule_result_id IN (SELECT id FROM rule_results WHERE run_id IN (${placeholders}))`,
+        `DELETE FROM result_nodes WHERE rule_result_id IN (
+           SELECT id FROM rule_results WHERE run_id IN (${placeholders})
+         )`,
       ).run(...runIds);
       db.prepare(`DELETE FROM rule_results WHERE run_id IN (${placeholders})`).run(...runIds);
       db.prepare(`DELETE FROM page_scores WHERE run_id IN (${placeholders})`).run(...runIds);
@@ -208,19 +267,37 @@ export function deleteTerminalScanJob(jobId: string) {
     }
 
     db.prepare("DELETE FROM job_pages WHERE job_id=?").run(jobId);
-    if (pageIds.length > 0) {
-      db.prepare(`DELETE FROM pages WHERE id IN (${pageIds.map(() => "?").join(",")})`).run(
-        ...pageIds.map((page) => page.id),
+    if (context.pageIds.length > 0) {
+      db.prepare(`DELETE FROM pages WHERE id IN (${context.pageIds.map(() => "?").join(",")})`).run(
+        ...context.pageIds.map((page) => page.id),
       );
     }
-    if (runs.length > 0)
-      db.prepare(`DELETE FROM scan_runs WHERE id IN (${runs.map(() => "?").join(",")})`).run(
-        ...runs.map((run) => run.id),
+    if (runIds.length > 0)
+      db.prepare(`DELETE FROM scan_runs WHERE id IN (${runIds.map(() => "?").join(",")})`).run(
+        ...runIds,
       );
     db.prepare("DELETE FROM scan_jobs WHERE id=?").run(jobId);
-
-    return { jobId, runId: runs[0]?.id ?? null };
+    return { jobId, runId: context.runs[0]?.id ?? null };
   });
+}
+
+/**
+ * Commits a durable stop fence, drains dispatched provider calls, then removes
+ * one local terminal scan and detaches its deidentified call audit.
+ *
+ * Published and study-linked runs deliberately remain immutable.  The caller
+ * only needs a job id because a discovery failure can leave a terminal job
+ * without ever creating a run.
+ */
+export async function deleteTerminalScanJob(
+  jobId: string,
+  options: { drainTimeoutMs?: number } = {},
+) {
+  const { runIds, runId } = requestScanDeletion(jobId);
+  for (const id of runIds) for (const abort of aiAttemptAborters.get(id) ?? []) abort();
+  await waitForScanAiAttempts(runIds, options.drainTimeoutMs ?? AI_ATTEMPT_DRAIN_TIMEOUT_MS);
+  const deleted = finalizeScanDeletion(jobId);
+  return { ...deleted, runId: deleted.runId ?? runId };
 }
 export function createRun(job: any) {
   const existing = getDb().prepare("SELECT * FROM scan_runs WHERE job_id=?").get(job.id) as any;

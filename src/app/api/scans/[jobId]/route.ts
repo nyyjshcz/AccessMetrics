@@ -80,7 +80,7 @@ export async function DELETE(request: Request, context: { params: Promise<{ jobI
     requireRequestRole(request, "admin");
     migrate();
     const { jobId } = await context.params;
-    const deleted = deleteTerminalScanJob(jobId);
+    const deleted = await deleteTerminalScanJob(jobId);
     return NextResponse.json({ ok: true, ...deleted });
   } catch (error) {
     return NextResponse.json(errorEnvelope(error, request), {

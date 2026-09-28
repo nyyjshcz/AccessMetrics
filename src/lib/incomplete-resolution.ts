@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import { getDb, transaction } from "./db";
 import { AppError } from "./errors";
 import { id } from "./ids";
 
@@ -114,9 +114,17 @@ export function isRunPublished(runId: string) {
 }
 
 export function assertRunMutable(runId: string) {
-  if (isRunPublished(runId)) {
+  const state = getDb()
+    .prepare(
+      `SELECT r.published,j.deletion_requested_at
+       FROM scan_runs r JOIN scan_jobs j ON j.id=r.job_id WHERE r.id=?`,
+    )
+    .get(runId) as { published: number; deletion_requested_at: string | null } | undefined;
+  if (state?.published === 1) {
     throw new AppError("RUN_PUBLISHED_READ_ONLY", "已发布扫描为只读，请创建新的扫描任务", 409);
   }
+  if (state?.deletion_requested_at)
+    throw new AppError("SCAN_DELETION_IN_PROGRESS", "扫描正在删除，不能继续修改或复核", 409);
 }
 
 export function hasActiveAiBatch(runId: string) {
@@ -156,69 +164,75 @@ export function saveLocalManualVerdict(input: {
   const note = String(input.note ?? "")
     .trim()
     .slice(0, 4000);
-  const db = getDb();
-  const node = db
-    .prepare(
-      `SELECT n.id
-       FROM result_nodes n
-       JOIN rule_results rr ON rr.id=n.rule_result_id
-       WHERE n.id=? AND rr.run_id=? AND rr.result_type='incomplete'`,
-    )
-    .get(input.resultNodeId, input.runId) as { id: string } | undefined;
-  if (!node) throw new AppError("INCOMPLETE_NODE_NOT_FOUND", "axe 标记的 incomplete 节点不存在", 404);
-  const existing = db
-    .prepare(
-      `SELECT id,revision
-       FROM manual_reviews
-       WHERE result_node_id=? AND sample_id IS NULL AND review_context='ad_hoc'
-         AND reviewer='local' AND is_current=1
-       LIMIT 1`,
-    )
-    .get(input.resultNodeId) as { id: string; revision: number } | undefined;
-  if (existing) {
+  return transaction((db) => {
+    assertManualEditingAllowed(input.runId);
+    const node = db
+      .prepare(
+        `SELECT n.id
+         FROM result_nodes n
+         JOIN rule_results rr ON rr.id=n.rule_result_id
+         WHERE n.id=? AND rr.run_id=? AND rr.result_type='incomplete'`,
+      )
+      .get(input.resultNodeId, input.runId) as { id: string } | undefined;
+    if (!node)
+      throw new AppError("INCOMPLETE_NODE_NOT_FOUND", "axe 标记的 incomplete 节点不存在", 404);
+    const existing = db
+      .prepare(
+        `SELECT id,revision
+         FROM manual_reviews
+         WHERE result_node_id=? AND sample_id IS NULL AND review_context='ad_hoc'
+           AND reviewer='local' AND is_current=1
+         LIMIT 1`,
+      )
+      .get(input.resultNodeId) as { id: string; revision: number } | undefined;
+    if (existing) {
+      db.prepare(
+        "UPDATE manual_reviews SET verdict=?,note=?,reviewed_at=? WHERE id=? AND is_current=1",
+      ).run(input.verdict, note, timestamp, existing.id);
+      return { reviewId: existing.id, updated: true, reviewedAt: timestamp };
+    }
+    const reviewId = id("manual");
     db.prepare(
-      "UPDATE manual_reviews SET verdict=?,note=?,reviewed_at=? WHERE id=? AND is_current=1",
-    ).run(input.verdict, note, timestamp, existing.id);
-    return { reviewId: existing.id, updated: true, reviewedAt: timestamp };
-  }
-  const reviewId = id("manual");
-  db.prepare(
-    "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,supersedes_review_id,is_current,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-  ).run(
-    reviewId,
-    input.resultNodeId,
-    null,
-    "ad_hoc",
-    "local",
-    input.verdict,
-    note,
-    1,
-    null,
-    1,
-    timestamp,
-  );
-  return { reviewId, updated: false, reviewedAt: timestamp };
+      "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,supersedes_review_id,is_current,reviewed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+    ).run(
+      reviewId,
+      input.resultNodeId,
+      null,
+      "ad_hoc",
+      "local",
+      input.verdict,
+      note,
+      1,
+      null,
+      1,
+      timestamp,
+    );
+    return { reviewId, updated: false, reviewedAt: timestamp };
+  });
 }
 
 /** Removes only the current local ad-hoc decision, so AI or raw data becomes effective again. */
 export function clearLocalManualVerdict(input: { runId: string; resultNodeId: string }) {
   assertManualEditingAllowed(input.runId);
-  const db = getDb();
-  const node = db
-    .prepare(
-      `SELECT n.id
-       FROM result_nodes n
-       JOIN rule_results rr ON rr.id=n.rule_result_id
-       WHERE n.id=? AND rr.run_id=? AND rr.result_type='incomplete'`,
-    )
-    .get(input.resultNodeId, input.runId) as { id: string } | undefined;
-  if (!node) throw new AppError("INCOMPLETE_NODE_NOT_FOUND", "axe 标记的 incomplete 节点不存在", 404);
-  const result = db
-    .prepare(
-      `UPDATE manual_reviews SET is_current=0
-       WHERE result_node_id=? AND sample_id IS NULL AND review_context='ad_hoc'
-         AND reviewer='local' AND is_current=1`,
-    )
-    .run(input.resultNodeId);
-  return { cleared: result.changes > 0 };
+  return transaction((db) => {
+    assertManualEditingAllowed(input.runId);
+    const node = db
+      .prepare(
+        `SELECT n.id
+         FROM result_nodes n
+         JOIN rule_results rr ON rr.id=n.rule_result_id
+         WHERE n.id=? AND rr.run_id=? AND rr.result_type='incomplete'`,
+      )
+      .get(input.resultNodeId, input.runId) as { id: string } | undefined;
+    if (!node)
+      throw new AppError("INCOMPLETE_NODE_NOT_FOUND", "axe 标记的 incomplete 节点不存在", 404);
+    const result = db
+      .prepare(
+        `UPDATE manual_reviews SET is_current=0
+         WHERE result_node_id=? AND sample_id IS NULL AND review_context='ad_hoc'
+           AND reviewer='local' AND is_current=1`,
+      )
+      .run(input.resultNodeId);
+    return { cleared: result.changes > 0 };
+  });
 }

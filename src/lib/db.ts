@@ -74,6 +74,7 @@ export function migrate() {
     migration033,
     migration034,
     migration035,
+    migration036,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -1196,6 +1197,17 @@ function migration035(db: Database.Database) {
     CREATE UNIQUE INDEX idx_ai_batches_action_request
       ON ai_review_batches(run_id, action_request_id)
       WHERE run_id IS NOT NULL AND action_request_id IS NOT NULL;
+  `);
+}
+
+function migration036(db: Database.Database) {
+  const hasColumn = (db.prepare("PRAGMA table_info(ai_api_attempts)").all() as any[]).some(
+    (row) => row.name === "send_started_at",
+  );
+  if (!hasColumn) db.exec("ALTER TABLE ai_api_attempts ADD COLUMN send_started_at TEXT");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_ai_attempts_run_send_active
+      ON ai_api_attempts(run_id,send_started_at) WHERE status='running';
   `);
 }
 

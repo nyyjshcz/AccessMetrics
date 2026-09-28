@@ -3,6 +3,7 @@ import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { canonicalize, sha256 } from "@/lib/canonical";
 
@@ -115,7 +116,7 @@ describe("thin AI overlay", () => {
   beforeAll(() => dbModule.migrate());
   afterAll(() => dbModule.closeDb());
 
-  it("migrates lifecycle persistence through version 035 idempotently", () => {
+  it("migrates lifecycle persistence through version 036 idempotently", () => {
     const db = dbModule.getDb();
     expect(
       (
@@ -123,7 +124,7 @@ describe("thin AI overlay", () => {
           version: number;
         }
       ).version,
-    ).toBe(35);
+    ).toBe(36);
 
     // Recreate the pre-033 schema to exercise upgrading an installed 032 database.
     db.exec(`
@@ -136,7 +137,7 @@ describe("thin AI overlay", () => {
       ALTER TABLE ai_review_items DROP COLUMN next_retry_at;
       ALTER TABLE ai_review_items DROP COLUMN retry_cycle;
       ALTER TABLE ai_review_batches DROP COLUMN cancel_requested_at;
-      DELETE FROM schema_migrations WHERE version IN (33,34,35);
+      DELETE FROM schema_migrations WHERE version IN (33,34,35,36);
     `);
     expect(
       (
@@ -154,7 +155,7 @@ describe("thin AI overlay", () => {
           version: number;
         }
       ).version,
-    ).toBe(35);
+    ).toBe(36);
     const tableColumns = (table: string) =>
       (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
         (column) => column.name,
@@ -184,6 +185,7 @@ describe("thin AI overlay", () => {
         "reported_cost",
         "currency",
         "cancelled_at",
+        "send_started_at",
       ]),
     );
     expect(tableColumns("ai_worker_instances")).toEqual(
@@ -202,6 +204,7 @@ describe("thin AI overlay", () => {
       expect.arrayContaining([
         "idx_ai_attempts_active",
         "idx_ai_attempts_history",
+        "idx_ai_attempts_run_send_active",
         "idx_ai_worker_liveness",
         "idx_ai_items_due_queue",
       ]),
@@ -246,6 +249,7 @@ describe("thin AI overlay", () => {
       DROP INDEX IF EXISTS idx_ai_items_active_attempt;
       DROP INDEX IF EXISTS idx_ai_items_batch_revision;
       DROP INDEX IF EXISTS idx_ai_batches_source;
+      DROP INDEX IF EXISTS idx_ai_attempts_run_send_active;
     `);
     const dropIfPresent = (table: string, column: string) => {
       const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -263,7 +267,8 @@ describe("thin AI overlay", () => {
     for (const column of ["active_attempt_id", "batch_revision", "exclusion_reason"])
       dropIfPresent("ai_review_items", column);
     dropIfPresent("scan_jobs", "deletion_requested_at");
-    db.prepare("DELETE FROM schema_migrations WHERE version IN (34,35)").run();
+    dropIfPresent("ai_api_attempts", "send_started_at");
+    db.prepare("DELETE FROM schema_migrations WHERE version IN (34,35,36)").run();
 
     expect(
       (
@@ -277,6 +282,13 @@ describe("thin AI overlay", () => {
     expect(
       (
         db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version=34").get() as {
+          count: number;
+        }
+      ).count,
+    ).toBe(1);
+    expect(
+      (
+        db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version=36").get() as {
           count: number;
         }
       ).count,
@@ -703,7 +715,7 @@ describe("thin AI overlay", () => {
       ).run(new Date().toISOString(), item.run.id);
       const processing = ai.processNextAiItem("delete-race-worker");
       await started;
-      repositories.deleteTerminalScanJob(
+      await repositories.deleteTerminalScanJob(
         (
           db.prepare("SELECT job_id FROM scan_runs WHERE id=?").get(item.run.id) as {
             job_id: string;
@@ -770,8 +782,9 @@ describe("thin AI overlay", () => {
     }
   });
 
-  it("lets deletion win after atomic claim without sending or retaining attempt scope IDs", async () => {
+  it("observes a deletion fence committed by another database connection after claim and before send", async () => {
     let requests = 0;
+    let otherConnection: InstanceType<typeof Database> | undefined;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
       requests += 1;
       return new Response(
@@ -799,10 +812,18 @@ describe("thin AI overlay", () => {
         .prepare("SELECT id FROM ai_api_attempts WHERE worker_id=?")
         .get("claim-delete-race-worker") as { id: string } | undefined;
       expect(attempt).toBeDefined();
-      repositories.deleteTerminalScanJob(jobId);
+      otherConnection = new Database(process.env.DATABASE_URL!);
+      otherConnection.pragma("busy_timeout = 5000");
+      otherConnection
+        .prepare("UPDATE scan_jobs SET deletion_requested_at=? WHERE id=?")
+        .run(new Date().toISOString(), jobId);
       await processing;
 
       expect(requests).toBe(0);
+      expect(db.prepare("SELECT id FROM scan_jobs WHERE id=?").get(jobId)).toBeDefined();
+      expect(
+        db.prepare("SELECT deletion_requested_at FROM scan_jobs WHERE id=?").get(jobId),
+      ).toMatchObject({ deletion_requested_at: expect.any(String) });
       expect(
         db
           .prepare(
@@ -811,16 +832,19 @@ describe("thin AI overlay", () => {
           .get(attempt!.id),
       ).toMatchObject({
         status: "cancelled",
-        run_id: null,
-        batch_id: null,
-        item_id: null,
-        provider_config_id: null,
         cancelled_at: expect.any(String),
       });
       expect(
         db.prepare("SELECT id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id),
+      ).toBeDefined();
+      otherConnection.close();
+      otherConnection = undefined;
+      await repositories.deleteTerminalScanJob(jobId);
+      expect(
+        db.prepare("SELECT id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id),
       ).toBeUndefined();
     } finally {
+      otherConnection?.close();
       fetchSpy.mockRestore();
     }
   });
@@ -869,24 +893,23 @@ describe("thin AI overlay", () => {
 
       const processing = ai.processNextAiItem("serialized-delete-worker");
       await requestStarted;
-      await repositories.deleteTerminalScanJob(jobId);
-      expect(
-        db
-          .prepare(
-            "SELECT status,run_id,batch_id,item_id,provider_config_id,cancelled_at FROM ai_api_attempts WHERE worker_id='serialized-delete-worker'",
-          )
-          .get(),
-      ).toMatchObject({
-        status: "running",
-        run_id: null,
-        batch_id: null,
-        item_id: null,
-        provider_config_id: null,
-        cancelled_at: expect.any(String),
+      let deletionSettled = false;
+      const deletion = Promise.resolve(repositories.deleteTerminalScanJob(jobId)).then(() => {
+        deletionSettled = true;
       });
-      expect(
-        db.prepare("SELECT id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id),
-      ).toBeUndefined();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const deletionWasPending = !deletionSettled;
+      const deletionFence = db
+        .prepare("SELECT deletion_requested_at FROM scan_jobs WHERE id=?")
+        .get(jobId);
+      const attemptWhileDraining = db
+        .prepare(
+          "SELECT status,run_id,batch_id,item_id,provider_config_id,cancelled_at FROM ai_api_attempts WHERE worker_id='serialized-delete-worker'",
+        )
+        .get() as Record<string, unknown> | undefined;
+      const itemWhileDraining = db
+        .prepare("SELECT id FROM ai_review_items WHERE batch_id=?")
+        .get(batch.batch.id);
       resolveResponse(
         new Response(
           JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
@@ -894,6 +917,19 @@ describe("thin AI overlay", () => {
         ),
       );
       await processing;
+      await deletion;
+
+      expect(deletionWasPending).toBe(true);
+      expect(deletionFence).toMatchObject({ deletion_requested_at: expect.any(String) });
+      expect(attemptWhileDraining).toMatchObject({
+        status: "running",
+        run_id: item.run.id,
+        batch_id: batch.batch.id,
+        item_id: expect.any(String),
+        provider_config_id: config.id,
+        cancelled_at: expect.any(String),
+      });
+      expect(itemWhileDraining).toBeDefined();
 
       expect(requests).toBe(1);
       expect(requestStartedInsideTransaction).toBe(true);
@@ -919,6 +955,154 @@ describe("thin AI overlay", () => {
           .get(batch.batch.id),
       ).toEqual({ count: 0 });
     } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("uses the deletion hard timeout and lets a late response update only its detached audit", async () => {
+    let requests = 0;
+    let resolveResponse!: (response: Response) => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => (markStarted = resolve));
+    const deferredResponse = new Promise<Response>((resolve) => (resolveResponse = resolve));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      requests += 1;
+      markStarted();
+      return deferredResponse;
+    });
+    let processing: Promise<boolean> | undefined;
+    try {
+      const item = fixture(1, true);
+      const db = dbModule.getDb();
+      const config = provider();
+      const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+      const jobId = (
+        db.prepare("SELECT job_id FROM scan_runs WHERE id=?").get(item.run.id) as {
+          job_id: string;
+        }
+      ).job_id;
+      db.prepare("UPDATE scan_jobs SET status='completed',finished_at=? WHERE id=?").run(
+        new Date().toISOString(),
+        jobId,
+      );
+
+      processing = ai.processNextAiItem("delete-hard-timeout-worker");
+      await started;
+      await repositories.deleteTerminalScanJob(jobId, { drainTimeoutMs: 10 });
+      const detached = db
+        .prepare(
+          "SELECT status,run_id,batch_id,item_id,provider_config_id,cancelled_at,error_code,total_tokens FROM ai_api_attempts WHERE worker_id='delete-hard-timeout-worker'",
+        )
+        .get() as Record<string, unknown>;
+      expect(detached).toMatchObject({
+        status: "cancelled",
+        run_id: null,
+        batch_id: null,
+        item_id: null,
+        provider_config_id: null,
+        cancelled_at: expect.any(String),
+        error_code: "AI_ATTEMPT_OUTCOME_UNKNOWN",
+        total_tokens: null,
+      });
+      expect(db.prepare("SELECT id FROM scan_jobs WHERE id=?").get(jobId)).toBeUndefined();
+      expect(
+        db.prepare("SELECT id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id),
+      ).toBeUndefined();
+
+      resolveResponse(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '{"verdict":"problem"}' } }],
+            usage: { prompt_tokens: 9, completion_tokens: 6, total_tokens: 15 },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+      await processing;
+      const lateAudit = db
+        .prepare(
+          "SELECT status,run_id,batch_id,item_id,provider_config_id,error_code,total_tokens FROM ai_api_attempts WHERE worker_id='delete-hard-timeout-worker'",
+        )
+        .get();
+      expect(lateAudit).toMatchObject({
+        status: "cancelled",
+        run_id: null,
+        batch_id: null,
+        item_id: null,
+        provider_config_id: null,
+        error_code: "AI_ATTEMPT_CANCELLED",
+        total_tokens: 15,
+      });
+      expect(db.prepare("SELECT id FROM scan_runs WHERE id=?").get(item.run.id)).toBeUndefined();
+      expect(requests).toBe(1);
+    } finally {
+      if (processing && resolveResponse) {
+        resolveResponse(
+          new Response(
+            JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
+        await Promise.allSettled([processing]);
+      }
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("does not dispatch a replacement-model request until the cancelled request settles", async () => {
+    let requests = 0;
+    const pendingResponses: Array<(response: Response) => void> = [];
+    const processingPromises: Array<Promise<boolean>> = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          requests += 1;
+          pendingResponses.push(resolve);
+        }),
+    );
+    const success = () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: '{"verdict":"problem"}' } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    try {
+      const item = fixture(1, true);
+      const oldConfig = provider();
+      const oldBatch = ai.createAiBatch({ runId: item.run.id, providerConfigId: oldConfig.id });
+      const oldProcessing = ai.processNextAiItem("old-model-worker");
+      processingPromises.push(oldProcessing);
+      await vi.waitFor(() => expect(requests).toBe(1));
+
+      const newConfig = ai.saveAiProvider({
+        label: "替换模型",
+        baseUrl: "http://127.0.0.1:1234/v1",
+        model: "model-after-change",
+        apiKey: "test-key",
+        maxConcurrentRequests: 1,
+        enabled: true,
+      });
+      const newBatch = ai.createAiBatch({ runId: item.run.id, providerConfigId: newConfig.id });
+      expect((ai.getAiBatch(oldBatch.batch.id) as any).batch.status).toBe("cancelled");
+
+      const earlyReplacement = ai.processNextAiItem("new-model-worker");
+      processingPromises.push(earlyReplacement);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const replacementDispatchedEarly = requests > 1;
+      if (replacementDispatchedEarly) pendingResponses[1](success());
+      expect(requests).toBe(1);
+      expect(await earlyReplacement).toBe(false);
+
+      pendingResponses[0](success());
+      await oldProcessing;
+      const replacementProcessing = ai.processNextAiItem("new-model-worker");
+      processingPromises.push(replacementProcessing);
+      await vi.waitFor(() => expect(requests).toBe(2));
+      pendingResponses[1](success());
+      expect(await replacementProcessing).toBe(true);
+      expect((ai.getAiBatch(newBatch.batch.id) as any).batch.status).toBe("completed");
+    } finally {
+      for (const resolve of pendingResponses) resolve(success());
+      await Promise.allSettled(processingPromises);
       fetchSpy.mockRestore();
     }
   });
@@ -1338,8 +1522,13 @@ describe("thin AI overlay", () => {
   });
 
   it("does not fire a scheduled retry after the batch is paused", async () => {
-    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')").run();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new TypeError("temporary network failure"));
+    dbModule
+      .getDb()
+      .prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')")
+      .run();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("temporary network failure"));
     try {
       const item = fixture(1, true);
       const config = provider();
@@ -1349,18 +1538,30 @@ describe("thin AI overlay", () => {
       expect(ai.getAiBatch(batch.batch.id).stats.queued).toBe(1);
 
       ai.pauseAiBatch(batch.batch.id);
-      dbModule.getDb().prepare("UPDATE ai_review_items SET next_retry_at=?,lease_until=? WHERE batch_id=?")
-        .run(new Date(Date.now() - 1_000).toISOString(), new Date(Date.now() - 1_000).toISOString(), batch.batch.id);
+      dbModule
+        .getDb()
+        .prepare("UPDATE ai_review_items SET next_retry_at=?,lease_until=? WHERE batch_id=?")
+        .run(
+          new Date(Date.now() - 1_000).toISOString(),
+          new Date(Date.now() - 1_000).toISOString(),
+          batch.batch.id,
+        );
       await ai.processNextAiItem("pause-backoff-worker");
       expect(fetchSpy).toHaveBeenCalledTimes(1);
-      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "paused" }, stats: { queued: 1 } });
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+        batch: { status: "paused" },
+        stats: { queued: 1 },
+      });
     } finally {
       fetchSpy.mockRestore();
     }
   });
 
   it("does not recover a failed batch or reset its failed-item attempt history during worker polling", async () => {
-    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')").run();
+    dbModule
+      .getDb()
+      .prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')")
+      .run();
     const item = fixture(2, true);
     const config = provider();
     const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
@@ -1388,10 +1589,18 @@ describe("thin AI overlay", () => {
       batch: { status: "failed" },
       stats: { queued: 1, delayed: 1, failed: 1 },
     });
-    expect(db.prepare("SELECT status,attempt_count,last_error FROM ai_review_items WHERE id=?").get(first.id)).toMatchObject({
-      status: "failed", attempt_count: 3, last_error: "模型请求失败（HTTP 429）",
+    expect(
+      db
+        .prepare("SELECT status,attempt_count,last_error FROM ai_review_items WHERE id=?")
+        .get(first.id),
+    ).toMatchObject({
+      status: "failed",
+      attempt_count: 3,
+      last_error: "模型请求失败（HTTP 429）",
     });
-    expect(db.prepare("SELECT status FROM ai_review_batches WHERE id=?").get(batch.batch.id)).toEqual({ status: "failed" });
+    expect(
+      db.prepare("SELECT status FROM ai_review_batches WHERE id=?").get(batch.batch.id),
+    ).toEqual({ status: "failed" });
     ai.pauseAiBatch(batch.batch.id);
   });
 
@@ -1426,7 +1635,10 @@ describe("thin AI overlay", () => {
       last_error: "模型返回内容为空",
     });
     expect(recovered.lease_until).toBeNull();
-    expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "running" }, stats: { queued: 1, failed: 1 } });
+    expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+      batch: { status: "running" },
+      stats: { queued: 1, failed: 1 },
+    });
     ai.pauseAiBatch(batch.batch.id);
   });
 
@@ -1483,7 +1695,9 @@ describe("thin AI overlay", () => {
       enabled: true,
     });
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("cancelled snapshot must not call provider"));
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("cancelled snapshot must not call provider"));
     try {
       expect(await ai.processNextAiItem("stale-recovery-worker")).toBe(false);
       expect(fetchSpy).not.toHaveBeenCalled();
@@ -1492,7 +1706,9 @@ describe("thin AI overlay", () => {
     }
     expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "cancelled" } });
     expect(
-      db.prepare("SELECT status,last_error FROM ai_review_items WHERE batch_id=? ORDER BY id").all(batch.batch.id),
+      db
+        .prepare("SELECT status,last_error FROM ai_review_items WHERE batch_id=? ORDER BY id")
+        .all(batch.batch.id),
     ).toEqual([
       { status: "failed", last_error: "模型请求失败（HTTP 429）" },
       { status: "queued", last_error: null },
@@ -1500,29 +1716,52 @@ describe("thin AI overlay", () => {
   });
 
   it("marks an expired in-flight attempt unknown and waits for explicit retry after restart", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("must not resend uncertain request"));
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("must not resend uncertain request"));
     try {
       const item = fixture(1, true);
       const config = provider();
       const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
       const db = dbModule.getDb();
-      const itemRow = db.prepare("SELECT id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id) as { id: string };
+      const itemRow = db
+        .prepare("SELECT id FROM ai_review_items WHERE batch_id=?")
+        .get(batch.batch.id) as { id: string };
       const timestamp = new Date().toISOString();
-      db.prepare("UPDATE ai_review_items SET status='running',attempt_count=1,lease_owner='dead-worker',lease_until=? WHERE id=?")
-        .run(new Date(Date.now() - 1_000).toISOString(), itemRow.id);
+      db.prepare(
+        "UPDATE ai_review_items SET status='running',attempt_count=1,lease_owner='dead-worker',lease_until=? WHERE id=?",
+      ).run(new Date(Date.now() - 1_000).toISOString(), itemRow.id);
       db.prepare("UPDATE ai_review_batches SET status='running' WHERE id=?").run(batch.batch.id);
-      db.prepare("INSERT INTO ai_api_attempts(id,worker_id,slot,run_id,batch_id,item_id,provider_config_id,provider_label,model,retry_cycle,attempt_number,started_at,status) SELECT 'attempt_unknown','dead-worker',0,run_id,id,?,provider_config_id,'test','model-a',0,1,?,'running' FROM ai_review_batches WHERE id=?")
-        .run(itemRow.id, timestamp, batch.batch.id);
+      db.prepare(
+        "INSERT INTO ai_api_attempts(id,worker_id,slot,run_id,batch_id,item_id,provider_config_id,provider_label,model,retry_cycle,attempt_number,started_at,status) SELECT 'attempt_unknown','dead-worker',0,run_id,id,?,provider_config_id,'test','model-a',0,1,?,'running' FROM ai_review_batches WHERE id=?",
+      ).run(itemRow.id, timestamp, batch.batch.id);
 
       await expect(ai.processNextAiItem("replacement-worker")).resolves.toBe(false);
       expect(fetchSpy).not.toHaveBeenCalled();
-      expect(db.prepare("SELECT status,attempt_count,last_error,lease_owner FROM ai_review_items WHERE id=?").get(itemRow.id)).toEqual({
-        status: "failed", attempt_count: 1, last_error: "AI_ATTEMPT_INTERRUPTED", lease_owner: null,
+      expect(
+        db
+          .prepare(
+            "SELECT status,attempt_count,last_error,lease_owner FROM ai_review_items WHERE id=?",
+          )
+          .get(itemRow.id),
+      ).toEqual({
+        status: "failed",
+        attempt_count: 1,
+        last_error: "AI_ATTEMPT_INTERRUPTED",
+        lease_owner: null,
       });
-      expect(db.prepare("SELECT status,error_code FROM ai_api_attempts WHERE id='attempt_unknown'").get()).toEqual({
-        status: "failed", error_code: "AI_ATTEMPT_INTERRUPTED",
+      expect(
+        db
+          .prepare("SELECT status,error_code FROM ai_api_attempts WHERE id='attempt_unknown'")
+          .get(),
+      ).toEqual({
+        status: "failed",
+        error_code: "AI_ATTEMPT_INTERRUPTED",
       });
-      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({ batch: { status: "failed" }, stats: { failed: 1 } });
+      expect(ai.getAiBatch(batch.batch.id)).toMatchObject({
+        batch: { status: "failed" },
+        stats: { failed: 1 },
+      });
     } finally {
       fetchSpy.mockRestore();
     }
@@ -1600,7 +1839,10 @@ describe("thin AI overlay", () => {
   });
 
   it("does not claim page-scoped batches", async () => {
-    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')").run();
+    dbModule
+      .getDb()
+      .prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')")
+      .run();
     const server = http.createServer((request, response) => {
       if (request.url === "/v1/chat/completions" && request.method === "POST") {
         response.setHeader("content-type", "application/json");
@@ -1648,7 +1890,10 @@ describe("thin AI overlay", () => {
   });
 
   it("keeps one in-flight request per provider by default", async () => {
-    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')").run();
+    dbModule
+      .getDb()
+      .prepare("UPDATE ai_review_batches SET status='paused' WHERE status IN ('queued','running')")
+      .run();
     let requests = 0;
     const server = http.createServer((request, response) => {
       if (request.url === "/v1/chat/completions" && request.method === "POST") {
@@ -2088,7 +2333,8 @@ describe("thin AI overlay", () => {
         const config = provider();
         const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
         const db = dbModule.getDb();
-        const maxCalls = responseOrError instanceof Response && responseOrError.status === 400 ? 1 : 3;
+        const maxCalls =
+          responseOrError instanceof Response && responseOrError.status === 400 ? 1 : 3;
         for (let call = 0; call < maxCalls; call += 1) {
           await ai.processNextAiItem(`${name}-worker`);
           if (call < maxCalls - 1) {
@@ -2415,33 +2661,50 @@ describe("thin AI overlay", () => {
   it("retains manually resolved items but excludes them from create, resume, retry, and worker claims", async () => {
     const config = provider();
     const db = dbModule.getDb();
-    db.prepare("UPDATE ai_review_batches SET status='cancelled' WHERE status IN ('queued','running')").run();
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("human-final items must not call provider"));
+    db.prepare(
+      "UPDATE ai_review_batches SET status='cancelled' WHERE status IN ('queued','running')",
+    ).run();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("human-final items must not call provider"));
     try {
       for (const action of ["create", "resume", "retry"] as const) {
         const item = fixture(1, true);
         const batch = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
         ai.pauseAiBatch(batch.batch.id);
         const nodeId = (
-          db.prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id) as { result_node_id: string }
+          db
+            .prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=?")
+            .get(batch.batch.id) as { result_node_id: string }
         ).result_node_id;
         resolution.saveLocalManualVerdict({
           runId: item.run.id,
           resultNodeId: nodeId,
           verdict: "not_problem",
         });
-        if (action === "create") ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
+        if (action === "create")
+          ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id });
         if (action === "resume") ai.resumeAiBatch(batch.batch.id);
         if (action === "retry") {
-          db.prepare("UPDATE ai_review_items SET status='failed' WHERE batch_id=?").run(batch.batch.id);
+          db.prepare("UPDATE ai_review_items SET status='failed' WHERE batch_id=?").run(
+            batch.batch.id,
+          );
           db.prepare("UPDATE ai_review_batches SET status='failed' WHERE id=?").run(batch.batch.id);
           ai.retryAiBatch(batch.batch.id);
         }
-        expect(db.prepare("SELECT status,exclusion_reason FROM ai_review_items WHERE batch_id=?").get(batch.batch.id)).toEqual({
+        expect(
+          db
+            .prepare("SELECT status,exclusion_reason FROM ai_review_items WHERE batch_id=?")
+            .get(batch.batch.id),
+        ).toEqual({
           status: action === "retry" ? "failed" : "queued",
           exclusion_reason: "human_final",
         });
-        expect(db.prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?").get(batch.batch.id)).toEqual({ count: 1 });
+        expect(
+          db
+            .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?")
+            .get(batch.batch.id),
+        ).toEqual({ count: 1 });
         expect(await ai.processNextAiItem(`human-final-${action}-worker`)).toBe(false);
         expect(fetchSpy).not.toHaveBeenCalled();
       }

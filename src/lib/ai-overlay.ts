@@ -74,6 +74,7 @@ const MAX_REASON_LENGTH = 2000;
 // worker cannot claim the same item while the first request is still in flight.
 const LEASE_MS = 180_000;
 const MAX_ATTEMPTS = 3;
+const CANCELLED_ATTEMPT_HARD_TIMEOUT_MS = 130_000;
 
 function immediateTransaction<T>(fn: (db: ReturnType<typeof getDb>) => T) {
   const db = getDb();
@@ -731,6 +732,7 @@ export function createAiBatch(input: { runId: string; providerConfigId: string }
   const batchKey = makeBatchKey(input.runId, snapshotHash, promptHash);
   const staleTimestamp = now();
   transaction((db) => {
+    assertRunMutable(input.runId);
     const staleBatches = db
       .prepare(
         `SELECT id FROM ai_review_batches
@@ -764,6 +766,7 @@ export function createAiBatch(input: { runId: string; providerConfigId: string }
       );
     if (existing.provider_config_id === null && existing.status !== "completed")
       transaction((db) => {
+        assertRunMutable(input.runId);
         db.prepare(
           "UPDATE ai_review_batches SET provider_config_id=?,updated_at=? WHERE id=? AND provider_config_id IS NULL",
         ).run(provider.id, now(), existing.id);
@@ -771,7 +774,10 @@ export function createAiBatch(input: { runId: string; providerConfigId: string }
     // A paused/terminal batch may be revisited after a local ad_hoc review was
     // saved. Remove those queue items, but preserve the batch lifecycle status;
     // resume/retry are the only operations allowed to reactivate a batch.
-    transaction((db) => removeHumanResolvedQueueItems(db, existing.id, input.runId));
+    transaction((db) => {
+      assertRunMutable(input.runId);
+      removeHumanResolvedQueueItems(db, existing.id, input.runId);
+    });
     return { batch: getBatchRow(existing.id), stats: batchStats(existing.id) };
   }
 
@@ -780,6 +786,7 @@ export function createAiBatch(input: { runId: string; providerConfigId: string }
   const timestamp = now();
   const batchId = id("aibatch");
   transaction((db) => {
+    assertRunMutable(input.runId);
     assertNoOtherActiveBatch(db, input.runId);
     db.prepare(
       "INSERT INTO ai_review_batches(id,batch_key,run_id,page_id,study_freeze_id,provider_config_id,provider_snapshot_json,provider_snapshot_hash,prompt_version,prompt_hash,evidence_version,status,created_at,updated_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -830,6 +837,7 @@ export function pauseAiBatch(batchId: string) {
   if (batch.run_id) assertRunMutable(batch.run_id);
   const timestamp = now();
   transaction((db) => {
+    if (batch.run_id) assertRunMutable(batch.run_id);
     db.prepare(
       `UPDATE ai_api_attempts SET cancelled_at=COALESCE(cancelled_at,?)
        WHERE id IN (
@@ -894,6 +902,7 @@ export function resumeAiBatch(batchId: string) {
     throw new AppError("AI_BATCH_NOT_PAUSED", "只有已暂停的 AI 批次可以恢复", 409);
   const timestamp = now();
   transaction((db) => {
+    assertRunMutable(batch.run_id);
     assertNoOtherActiveBatch(db, batch.run_id, batchId);
     removeHumanResolvedQueueItems(db, batchId, batch.run_id);
     db.prepare(
@@ -913,14 +922,21 @@ export function retryAiBatch(batchId: string) {
   const batch = getBatchRow(batchId);
   assertBatchSourceAndSnapshot(batch);
   if (batch.status !== "failed")
-    throw new AppError("AI_BATCH_NOT_RETRYABLE", "只有失败批次可以显式重试；暂停中的批次请先选择继续", 409);
+    throw new AppError(
+      "AI_BATCH_NOT_RETRYABLE",
+      "只有失败批次可以显式重试；暂停中的批次请先选择继续",
+      409,
+    );
   let retriedCount = 0;
   const timestamp = now();
   transaction((db) => {
+    assertRunMutable(batch.run_id);
     assertNoOtherActiveBatch(db, batch.run_id, batchId);
     removeHumanResolvedQueueItems(db, batchId, batch.run_id);
     const retryRow = db
-      .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND status IN ('queued','failed') AND exclusion_reason IS NULL")
+      .prepare(
+        "SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND status IN ('queued','failed') AND exclusion_reason IS NULL",
+      )
       .get(batchId) as { count: number };
     retriedCount = Number(retryRow.count);
     db.prepare(
@@ -1027,9 +1043,10 @@ function isRetryableProviderFailure(error: unknown) {
   if (!(error instanceof AppError)) return false;
   if (["AI_RESPONSE_INVALID", "AI_RESPONSE_EMPTY", "AI_VERDICT_INVALID"].includes(error.code))
     return true;
-  const details = error.details && typeof error.details === "object"
-    ? (error.details as { httpStatus?: unknown })
-    : null;
+  const details =
+    error.details && typeof error.details === "object"
+      ? (error.details as { httpStatus?: unknown })
+      : null;
   const status = typeof details?.httpStatus === "number" ? details.httpStatus : null;
   if (status !== null) return status === 408 || status === 425 || status === 429 || status >= 500;
   return false;
@@ -1263,6 +1280,63 @@ function claimNextAiItem(workerId: string, slot: number) {
     const timestamp = now();
     const timestampMs = Date.now();
     const leaseUntil = new Date(Date.now() + LEASE_MS).toISOString();
+    const cancellationCutoff = new Date(
+      timestampMs - CANCELLED_ATTEMPT_HARD_TIMEOUT_MS,
+    ).toISOString();
+    const expiredCancellations = db
+      .prepare(
+        `SELECT id,item_id,batch_id,started_at,send_started_at FROM ai_api_attempts
+         WHERE status='running' AND cancelled_at IS NOT NULL
+           AND (send_started_at IS NULL OR send_started_at<=?)`,
+      )
+      .all(cancellationCutoff) as Array<{
+      id: string;
+      item_id: string | null;
+      batch_id: string | null;
+      started_at: string;
+      send_started_at: string | null;
+    }>;
+    for (const stale of expiredCancellations) {
+      const endedAt = now();
+      const terminalized = db
+        .prepare(
+          `UPDATE ai_api_attempts SET ended_at=?,duration_ms=?,status='cancelled',
+             error_code=CASE WHEN send_started_at IS NULL THEN 'AI_ATTEMPT_NOT_SENT' ELSE 'AI_ATTEMPT_OUTCOME_UNKNOWN' END
+           WHERE id=? AND status='running' AND cancelled_at IS NOT NULL`,
+        )
+        .run(
+          endedAt,
+          stale.send_started_at
+            ? Math.max(0, Date.parse(endedAt) - Date.parse(stale.send_started_at))
+            : Math.max(0, Date.parse(endedAt) - Date.parse(stale.started_at)),
+          stale.id,
+        );
+      if (terminalized.changes !== 1 || !stale.item_id || !stale.batch_id) continue;
+      const itemChange = db
+        .prepare(
+          `UPDATE ai_review_items SET
+             status=CASE WHEN EXISTS (
+               SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled'
+             ) THEN 'failed' ELSE 'queued' END,
+             last_error=CASE WHEN EXISTS (
+               SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled'
+                 AND b.stop_reason='provider_changed'
+             ) THEN 'AI_PROVIDER_CHANGED' ELSE NULL END,
+             lease_owner=NULL,lease_until=NULL,active_attempt_id=NULL,next_retry_at=NULL,
+             batch_revision=(SELECT revision FROM ai_review_batches WHERE id=ai_review_items.batch_id),
+             updated_at=?,completed_at=CASE WHEN EXISTS (
+               SELECT 1 FROM ai_review_batches b WHERE b.id=ai_review_items.batch_id AND b.status='cancelled'
+             ) THEN ? ELSE NULL END
+           WHERE id=? AND batch_id=? AND status='running' AND active_attempt_id=?
+             AND EXISTS (
+               SELECT 1 FROM ai_review_batches b JOIN scan_runs r ON r.id=b.run_id
+               JOIN scan_jobs j ON j.id=r.job_id WHERE b.id=ai_review_items.batch_id
+                 AND j.deletion_requested_at IS NULL
+             )`,
+        )
+        .run(endedAt, endedAt, stale.item_id, stale.batch_id, stale.id);
+      if (itemChange.changes === 1) finishWhenNoQueuedItems(db, stale.batch_id, endedAt);
+    }
     const exhaustedItems = db
       .prepare(
         `SELECT i.id,i.batch_id,i.retry_cycle
@@ -1317,12 +1391,18 @@ function claimNextAiItem(workerId: string, slot: number) {
         .run(timestamp, timestamp, item.id, timestamp);
       if (changed.changes !== 1) continue;
       const activeAttempts = db
-        .prepare("SELECT id,started_at FROM ai_api_attempts WHERE item_id=? AND retry_cycle=? AND status='running'")
+        .prepare(
+          "SELECT id,started_at FROM ai_api_attempts WHERE item_id=? AND retry_cycle=? AND status='running'",
+        )
         .all(item.id, item.retry_cycle) as Array<{ id: string; started_at: string }>;
       for (const activeAttempt of activeAttempts)
         db.prepare(
           "UPDATE ai_api_attempts SET ended_at=?,duration_ms=?,status='failed',error_code='AI_ATTEMPT_INTERRUPTED' WHERE id=? AND status='running'",
-        ).run(timestamp, Math.max(0, Date.parse(timestamp) - Date.parse(activeAttempt.started_at)), activeAttempt.id);
+        ).run(
+          timestamp,
+          Math.max(0, Date.parse(timestamp) - Date.parse(activeAttempt.started_at)),
+          activeAttempt.id,
+        );
       finishWhenNoQueuedItems(db, item.batch_id, timestamp);
     }
     const item = db
@@ -1334,6 +1414,11 @@ function claimNextAiItem(workerId: string, slot: number) {
          WHERE b.run_id IS NOT NULL AND b.page_id IS NULL AND b.study_freeze_id IS NULL
            AND j.deletion_requested_at IS NULL
            AND b.status IN ('queued','running') AND b.cancel_requested_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM ai_api_attempts stopped_attempt
+             WHERE stopped_attempt.run_id=b.run_id
+               AND stopped_attempt.status='running' AND stopped_attempt.cancelled_at IS NOT NULL
+           )
            AND (
              SELECT COUNT(*)
              FROM ai_review_items active_i
@@ -1366,7 +1451,16 @@ function claimNextAiItem(workerId: string, slot: number) {
       .prepare(
         "UPDATE ai_review_items SET status='running',lease_owner=?,lease_until=?,attempt_count=attempt_count+1,active_attempt_id=?,batch_revision=?,updated_at=? WHERE id=? AND attempt_count<? AND (status='queued' OR (status='running' AND lease_until IS NOT NULL AND lease_until<?)) AND EXISTS (SELECT 1 FROM ai_review_batches b JOIN scan_runs r ON r.id=b.run_id JOIN scan_jobs j ON j.id=r.job_id WHERE b.id=ai_review_items.batch_id AND b.status IN ('queued','running') AND b.cancel_requested_at IS NULL AND j.deletion_requested_at IS NULL)",
       )
-      .run(workerId, leaseUntil, attemptId, item.current_batch_revision, timestamp, item.id, MAX_ATTEMPTS, timestamp);
+      .run(
+        workerId,
+        leaseUntil,
+        attemptId,
+        item.current_batch_revision,
+        timestamp,
+        item.id,
+        MAX_ATTEMPTS,
+        timestamp,
+      );
     if (changed.changes !== 1) return null;
     if (isRateLimited) noteOpenRouterFreeRequestStart(item, timestampMs);
     db.prepare(
@@ -1430,7 +1524,16 @@ function completeItem(
                AND (b.status IN ('paused','queued') OR (b.status='cancelled' AND b.stop_reason='provider_changed'))
                AND j.deletion_requested_at IS NULL
            )`,
-      ).run(timestamp, timestamp, item.id, item.batch_id, item.lease_owner, attemptId, item.batch_revision, attemptId);
+      ).run(
+        timestamp,
+        timestamp,
+        item.id,
+        item.batch_id,
+        item.lease_owner,
+        attemptId,
+        item.batch_revision,
+        attemptId,
+      );
       return;
     }
     const changed = db
@@ -1481,7 +1584,13 @@ function safeAttemptErrorCode(error: unknown) {
   return /^[A-Z0-9_]{1,80}$/.test(candidate) ? candidate : "AI_PROVIDER_ERROR";
 }
 
-function startAttempt(item: any, workerId: string, slot: number, db: ReturnType<typeof getDb>, attemptId: string) {
+function startAttempt(
+  item: any,
+  workerId: string,
+  slot: number,
+  db: ReturnType<typeof getDb>,
+  attemptId: string,
+) {
   const timestamp = now();
   let snapshot: Partial<ProviderSnapshot> = {};
   try {
@@ -1530,7 +1639,7 @@ function finishAttempt(
        error_code=CASE WHEN cancelled_at IS NOT NULL OR ?=1 THEN 'AI_ATTEMPT_CANCELLED' WHEN ?=1 THEN ? ELSE NULL END,
        input_tokens=?,output_tokens=?,total_tokens=?,reported_cost=?,currency=?,
        cancelled_at=CASE WHEN ?=1 THEN COALESCE(cancelled_at,?) ELSE cancelled_at END
-       WHERE id=? AND status='running'`,
+       WHERE id=? AND ended_at IS NULL AND status IN ('running','cancelled')`,
     )
     .run(
       endedAt,
@@ -1564,7 +1673,9 @@ function failItem(item: any, error: unknown) {
          WHERE i.id=? AND b.id=? AND i.active_attempt_id=? AND i.lease_owner=?
            AND i.batch_revision=? AND j.deletion_requested_at IS NULL`,
       )
-      .get(item.id, item.batch_id, item.attempt_id, item.lease_owner, item.batch_revision) as { cancel_requested_at: string | null } | undefined;
+      .get(item.id, item.batch_id, item.attempt_id, item.lease_owner, item.batch_revision) as
+      | { cancel_requested_at: string | null }
+      | undefined;
     const attemptCancelled = db
       .prepare("SELECT cancelled_at FROM ai_api_attempts WHERE id=?")
       .get(item.attempt_id) as { cancelled_at: string | null } | undefined;
@@ -1595,7 +1706,15 @@ function failItem(item: any, error: unknown) {
                AND (b.status IN ('paused','queued') OR (b.status='cancelled' AND b.stop_reason='provider_changed'))
                AND j.deletion_requested_at IS NULL
            )`,
-      ).run(timestamp, null, item.id, item.lease_owner, item.attempt_id, item.batch_revision, item.attempt_id);
+      ).run(
+        timestamp,
+        null,
+        item.id,
+        item.lease_owner,
+        item.attempt_id,
+        item.batch_revision,
+        item.attempt_id,
+      );
       return;
     }
     const current = db
@@ -1603,8 +1722,12 @@ function failItem(item: any, error: unknown) {
       .get(item.id) as { attempt_count: number } | undefined;
     const attemptCount = Number(current?.attempt_count ?? item.attempt_count);
     const retryable = isRetryableProviderFailure(error);
-    const backoffAt = transientRetryAt(error) ??
-      new Date(Date.now() + Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attemptCount - 1))).toISOString();
+    const backoffAt =
+      transientRetryAt(error) ??
+      new Date(
+        Date.now() +
+          Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attemptCount - 1)),
+      ).toISOString();
     const terminal = !retryable || attemptCount >= MAX_ATTEMPTS;
     const nextRetryAt = terminal ? null : backoffAt;
     const changed = db
@@ -1709,6 +1832,17 @@ export async function processNextAiItem(workerId: string, slot = 0) {
       if (!node || controller.signal.aborted)
         throw new DOMException("AI attempt is no longer valid", "AbortError");
       const evidence = evidenceForPrompt(node.ai_evidence_json);
+      // This immediate transaction is the durable send gate. The HTTP call is
+      // invoked synchronously before this write lock is released, so a stop or
+      // deletion fence from another connection either commits first (no send)
+      // or observes a request that has already entered flight.
+      const sendStarted = db
+        .prepare(
+          "UPDATE ai_api_attempts SET send_started_at=? WHERE id=? AND status='running' AND cancelled_at IS NULL",
+        )
+        .run(now(), attempt.id);
+      if (sendStarted.changes !== 1)
+        throw new DOMException("AI attempt cancelled before send", "AbortError");
       return {
         responsePromise: callProvider(
           snapshotProvider,

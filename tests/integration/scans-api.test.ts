@@ -242,6 +242,76 @@ describe("scans list route", () => {
     );
   });
 
+  it("resumes cleanup when a previous delete already committed the scan fence", async () => {
+    const origin = `https://delete-resume-${Math.random().toString(36).slice(2)}.example`;
+    const job = repositories.createScanJob(origin, {
+      maxPages: 1,
+      sameOriginOnly: true,
+      respectRobots: true,
+    });
+    const run = repositories.createRun(job);
+    saveIncompleteForDelete(run.id, job.site_id, origin);
+    const provider = ai.saveAiProvider({
+      label: "恢复删除测试模型",
+      baseUrl: "http://127.0.0.1:1234/v1",
+      model: "delete-resume-model",
+      apiKey: "delete-resume-key",
+      enabled: true,
+    });
+    const batch = ai.createAiBatch({ runId: run.id, providerConfigId: provider.id });
+    const db = dbModule.getDb();
+    const timestamp = new Date().toISOString();
+    db.prepare(
+      "UPDATE scan_jobs SET status='completed',finished_at=?,deletion_requested_at=? WHERE id=?",
+    ).run(timestamp, timestamp, job.id);
+    db.prepare(
+      "INSERT INTO ai_api_attempts(id,worker_id,slot,run_id,batch_id,item_id,provider_config_id,provider_label,model,retry_cycle,attempt_number,started_at,status) SELECT ?,?,?,?,?,?,?,?,?,?,?,?,'running' FROM ai_review_items WHERE batch_id=? LIMIT 1",
+    ).run(
+      `attempt_delete_resume_${Math.random().toString(36).slice(2)}`,
+      "delete-resume-worker",
+      0,
+      run.id,
+      batch.batch.id,
+      `${batch.batch.id}-item`,
+      provider.id,
+      provider.label,
+      provider.model,
+      0,
+      1,
+      timestamp,
+      batch.batch.id,
+    );
+
+    const response = await scanJobRoute.DELETE(
+      new Request(`http://localhost:3000/api/scans/${job.id}`, {
+        method: "DELETE",
+        headers: { Origin: "http://localhost:3000" },
+      }),
+      { params: Promise.resolve({ jobId: job.id }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.prepare("SELECT id FROM scan_jobs WHERE id=?").get(job.id)).toBeUndefined();
+    expect(db.prepare("SELECT id FROM scan_runs WHERE id=?").get(run.id)).toBeUndefined();
+    expect(
+      db.prepare("SELECT id FROM ai_review_items WHERE batch_id=?").get(batch.batch.id),
+    ).toBeUndefined();
+    expect(
+      db
+        .prepare(
+          "SELECT status,run_id,batch_id,item_id,provider_config_id,error_code FROM ai_api_attempts WHERE worker_id='delete-resume-worker'",
+        )
+        .get(),
+    ).toMatchObject({
+      status: "cancelled",
+      run_id: null,
+      batch_id: null,
+      item_id: null,
+      provider_config_id: null,
+      error_code: "AI_ATTEMPT_NOT_SENT",
+    });
+  });
+
   it("deletes AI batches and items in every status while preserving other scans and reports", async () => {
     const db = dbModule.getDb();
     const makeScan = (label: string) => {

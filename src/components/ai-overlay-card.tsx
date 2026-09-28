@@ -15,23 +15,26 @@ type Provider = {
 };
 
 export function isRunAiBatchSource(
-  batch: {
-    id?: unknown;
-    run_id?: unknown;
-    page_id?: unknown;
-    study_freeze_id?: unknown;
-  } | null | undefined,
+  batch:
+    | {
+        id?: unknown;
+        run_id?: unknown;
+        page_id?: unknown;
+        study_freeze_id?: unknown;
+      }
+    | null
+    | undefined,
   runId: string,
   latestBatchId: string | null | undefined,
 ) {
   return Boolean(
     batch &&
-      typeof batch.id === "string" &&
-      batch.id.length > 0 &&
-      batch.id === latestBatchId &&
-      batch.run_id === runId &&
-      batch.page_id == null &&
-      batch.study_freeze_id == null,
+    typeof batch.id === "string" &&
+    batch.id.length > 0 &&
+    batch.id === latestBatchId &&
+    batch.run_id === runId &&
+    batch.page_id == null &&
+    batch.study_freeze_id == null,
   );
 }
 
@@ -279,9 +282,7 @@ export default function AiOverlayCard({
     setError("");
     if (
       mode === "all" &&
-      !window.confirm(
-        copy.aiRunAllConfirm.replace("{count}", String(aiCandidateCount)),
-      )
+      !window.confirm(copy.aiRunAllConfirm.replace("{count}", String(aiCandidateCount)))
     ) {
       actionLock.current = false;
       setPendingAction(null);
@@ -296,8 +297,7 @@ export default function AiOverlayCard({
           providerConfigId: providerId,
           mode,
           requestId: crypto.randomUUID(),
-          ...(mode === "remaining" &&
-          isRunAiBatchSource(batch, runId, data?.latestBatchId)
+          ...(mode === "remaining" && isRunAiBatchSource(batch, runId, data?.latestBatchId)
             ? { sourceBatchId: batch?.id }
             : {}),
         }),
@@ -310,7 +310,11 @@ export default function AiOverlayCard({
         return;
       }
       if (value.empty) {
-        setMessage(en ? "No unfinished or failed items remain; no task was created." : "没有尚未成功的复核项目，未创建任务。");
+        setMessage(
+          en
+            ? "No unfinished or failed items remain; no task was created."
+            : "没有尚未成功的复核项目，未创建任务。",
+        );
         await load();
         onBatchChange?.();
         return;
@@ -321,7 +325,9 @@ export default function AiOverlayCard({
         Number(returnedStats?.queued ?? 0) + Number(returnedStats?.running ?? 0);
       setMessage(
         returnedStatus === "queued" || returnedStatus === "running"
-          ? returnedStatus === "queued" ? copy.aiReviewQueued : copy.aiReviewRunning
+          ? returnedStatus === "queued"
+            ? copy.aiReviewQueued
+            : copy.aiReviewRunning
           : returnedStatus === "failed"
             ? returnedPending > 0
               ? en
@@ -564,7 +570,11 @@ export default function AiOverlayCard({
       {!isReadOnly ? (
         <div className="ai-review-actions">
           {!hasBatch ? (
-            <button type="button" onClick={() => createBatch("all")} disabled={pendingAction !== null}>
+            <button
+              type="button"
+              onClick={() => createBatch("all")}
+              disabled={pendingAction !== null}
+            >
               {pendingAction === "start"
                 ? en
                   ? "Starting…"
@@ -588,15 +598,16 @@ export default function AiOverlayCard({
                   {copy.aiContinueRemaining}
                 </button>
               ) : null}{" "}
-              <button type="button" onClick={() => createBatch("all")} disabled={pendingAction !== null}>
-              {pendingAction === "start"
-                ? en
-                  ? "Starting…"
-                  : "启动中…"
-                : copy.aiRunAllAgain.replace(
-                    "{count}",
-                    String(aiCandidateCount),
-                  )}
+              <button
+                type="button"
+                onClick={() => createBatch("all")}
+                disabled={pendingAction !== null}
+              >
+                {pendingAction === "start"
+                  ? en
+                    ? "Starting…"
+                    : "启动中…"
+                  : copy.aiRunAllAgain.replace("{count}", String(aiCandidateCount))}
               </button>
             </>
           ) : null}{" "}
@@ -617,7 +628,13 @@ export default function AiOverlayCard({
               onClick={() => action("resume")}
               disabled={pendingAction !== null}
             >
-              {pendingAction === "resume" ? (en ? "Resuming…" : "继续中…") : en ? "Continue task" : "继续任务"}
+              {pendingAction === "resume"
+                ? en
+                  ? "Resuming…"
+                  : "继续中…"
+                : en
+                  ? "Continue task"
+                  : "继续任务"}
             </button>
           ) : null}{" "}
           {batch?.stop_reason ? (

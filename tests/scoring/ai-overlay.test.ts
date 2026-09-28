@@ -125,7 +125,7 @@ describe("thin AI overlay", () => {
         db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
           version: number;
         }
-    ).version,
+      ).version,
     ).toBe(37);
 
     // Recreate the pre-033 schema to exercise upgrading an installed 032 database.
@@ -437,13 +437,17 @@ describe("thin AI overlay", () => {
 
     expect(
       db
-        .prepare("SELECT mode,request_id,result_batch_id FROM ai_batch_action_requests WHERE run_id=?")
+        .prepare(
+          "SELECT mode,request_id,result_batch_id FROM ai_batch_action_requests WHERE run_id=?",
+        )
         .get(run.id),
     ).toEqual({ mode: "legacy", request_id: "legacy-action-id", result_batch_id: batch.batch.id });
     expect(
-      (db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version=37").get() as {
-        count: number;
-      }).count,
+      (
+        db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version=37").get() as {
+          count: number;
+        }
+      ).count,
     ).toBe(1);
     ai.pauseAiBatch(batch.batch.id);
   });
@@ -560,19 +564,33 @@ describe("thin AI overlay", () => {
     const item = fixture(3, true);
     const config = provider();
     const requestId = crypto.randomUUID();
-    const firstResult = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id, mode: "all", requestId });
+    const firstResult = ai.createAiBatch({
+      runId: item.run.id,
+      providerConfigId: config.id,
+      mode: "all",
+      requestId,
+    });
     if (!("batch" in firstResult)) throw new Error("expected first all action to create a batch");
     const first = firstResult;
-    const replayResult = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id, mode: "all", requestId });
+    const replayResult = ai.createAiBatch({
+      runId: item.run.id,
+      providerConfigId: config.id,
+      mode: "all",
+      requestId,
+    });
     if (!("batch" in replayResult)) throw new Error("expected replay to return its batch");
     const replay = replayResult;
     expect(replay.batch.id).toBe(first.batch.id);
-    const firstItem = dbModule.getDb().prepare(
-      "SELECT id,result_node_id FROM ai_review_items WHERE batch_id=? ORDER BY id LIMIT 1",
-    ).get(first.batch.id) as { id: string; result_node_id: string };
-    dbModule.getDb().prepare(
-      "UPDATE ai_review_items SET status='completed',verdict='problem',completed_at=? WHERE id=?",
-    ).run(new Date().toISOString(), firstItem.id);
+    const firstItem = dbModule
+      .getDb()
+      .prepare("SELECT id,result_node_id FROM ai_review_items WHERE batch_id=? ORDER BY id LIMIT 1")
+      .get(first.batch.id) as { id: string; result_node_id: string };
+    dbModule
+      .getDb()
+      .prepare(
+        "UPDATE ai_review_items SET status='completed',verdict='problem',completed_at=? WHERE id=?",
+      )
+      .run(new Date().toISOString(), firstItem.id);
     const secondResult = ai.createAiBatch({
       runId: item.run.id,
       providerConfigId: config.id,
@@ -584,9 +602,12 @@ describe("thin AI overlay", () => {
     const second = secondResult;
     expect(second.batch.id).not.toBe(first.batch.id);
     expect(second.stats.total).toBe(3);
-    expect(dbModule.getDb().prepare(
-      "SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND result_node_id=?",
-    ).get(second.batch.id, firstItem.result_node_id)).toEqual({ count: 1 });
+    expect(
+      dbModule
+        .getDb()
+        .prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND result_node_id=?")
+        .get(second.batch.id, firstItem.result_node_id),
+    ).toEqual({ count: 1 });
     ai.pauseAiBatch(second.batch.id);
   });
 
@@ -607,9 +628,8 @@ describe("thin AI overlay", () => {
     };
 
     const result = ai.createAiBatch(request);
-    type HasEmptyResultBranch = Extract<typeof result, { empty: true }> extends never
-      ? false
-      : true;
+    type HasEmptyResultBranch =
+      Extract<typeof result, { empty: true }> extends never ? false : true;
     const emptyBranchIsAvailable: HasEmptyResultBranch = true;
 
     expect(emptyBranchIsAvailable).toBe(true);

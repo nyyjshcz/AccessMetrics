@@ -18,7 +18,7 @@ export async function GET(request: Request, context: { params: Promise<{ runId: 
     const summary = summarizeAiRun(runId, providerConfigId);
     return NextResponse.json({ ...summary, overlay: undefined, aiOverlay: undefined });
   } catch (error) {
-      return NextResponse.json(errorEnvelope(error, request), {
+    return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,
     });
   }
@@ -33,7 +33,11 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body))
       throw new AppError("INVALID_INPUT", "AI batch 请求必须是对象", 422);
-    if (Object.keys(body).some((key) => !["providerConfigId", "mode", "requestId", "sourceBatchId"].includes(key)))
+    if (
+      Object.keys(body).some(
+        (key) => !["providerConfigId", "mode", "requestId", "sourceBatchId"].includes(key),
+      )
+    )
       throw new AppError("UNKNOWN_FIELD", "AI batch 请求包含未知字段", 400);
     if (typeof body.providerConfigId !== "string" || !body.providerConfigId)
       throw new AppError("INVALID_INPUT", "providerConfigId 必填", 422);

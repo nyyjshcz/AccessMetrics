@@ -743,8 +743,8 @@ type EmptyAiBatchResult = {
 };
 type ExplicitAiBatchResult = AiBatchCreationResult | EmptyAiBatchResult;
 
-export function createAiBatch(input: LegacyAiBatchInput): AiBatchCreationResult;
 export function createAiBatch(input: ExplicitAiBatchInput): ExplicitAiBatchResult;
+export function createAiBatch(input: LegacyAiBatchInput): AiBatchCreationResult;
 export function createAiBatch(
   input: LegacyAiBatchInput | ExplicitAiBatchInput,
 ): ExplicitAiBatchResult {

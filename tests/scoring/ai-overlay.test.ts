@@ -590,6 +590,33 @@ describe("thin AI overlay", () => {
     ai.pauseAiBatch(second.batch.id);
   });
 
+  it("retains the empty-result branch for a pretyped explicit batch request", () => {
+    const item = fixture(1, true);
+    const config = provider();
+    const request: {
+      runId: string;
+      providerConfigId: string;
+      mode: "remaining" | "all";
+      requestId: string;
+      sourceBatchId?: string;
+    } = {
+      runId: item.run.id,
+      providerConfigId: config.id,
+      mode: "all",
+      requestId: crypto.randomUUID(),
+    };
+
+    const result = ai.createAiBatch(request);
+    type HasEmptyResultBranch = Extract<typeof result, { empty: true }> extends never
+      ? false
+      : true;
+    const emptyBranchIsAvailable: HasEmptyResultBranch = true;
+
+    expect(emptyBranchIsAvailable).toBe(true);
+    expect("batch" in result).toBe(true);
+    if ("batch" in result) ai.pauseAiBatch(result.batch.id);
+  });
+
   it("uses accurate queued and running feedback in both locales", () => {
     const zh = messages["zh-CN"];
     const en = messages.en;

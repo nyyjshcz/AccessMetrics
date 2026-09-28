@@ -29,3 +29,10 @@
 - Added overloads so legacy `createAiBatch` calls return a statically non-empty batch result while explicit actions retain the empty-or-batch union; narrowed explicit test results without casts.
 - Focused verification: `pnpm exec vitest run tests/integration/ai-lifecycle.test.ts tests/scoring/ai-overlay.test.ts` — **2 files passed, 98 tests passed**.
 - Type check: `pnpm typecheck` reports only the separate Task 6 error `src/app/settings/ai/worker/worker-monitor-client.tsx(405,25): Cannot find name 'formatAiStopReason'.` No Task 5 union errors remain; the Task 6 monitor/import issue was left untouched.
+
+## Fix-round-2 re-review P2
+
+- Added a pretyped explicit-request regression that statically requires the empty-result branch. Before the overload change, `pnpm typecheck` failed at that assertion (`true` was not assignable to `false`), reproducing the finding.
+- Put the explicit-action overload before the structurally compatible legacy overload; legacy inputs without `mode` continue to infer the non-empty result.
+- Verification: `pnpm exec vitest run tests/scoring/ai-overlay.test.ts -t "retains the empty-result branch for a pretyped explicit batch request"` — 1 passed; `pnpm exec vitest run tests/integration/ai-lifecycle.test.ts tests/scoring/ai-overlay.test.ts` — 2 files, 99 tests passed.
+- `pnpm typecheck` now reports only the unrelated Task 6 missing `formatAiStopReason` import. No monitor files, Docker, or NAS were changed or used for this fix.

@@ -560,8 +560,13 @@ function queryIncompleteNodes(runId: string) {
     .all(runId) as IncompleteNodeRow[];
 }
 
-function makeBatchKey(runId: string, providerHash: string, promptHash: string) {
-  return `ai:${runId}:${providerHash}:${promptHash}:${AI_EVIDENCE_VERSION}`;
+function makeBatchKey(
+  runId: string,
+  providerHash: string,
+  promptHash: string,
+  batchIdentity?: string,
+) {
+  return `ai:${runId}:${providerHash}:${promptHash}:${AI_EVIDENCE_VERSION}${batchIdentity ? `:${batchIdentity}` : ""}`;
 }
 
 export type AiBatchSummary = {
@@ -719,7 +724,13 @@ function finishWhenNoQueuedItems(db: ReturnType<typeof getDb>, batchId: string, 
   return pending;
 }
 
-export function createAiBatch(input: { runId: string; providerConfigId: string }) {
+export function createAiBatch(input: {
+  runId: string;
+  providerConfigId: string;
+  mode?: "remaining" | "all";
+  requestId?: string;
+  sourceBatchId?: string;
+}) {
   if (!input.runId) throw new AppError("AI_BATCH_SCOPE_INVALID", "AI batch 必须绑定扫描", 422);
   assertRunMutable(input.runId);
   const run = getDb().prepare("SELECT id FROM scan_runs WHERE id=?").get(input.runId);
@@ -729,6 +740,14 @@ export function createAiBatch(input: { runId: string; providerConfigId: string }
   const snapshotJson = canonicalize(snapshot);
   const snapshotHash = sha256(snapshotJson);
   const promptHash = AI_PROMPT_HASH;
+  if (input.mode && input.requestId)
+    return createExplicitAiBatch(input as {
+      runId: string;
+      providerConfigId: string;
+      mode: "remaining" | "all";
+      requestId: string;
+      sourceBatchId?: string;
+    }, provider, snapshotJson, snapshotHash, promptHash);
   const batchKey = makeBatchKey(input.runId, snapshotHash, promptHash);
   const staleTimestamp = now();
   transaction((db) => {
@@ -830,6 +849,97 @@ export function createAiBatch(input: { runId: string; providerConfigId: string }
       );
   });
   return { batch: getBatchRow(batchId), stats: batchStats(batchId) };
+}
+
+function createExplicitAiBatch(
+  input: {
+    runId: string;
+    providerConfigId: string;
+    mode: "remaining" | "all";
+    requestId: string;
+    sourceBatchId?: string;
+  },
+  provider: AiProviderRow,
+  snapshotJson: string,
+  snapshotHash: string,
+  promptHash: string,
+) {
+  if (!input.requestId.trim() || input.requestId.length > 128)
+    throw new AppError("INVALID_INPUT", "requestId 格式无效", 422);
+  if (input.mode !== "remaining" && input.mode !== "all")
+    throw new AppError("INVALID_INPUT", "mode 必须是 remaining 或 all", 422);
+  const db = getDb();
+  const replay = db.prepare(
+    "SELECT id FROM ai_review_batches WHERE run_id=? AND action_request_id=?",
+  ).get(input.runId, input.requestId) as { id: string } | undefined;
+  if (replay) return getAiBatch(replay.id);
+
+  let source: AiBatchRow | undefined;
+  if (input.sourceBatchId) {
+    source = db.prepare("SELECT * FROM ai_review_batches WHERE id=?").get(input.sourceBatchId) as AiBatchRow | undefined;
+    if (!source || source.run_id !== input.runId || source.page_id || source.study_freeze_id)
+      throw new AppError("AI_BATCH_SOURCE_INVALID", "来源批次不属于当前扫描", 409);
+    const newest = db.prepare(
+      `SELECT id FROM ai_review_batches WHERE run_id=? AND page_id IS NULL AND study_freeze_id IS NULL
+       ORDER BY created_at DESC,id DESC LIMIT 1`,
+    ).get(input.runId) as { id: string } | undefined;
+    if (newest?.id !== source.id)
+      throw new AppError("AI_BATCH_SOURCE_STALE", "来源批次已过期，请刷新复核状态", 409);
+  }
+
+  const manual = loadLocalManualVerdicts(input.runId);
+  const nodes = queryIncompleteNodes(input.runId).filter((node) => !manual.has(node.id));
+  let selected = nodes;
+  if (input.mode === "remaining" && source) {
+    const unfinished = db.prepare(
+      "SELECT result_node_id FROM ai_review_items WHERE batch_id=? AND status<>'completed' AND exclusion_reason IS NULL",
+    ).all(source.id) as Array<{ result_node_id: string }>;
+    const remainingIds = new Set(unfinished.map((item) => item.result_node_id));
+    selected = nodes.filter((node) => remainingIds.has(node.id));
+  }
+  if (selected.length === 0)
+    return { empty: true as const, scopeCount: 0, stats: { total: 0, completed: 0, queued: 0, running: 0, failed: 0 } };
+
+  const timestamp = now();
+  const batchId = id("aibatch");
+  const batchKey = makeBatchKey(input.runId, snapshotHash, promptHash, batchId);
+  transaction((tx) => {
+    assertRunMutable(input.runId);
+    const duplicate = tx.prepare(
+      "SELECT id FROM ai_review_batches WHERE run_id=? AND action_request_id=?",
+    ).get(input.runId, input.requestId) as { id: string } | undefined;
+    if (duplicate) return;
+    const live = tx.prepare(
+      `SELECT id FROM ai_review_batches WHERE run_id=? AND page_id IS NULL AND study_freeze_id IS NULL
+       AND status IN ('queued','running','paused')`,
+    ).all(input.runId) as Array<{ id: string }>;
+    for (const batch of live) cancelBatchWork(tx, batch.id, timestamp);
+    assertNoOtherActiveBatch(tx, input.runId);
+    tx.prepare(
+      `INSERT INTO ai_review_batches(id,batch_key,run_id,page_id,study_freeze_id,provider_config_id,
+       provider_snapshot_json,provider_snapshot_hash,prompt_version,prompt_hash,evidence_version,status,
+       created_at,updated_at,completed_at,action_request_id,source_batch_id)
+       VALUES (?,?,?,NULL,NULL,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).run(
+      batchId, batchKey, input.runId, provider.id, snapshotJson, snapshotHash, AI_PROMPT_VERSION,
+      promptHash, AI_EVIDENCE_VERSION, "queued", timestamp, timestamp, null, input.requestId,
+      source?.id ?? null,
+    );
+    const insert = tx.prepare(
+      `INSERT INTO ai_review_items(id,batch_id,result_node_id,status,verdict,reason,evidence_hash,
+       lease_owner,lease_until,attempt_count,response_hash,last_error,created_at,updated_at,completed_at)
+       VALUES (?,?,?,'queued',NULL,NULL,?,NULL,NULL,0,NULL,NULL,?,?,NULL)`,
+    );
+    for (const node of selected)
+      insert.run(id("aiitem"), batchId, node.id, node.ai_evidence_hash, timestamp, timestamp);
+    // Preserve cancelled or paused source history while ensuring human-final
+    // verdicts are never copied into a new executable batch.
+    if (source) removeHumanResolvedQueueItems(tx, source.id, input.runId);
+  });
+  const existing = db.prepare(
+    "SELECT id FROM ai_review_batches WHERE run_id=? AND action_request_id=?",
+  ).get(input.runId, input.requestId) as { id: string } | undefined;
+  return getAiBatch(existing?.id ?? batchId);
 }
 
 export function pauseAiBatch(batchId: string) {

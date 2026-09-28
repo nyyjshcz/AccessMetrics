@@ -33,12 +33,24 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body))
       throw new AppError("INVALID_INPUT", "AI batch 请求必须是对象", 422);
-    if (Object.keys(body).some((key) => key !== "providerConfigId"))
+    if (Object.keys(body).some((key) => !["providerConfigId", "mode", "requestId", "sourceBatchId"].includes(key)))
       throw new AppError("UNKNOWN_FIELD", "AI batch 请求包含未知字段", 400);
     if (typeof body.providerConfigId !== "string" || !body.providerConfigId)
       throw new AppError("INVALID_INPUT", "providerConfigId 必填", 422);
-    const result = createAiBatch({ runId, providerConfigId: body.providerConfigId });
-    return NextResponse.json(result, { status: 201 });
+    if (body.mode !== "remaining" && body.mode !== "all")
+      throw new AppError("INVALID_INPUT", "mode 必须是 remaining 或 all", 422);
+    if (typeof body.requestId !== "string" || !body.requestId.trim() || body.requestId.length > 128)
+      throw new AppError("INVALID_INPUT", "requestId 必填且长度不能超过 128", 422);
+    if (body.sourceBatchId !== undefined && typeof body.sourceBatchId !== "string")
+      throw new AppError("INVALID_INPUT", "sourceBatchId 格式无效", 422);
+    const result = createAiBatch({
+      runId,
+      providerConfigId: body.providerConfigId,
+      mode: body.mode,
+      requestId: body.requestId,
+      ...(body.sourceBatchId ? { sourceBatchId: body.sourceBatchId } : {}),
+    });
+    return NextResponse.json(result, { status: "empty" in result ? 200 : 201 });
   } catch (error) {
     return NextResponse.json(errorEnvelope(error, request), {
       status: error instanceof AppError ? error.status : 500,

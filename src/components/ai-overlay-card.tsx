@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Locale } from "@/lib/i18n";
+import { messages, type Locale } from "@/lib/i18n";
 
 type Provider = {
   id: string;
@@ -40,6 +40,7 @@ export default function AiOverlayCard({
   locale?: Locale;
 }) {
   const en = locale === "en";
+  const copy = messages[locale];
   const [providers, setProviders] = useState<Provider[]>([]);
   const [providerId, setProviderId] = useState("");
   const [data, setData] = useState<any>(null);
@@ -205,11 +206,7 @@ export default function AiOverlayCard({
     batchSnapshot.keyFingerprint === selectedProvider.keyFingerprint &&
     batchSnapshot.rateLimitRpm === selectedProvider.rateLimitRpm,
   );
-  const canCreateWithCurrentConfig =
-    !isReadOnly &&
-    (status === "failed" || status === "paused") &&
-    Boolean(selectedProvider) &&
-    (providerRemoved || !currentProviderMatchesBatch);
+  const canCreateWithCurrentConfig = !isReadOnly && Boolean(selectedProvider);
   const activeBatch = status === "queued" || status === "running";
   const selectedConfigDiffersFromBatch = Boolean(
     selectedProvider && batchSnapshot && !currentProviderMatchesBatch,
@@ -242,7 +239,7 @@ export default function AiOverlayCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, query, status]);
 
-  async function createBatch() {
+  async function createBatch(mode: "remaining" | "all") {
     if (isReadOnly || actionLock.current) return;
     actionLock.current = true;
     setPendingAction("start");
@@ -258,18 +255,39 @@ export default function AiOverlayCard({
       return;
     }
     setError("");
+    if (
+      mode === "all" &&
+      !window.confirm(
+        copy.aiRunAllConfirm.replace("{count}", String(data?.totalIncomplete ?? 0)),
+      )
+    ) {
+      actionLock.current = false;
+      setPendingAction(null);
+      return;
+    }
     setMessage(en ? "Starting AI review…" : "正在启动 AI 复核…");
     try {
       const response = await fetch(`/api/runs/${runId}/ai-review`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ providerConfigId: providerId }),
+        body: JSON.stringify({
+          providerConfigId: providerId,
+          mode,
+          requestId: crypto.randomUUID(),
+          ...(batch?.id ? { sourceBatchId: batch.id } : {}),
+        }),
       });
       const value = await response.json();
       requestSequence.current += 1;
       if (!response.ok) {
         setError(value.error?.message ?? (en ? "Failed to start AI review" : "启动 AI 复核失败"));
         setMessage("");
+        return;
+      }
+      if (value.empty) {
+        setMessage(en ? "No unfinished or failed items remain; no task was created." : "没有尚未成功的复核项目，未创建任务。");
+        await load();
+        onBatchChange?.();
         return;
       }
       const returnedStatus = value.batch?.status ?? value.batch?.batch?.status;
@@ -523,7 +541,7 @@ export default function AiOverlayCard({
       {!isReadOnly ? (
         <div className="ai-review-actions">
           {!hasBatch ? (
-            <button type="button" onClick={createBatch} disabled={pendingAction !== null}>
+            <button type="button" onClick={() => createBatch("all")} disabled={pendingAction !== null}>
               {pendingAction === "start"
                 ? en
                   ? "Starting…"
@@ -533,16 +551,29 @@ export default function AiOverlayCard({
                   : "开始复核"}
             </button>
           ) : null}{" "}
-          {canCreateWithCurrentConfig ? (
-            <button type="button" onClick={createBatch} disabled={pendingAction !== null}>
+          {canCreateWithCurrentConfig && hasBatch && status !== "queued" && status !== "running" ? (
+            <>
+              {status !== "completed" ? (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => createBatch("remaining")}
+                  disabled={pendingAction !== null}
+                >
+                  {copy.aiContinueRemaining}
+                </button>
+              ) : null}{" "}
+              <button type="button" onClick={() => createBatch("all")} disabled={pendingAction !== null}>
               {pendingAction === "start"
                 ? en
                   ? "Starting…"
                   : "启动中…"
-                : en
-                  ? "Restart with selected model"
-                  : "按所选模型重新开始"}
-            </button>
+                : copy.aiRunAllAgain.replace(
+                    "{count}",
+                    String(Math.max(0, Number(data?.totalIncomplete ?? 0) - Number(data?.manualResolved ?? 0))),
+                  )}
+              </button>
+            </>
           ) : null}{" "}
           {status === "queued" || status === "running" ? (
             <button
@@ -554,35 +585,22 @@ export default function AiOverlayCard({
               {pendingAction === "pause" ? (en ? "Pausing…" : "暂停中…") : en ? "Pause" : "暂停"}
             </button>
           ) : null}{" "}
-          {status === "paused" && !providerRemoved ? (
+          {status === "paused" && !providerRemoved && currentProviderMatchesBatch ? (
             <button
               type="button"
               className="secondary"
               onClick={() => action("resume")}
               disabled={pendingAction !== null}
             >
-              {pendingAction === "resume" ? (en ? "Resuming…" : "继续中…") : en ? "Resume" : "继续"}
+              {pendingAction === "resume" ? (en ? "Resuming…" : "继续中…") : en ? "Continue task" : "继续任务"}
             </button>
           ) : null}{" "}
-          {status === "failed" && !providerRemoved ? (
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => action("retry")}
-              disabled={pendingAction !== null}
-            >
-              {pendingAction === "retry"
-                ? en
-                  ? "Retrying…"
-                  : "重试中…"
-                : failedBatchHasPending
-                  ? en
-                    ? "Continue pending items"
-                    : "继续处理未完成项"
-                  : en
-                    ? "Retry failed items"
-                    : "重试失败项"}
-            </button>
+          {batch?.stop_reason ? (
+            <p className="muted">
+              {copy.aiOldFailures
+                .replace("{count}", String(failed))
+                .replace("{reason}", String(batch.stop_reason))}
+            </p>
           ) : null}
           {status === "completed" ? (
             <span className="pill">{en ? "Completed" : "已完成"}</span>

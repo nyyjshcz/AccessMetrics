@@ -74,12 +74,21 @@ function provider(model = "model-a") {
   });
 }
 
-function postReview(runId: string, providerConfigId: string) {
+function postReview(
+  runId: string,
+  providerConfigId: string,
+  options: { mode?: "remaining" | "all"; requestId?: string; sourceBatchId?: string } = {},
+) {
   return reviewRoute.POST(
     new Request(`http://localhost/api/runs/${runId}/ai-review`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ providerConfigId }),
+      body: JSON.stringify({
+        providerConfigId,
+        mode: options.mode ?? "all",
+        requestId: options.requestId ?? crypto.randomUUID(),
+        ...(options.sourceBatchId ? { sourceBatchId: options.sourceBatchId } : {}),
+      }),
     }),
     { params: Promise.resolve({ runId }) },
   );
@@ -109,6 +118,100 @@ describe("AI lifecycle integration", () => {
     const paused = ai.pauseAiBatch(created.batch.id);
     expect(paused.batch).toMatchObject({ status: "paused", revision: 1 });
     expect(ai.pauseAiBatch(created.batch.id).batch.revision).toBe(1);
+  });
+
+  it("deduplicates a replayed action request but gives a second all action a fresh batch", async () => {
+    const { run } = fixture(2);
+    const configured = provider();
+    const requestId = crypto.randomUUID();
+    const firstResponse = await postReview(run.id, configured.id, { mode: "all", requestId });
+    const first = await firstResponse.json();
+    expect(firstResponse.status, JSON.stringify(first)).toBe(201);
+
+    const replayResponse = await postReview(run.id, configured.id, { mode: "all", requestId });
+    const replay = await replayResponse.json();
+    expect(replay.batch.id).toBe(first.batch.id);
+
+    ai.pauseAiBatch(first.batch.id);
+    const secondResponse = await postReview(run.id, configured.id, {
+      mode: "all",
+      requestId: crypto.randomUUID(),
+    });
+    const second = await secondResponse.json();
+    expect(second.batch.id).not.toBe(first.batch.id);
+    expect(second.stats.total).toBe(2);
+    expect(dbModule.getDb().prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?").get(first.batch.id)).toEqual({ count: 2 });
+    ai.pauseAiBatch(second.batch.id);
+  });
+
+  it("builds remaining from unfinished items and all from the full non-manual scope", async () => {
+    const { run } = fixture(4);
+    const oldProvider = provider("model-a");
+    const currentProvider = provider("model-b");
+    const started = await postReview(run.id, oldProvider.id);
+    const oldBatch = (await started.json()).batch;
+    const db = dbModule.getDb();
+    const oldItems = db.prepare(
+      "SELECT id,result_node_id FROM ai_review_items WHERE batch_id=? ORDER BY id",
+    ).all(oldBatch.id) as Array<{ id: string; result_node_id: string }>;
+    db.prepare("UPDATE ai_review_items SET status='completed',verdict='problem',completed_at=? WHERE id=?")
+      .run(new Date().toISOString(), oldItems[0].id);
+    db.prepare("UPDATE ai_review_items SET status='failed',last_error='AI_TEST_FAILURE' WHERE id=?")
+      .run(oldItems[1].id);
+
+    const manualNode = oldItems[3].result_node_id;
+    db.prepare(
+      "INSERT INTO manual_reviews(id,result_node_id,sample_id,review_context,reviewer,verdict,note,revision,is_current,reviewed_at) VALUES (?,?,NULL,'ad_hoc','local','not_problem','manual final',1,1,?)",
+    ).run(`manual_${crypto.randomUUID()}`, manualNode, new Date().toISOString());
+
+    const continuedResponse = await postReview(run.id, currentProvider.id, {
+      mode: "remaining",
+      sourceBatchId: oldBatch.id,
+    });
+    expect(continuedResponse.status).toBe(201);
+    const continued = await continuedResponse.json();
+    expect(continued.stats.total).toBe(2);
+    expect(db.prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=? ORDER BY result_node_id").all(continued.batch.id))
+      .toEqual(oldItems.slice(1, 3).map(({ result_node_id }) => ({ result_node_id })).sort((a, b) => a.result_node_id.localeCompare(b.result_node_id)));
+
+    const allResponse = await postReview(run.id, currentProvider.id, {
+      mode: "all",
+      sourceBatchId: continued.batch.id,
+    });
+    expect(allResponse.status).toBe(201);
+    const all = await allResponse.json();
+    expect(all.batch.id).not.toBe(continued.batch.id);
+    expect(all.stats.total).toBe(3);
+    expect(db.prepare("SELECT result_node_id FROM ai_review_items WHERE batch_id=? AND result_node_id=?").get(all.batch.id, oldItems[0].result_node_id)).toBeTruthy();
+    expect(db.prepare("SELECT status,last_error,verdict FROM ai_review_items WHERE id=?").get(oldItems[1].id)).toMatchObject({ status: "failed", last_error: "AI_TEST_FAILURE" });
+    expect(db.prepare("SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=?").get(oldBatch.id)).toEqual({ count: 4 });
+    expect(db.prepare("SELECT status FROM ai_review_batches WHERE id=?").get(oldBatch.id)).toEqual({ status: "cancelled" });
+    ai.pauseAiBatch(all.batch.id);
+  });
+
+  it("returns an explicit empty remaining scope without creating a zero-item batch", async () => {
+    const { run } = fixture(1);
+    const configured = provider();
+    const requestId = crypto.randomUUID();
+    const started = await postReview(run.id, configured.id, { requestId });
+    const source = (await started.json()).batch;
+    dbModule.getDb().prepare(
+      "UPDATE ai_review_items SET status='completed',verdict='uncertain',completed_at=? WHERE batch_id=?",
+    ).run(new Date().toISOString(), source.id);
+    dbModule.getDb().prepare("UPDATE ai_review_batches SET status='completed' WHERE id=?").run(source.id);
+    const countBefore = dbModule.getDb().prepare(
+      "SELECT COUNT(*) count FROM ai_review_batches WHERE run_id=?",
+    ).get(run.id);
+
+    const emptyResponse = await postReview(run.id, configured.id, {
+      mode: "remaining",
+      sourceBatchId: source.id,
+    });
+    expect(emptyResponse.status).toBe(200);
+    expect(await emptyResponse.json()).toMatchObject({ empty: true, scopeCount: 0 });
+    expect(dbModule.getDb().prepare(
+      "SELECT COUNT(*) count FROM ai_review_batches WHERE run_id=?",
+    ).get(run.id)).toEqual(countBefore);
   });
 
   it.each(["material edit", "disable", "delete"] as const)(
@@ -229,7 +332,8 @@ describe("AI lifecycle integration", () => {
   it("does not duplicate or reset work when provider edits leave its snapshot unchanged", async () => {
     const { run } = fixture(1);
     const configured = provider();
-    const started = await postReview(run.id, configured.id);
+    const requestId = crypto.randomUUID();
+    const started = await postReview(run.id, configured.id, { requestId });
     const batchId = (await started.json()).batch.id as string;
     const db = dbModule.getDb();
     db.prepare("UPDATE ai_review_items SET attempt_count=2,retry_cycle=1 WHERE batch_id=?").run(batchId);
@@ -243,11 +347,12 @@ describe("AI lifecycle integration", () => {
       { params: Promise.resolve({ providerId: configured.id }) },
     );
     expect(edited.status).toBe(200);
-    const repeated = await postReview(run.id, configured.id);
+    const repeated = await postReview(run.id, configured.id, { requestId });
     expect(repeated.status).toBe(201);
     expect((await repeated.json()).batch.id).toBe(batchId);
     expect(db.prepare("SELECT COUNT(*) count FROM ai_review_batches WHERE run_id=?").get(run.id)).toEqual({ count: 1 });
     expect(db.prepare("SELECT attempt_count,retry_cycle FROM ai_review_items WHERE batch_id=?").get(batchId)).toEqual({ attempt_count: 2, retry_cycle: 1 });
+    ai.pauseAiBatch(batchId);
   });
 
   it("does not cancel work when a different provider is edited and keeps the response redacted", async () => {

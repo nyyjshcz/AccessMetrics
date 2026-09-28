@@ -516,6 +516,34 @@ describe("thin AI overlay", () => {
       .run(new Date().toISOString(), new Date().toISOString(), first.batch.id);
   });
 
+  it("deduplicates the same all request and creates a new batch for a distinct all action", () => {
+    const item = fixture(3, true);
+    const config = provider();
+    const requestId = crypto.randomUUID();
+    const first = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id, mode: "all", requestId });
+    const replay = ai.createAiBatch({ runId: item.run.id, providerConfigId: config.id, mode: "all", requestId });
+    expect(replay.batch.id).toBe(first.batch.id);
+    const firstItem = dbModule.getDb().prepare(
+      "SELECT id,result_node_id FROM ai_review_items WHERE batch_id=? ORDER BY id LIMIT 1",
+    ).get(first.batch.id) as { id: string; result_node_id: string };
+    dbModule.getDb().prepare(
+      "UPDATE ai_review_items SET status='completed',verdict='problem',completed_at=? WHERE id=?",
+    ).run(new Date().toISOString(), firstItem.id);
+    const second = ai.createAiBatch({
+      runId: item.run.id,
+      providerConfigId: config.id,
+      mode: "all",
+      requestId: crypto.randomUUID(),
+      sourceBatchId: first.batch.id,
+    });
+    expect(second.batch.id).not.toBe(first.batch.id);
+    expect(second.stats.total).toBe(3);
+    expect(dbModule.getDb().prepare(
+      "SELECT COUNT(*) count FROM ai_review_items WHERE batch_id=? AND result_node_id=?",
+    ).get(second.batch.id, firstItem.result_node_id)).toEqual({ count: 1 });
+    ai.pauseAiBatch(second.batch.id);
+  });
+
   it("keeps the raw incomplete count while AI verdicts change the effective score", () => {
     const item = fixture(1, true, true);
     const config = provider();

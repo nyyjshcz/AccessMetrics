@@ -115,7 +115,7 @@ describe("thin AI overlay", () => {
   beforeAll(() => dbModule.migrate());
   afterAll(() => dbModule.closeDb());
 
-  it("migrates lifecycle persistence to version 033 idempotently", () => {
+  it("migrates lifecycle persistence through version 034 idempotently", () => {
     const db = dbModule.getDb();
     expect(
       (
@@ -123,7 +123,7 @@ describe("thin AI overlay", () => {
           version: number;
         }
       ).version,
-    ).toBe(33);
+    ).toBe(34);
 
     // Recreate the pre-033 schema to exercise upgrading an installed 032 database.
     db.exec(`
@@ -136,7 +136,7 @@ describe("thin AI overlay", () => {
       ALTER TABLE ai_review_items DROP COLUMN next_retry_at;
       ALTER TABLE ai_review_items DROP COLUMN retry_cycle;
       ALTER TABLE ai_review_batches DROP COLUMN cancel_requested_at;
-      DELETE FROM schema_migrations WHERE version=33;
+      DELETE FROM schema_migrations WHERE version IN (33,34);
     `);
     expect(
       (
@@ -154,7 +154,7 @@ describe("thin AI overlay", () => {
           version: number;
         }
       ).version,
-    ).toBe(33);
+    ).toBe(34);
     const tableColumns = (table: string) =>
       (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
         (column) => column.name,
@@ -216,6 +216,150 @@ describe("thin AI overlay", () => {
     expect(tableColumns("ai_api_attempts")).not.toEqual(
       expect.arrayContaining(["api_key", "prompt", "url", "page_content", "raw_response"]),
     );
+  });
+
+  it("upgrades a populated 033 database with lifecycle fences and keeps its batch readable", () => {
+    const db = dbModule.getDb();
+    const { run } = fixture(1);
+    const jobId = (
+      db.prepare("SELECT job_id FROM scan_runs WHERE id=?").get(run.id) as { job_id: string }
+    ).job_id;
+    const configured = provider();
+    const existing = ai.createAiBatch({ runId: run.id, providerConfigId: configured.id });
+    const batchId = existing.batch.id;
+    ai.pauseAiBatch(batchId);
+    const itemId = (
+      db.prepare("SELECT id FROM ai_review_items WHERE batch_id=?").get(batchId) as { id: string }
+    ).id;
+    const auditTables = ["ai_api_attempts", "ai_worker_instances"];
+    const auditSql = auditTables.map(
+      (name) =>
+        (
+          db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(name) as {
+            sql: string;
+          }
+        ).sql,
+    );
+
+    db.exec(`
+      DROP INDEX IF EXISTS idx_ai_batches_action_request;
+      DROP INDEX IF EXISTS idx_ai_items_active_attempt;
+      DROP INDEX IF EXISTS idx_ai_items_batch_revision;
+      DROP INDEX IF EXISTS idx_ai_batches_source;
+    `);
+    const dropIfPresent = (table: string, column: string) => {
+      const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+      if (columns.some((entry) => entry.name === column))
+        db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+    };
+    for (const column of [
+      "revision",
+      "stop_reason",
+      "stop_requested_at",
+      "action_request_id",
+      "source_batch_id",
+    ])
+      dropIfPresent("ai_review_batches", column);
+    for (const column of ["active_attempt_id", "batch_revision", "exclusion_reason"])
+      dropIfPresent("ai_review_items", column);
+    dropIfPresent("scan_jobs", "deletion_requested_at");
+    db.prepare("DELETE FROM schema_migrations WHERE version=34").run();
+
+    expect(
+      (
+        db.prepare("SELECT MAX(version) AS version FROM schema_migrations").get() as {
+          version: number;
+        }
+      ).version,
+    ).toBe(33);
+    dbModule.migrate();
+    dbModule.migrate();
+    expect(
+      (
+        db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version=34").get() as {
+          count: number;
+        }
+      ).count,
+    ).toBe(1);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+
+    const batch = ai.getAiBatch(batchId).batch;
+    expect(batch).toMatchObject({
+      id: batchId,
+      revision: 0,
+      stop_reason: null,
+      stop_requested_at: null,
+      action_request_id: null,
+      source_batch_id: null,
+    });
+    expect(
+      db
+        .prepare(
+          "SELECT active_attempt_id,batch_revision,exclusion_reason FROM ai_review_items WHERE id=?",
+        )
+        .get(itemId),
+    ).toEqual({
+      active_attempt_id: null,
+      batch_revision: 0,
+      exclusion_reason: null,
+    });
+    expect(db.prepare("SELECT deletion_requested_at FROM scan_jobs WHERE id=?").get(jobId)).toEqual(
+      { deletion_requested_at: null },
+    );
+    expect(
+      auditTables.map(
+        (name) =>
+          (
+            db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(name) as {
+              sql: string;
+            }
+          ).sql,
+      ),
+    ).toEqual(auditSql);
+
+    const indexes = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as Array<{
+        name: string;
+      }>
+    ).map((row) => row.name);
+    expect(indexes).toEqual(
+      expect.arrayContaining(["idx_ai_batches_action_request", "idx_ai_items_active_attempt"]),
+    );
+    const timestamp = new Date().toISOString();
+    const second = ai.createAiBatch({ runId: fixture(1).run.id, providerConfigId: configured.id });
+    ai.pauseAiBatch(second.batch.id);
+    db.prepare("UPDATE ai_review_batches SET action_request_id=? WHERE id=?").run(
+      "same-action",
+      batchId,
+    );
+    expect(() =>
+      db
+        .prepare("UPDATE ai_review_batches SET action_request_id=? WHERE id=?")
+        .run("same-action", second.batch.id),
+    ).toThrow();
+    db.prepare("UPDATE ai_review_items SET active_attempt_id=?,batch_revision=1 WHERE id=?").run(
+      "same-attempt",
+      itemId,
+    );
+    const secondItem = (
+      db.prepare("SELECT id FROM ai_review_items WHERE batch_id=?").get(second.batch.id) as {
+        id: string;
+      }
+    ).id;
+    expect(() =>
+      db
+        .prepare("UPDATE ai_review_items SET active_attempt_id=? WHERE id=?")
+        .run("same-attempt", secondItem),
+    ).toThrow();
+    db.prepare("UPDATE ai_review_batches SET stop_reason=?,stop_requested_at=? WHERE id=?").run(
+      "paused",
+      timestamp,
+      batchId,
+    );
+    expect(ai.getAiBatch(batchId).batch).toMatchObject({
+      stop_reason: "paused",
+      stop_requested_at: timestamp,
+    });
   });
 
   it("adds evidence columns and the AI persistence tables", () => {

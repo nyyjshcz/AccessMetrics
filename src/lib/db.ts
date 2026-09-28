@@ -72,6 +72,7 @@ export function migrate() {
     migration031,
     migration032,
     migration033,
+    migration034,
   ];
   for (let index = 0; index < migrations.length; index++) {
     const version = index + 1;
@@ -1150,6 +1151,40 @@ function migration033(db: Database.Database) {
       ON ai_worker_instances(last_seen_at,stopped_at);
     CREATE INDEX IF NOT EXISTS idx_ai_items_due_queue
       ON ai_review_items(status,next_retry_at,updated_at);
+  `);
+}
+
+function migration034(db: Database.Database) {
+  const addColumn = (table: string, column: string, definition: string) => {
+    const present = (
+      db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+    ).some((row) => row.name === column);
+    if (!present) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  };
+
+  addColumn("ai_review_batches", "revision", "INTEGER NOT NULL DEFAULT 0");
+  addColumn("ai_review_batches", "stop_reason", "TEXT");
+  addColumn("ai_review_batches", "stop_requested_at", "TEXT");
+  addColumn("ai_review_batches", "action_request_id", "TEXT");
+  addColumn(
+    "ai_review_batches",
+    "source_batch_id",
+    "TEXT REFERENCES ai_review_batches(id) ON DELETE SET NULL",
+  );
+  addColumn("ai_review_items", "active_attempt_id", "TEXT");
+  addColumn("ai_review_items", "batch_revision", "INTEGER NOT NULL DEFAULT 0");
+  addColumn("ai_review_items", "exclusion_reason", "TEXT");
+  addColumn("scan_jobs", "deletion_requested_at", "TEXT");
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_batches_action_request
+      ON ai_review_batches(action_request_id) WHERE action_request_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_ai_batches_source
+      ON ai_review_batches(source_batch_id) WHERE source_batch_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_items_active_attempt
+      ON ai_review_items(active_attempt_id) WHERE active_attempt_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_ai_items_batch_revision
+      ON ai_review_items(batch_id,batch_revision);
   `);
 }
 

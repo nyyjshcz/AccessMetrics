@@ -39,6 +39,36 @@ export type AiVerdict = (typeof AI_VERDICTS)[number];
 export type AiOverlay = ReadonlyMap<string, AiVerdict>;
 export type AiBatchStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
 
+export type AiBatchRow = {
+  id: string;
+  batch_key: string;
+  run_id: string | null;
+  page_id: string | null;
+  study_freeze_id: string | null;
+  provider_config_id: string | null;
+  provider_snapshot_json: string;
+  provider_snapshot_hash: string;
+  prompt_version: string;
+  prompt_hash: string;
+  evidence_version: string;
+  status: AiBatchStatus;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  cancel_requested_at: string | null;
+  revision: number;
+  stop_reason: string | null;
+  stop_requested_at: string | null;
+  action_request_id: string | null;
+  source_batch_id: string | null;
+};
+
+export type AiItemLifecycleFields = {
+  active_attempt_id: string | null;
+  batch_revision: number;
+  exclusion_reason: string | null;
+};
+
 const MAX_REASON_LENGTH = 2000;
 // The lease must outlive the 120-second provider request timeout so a second
 // worker cannot claim the same item while the first request is still in flight.
@@ -595,7 +625,9 @@ function batchStats(batchId: string): AiBatchSummary {
 }
 
 function getBatchRow(batchId: string) {
-  const row = getDb().prepare("SELECT * FROM ai_review_batches WHERE id=?").get(batchId) as any;
+  const row = getDb().prepare("SELECT * FROM ai_review_batches WHERE id=?").get(batchId) as
+    | AiBatchRow
+    | undefined;
   if (!row) throw new AppError("AI_BATCH_NOT_FOUND", "AI 批次不存在", 404);
   return row;
 }
@@ -811,7 +843,9 @@ export function pauseAiBatch(batchId: string) {
   return getAiBatch(batchId);
 }
 
-function assertBatchSourceAndSnapshot(batch: any) {
+function assertBatchSourceAndSnapshot(
+  batch: AiBatchRow,
+): asserts batch is AiBatchRow & { run_id: string } {
   if (!batch.run_id || batch.page_id || batch.study_freeze_id)
     throw new AppError("AI_BATCH_SCOPE_INVALID", "旧范围 AI batch 不能在本地流程中恢复", 409);
   const scan = getDb()
